@@ -1,0 +1,6 @@
+# Nothing of yours goes into an image: no settings, messages, logins or plugins of your own.
+data
+user-plugins
+node_modules
+.git
+*.log

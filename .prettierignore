@@ -1,0 +1,7 @@
+# Only the code is formatted. The agent's rules and notes, and the documents, are prose
+# with a layout of their own.
+*.md
+node_modules
+data
+user-plugins
+package-lock.json

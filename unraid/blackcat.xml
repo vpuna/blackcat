@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>blackcat</Name>
+  <Repository>ghcr.io/vpuna/blackcat:latest</Repository>
+  <Registry>https://ghcr.io/vpuna/blackcat</Registry>
+  <Network>bridge</Network>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/vpuna/blackcat/issues</Support>
+  <Project>https://github.com/vpuna/blackcat</Project>
+  <Overview>A personal agent that runs at home. It keeps a searchable copy of your messages (WhatsApp, Telegram, email; read-only), reminds you, watches chats for what you care about, and looks after your machines over SSH, Home Assistant and UniFi. You use it with commands, and optionally through a Telegram bot and in plain words with a model (Claude Code, under your own sign-in). Everything stays on this machine.&#xD;
+&#xD;
+After starting it, open a console in the container and run: bc status&#xD;
+To connect a Telegram bot: bc tg bot pair&#xD;
+To sign in to Claude Code (optional): claude</Overview>
+  <Category>Productivity: Tools: HomeAutomation:</Category>
+  <WebUI/>
+  <TemplateURL>https://raw.githubusercontent.com/vpuna/blackcat/main/unraid/blackcat.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/vpuna/blackcat/main/unraid/icon.png</Icon>
+  <ExtraParams>--restart unless-stopped</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="Data" Target="/blackcat/data" Default="/mnt/user/appdata/blackcat/data" Mode="rw" Description="Settings, messages, logins and logs. Everything that is yours. Back this folder up (or use blackcat's own: bc backup setup)." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/blackcat/data</Config>
+  <Config Name="Home" Target="/home/blackcat" Default="/mnt/user/appdata/blackcat/home" Mode="rw" Description="The Claude Code sign-in is kept here, so that it survives an update of the container. Only used when you add a model." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/blackcat/home</Config>
+  <Config Name="Your own plugins" Target="/blackcat/user-plugins" Default="/mnt/user/appdata/blackcat/user-plugins" Mode="rw" Description="Plugins you write or add yourself (optional)." Type="Path" Display="advanced" Required="false" Mask="false">/mnt/user/appdata/blackcat/user-plugins</Config>
+  <Config Name="Time zone" Target="TZ" Default="Europe/London" Mode="" Description="Reminders and schedules use local time. For example Europe/Lisbon, America/New_York, Asia/Tokyo." Type="Variable" Display="always" Required="true" Mask="false">Europe/London</Config>
+</Container>
