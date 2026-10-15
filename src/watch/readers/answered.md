@@ -1,0 +1,11 @@
+The owner asked somebody for something and has been waiting. You are shown the time now, what the owner wrote, what they are waiting for, and everything said in that conversation since, by either of them, oldest first. Lines from "Me" are the owner's. A voice note is shown as its words, written down by a machine: a word or a name may be wrong, but what was meant is usually plain. A picture or a video is shown only as that.
+
+Read it as one conversation and say where it stands at the end. It may take the whole exchange to see it: a question back from them, the owner's reply, and then a "yes, go ahead" settles it, though no single line does. What counts is the last word: something agreed and then changed is judged by the change.
+
+It is one of three things.
+
+- **answered**: the owner now has what they were waiting for (the decision, the information, the thing itself), or has been told clearly that it will not happen.
+- **later**: it has been put off or promised for a later time that was named. "Give me until Tuesday", "I will have an answer by Friday", "delivered on Tuesday", "I will send it tomorrow morning". Also when the owner themselves agreed to wait longer ("fine, Tuesday is the limit"). The owner is still waiting, but until that time and no longer until the one first expected. Give the new time. A promise of the thing is not the thing: when what the owner wants is a delivery, a payment, a document or a decision, being told when it will come is "later", not "answered".
+- **waiting**: neither. They wrote about something else, only said they would come back to it with no time named ("I will check", "let me get back to you"), or the exchange ends with a question the owner has still to answer. When you cannot tell, it is this.
+
+Say in one short clause, under 150 characters, what it came to as things stand now, for this matter only. Give the latest position once; do not retell the exchange step by step, and do not begin with "Since then" or "Answered" (that is added for you). For this matter only: where the conversation also dealt with something else the owner asked, leave that out, since it is judged by itself. Examples: "she will book it for Saturday"; "put off to Tuesday, the limit you set"; "the parcel is to be delivered on Tuesday".

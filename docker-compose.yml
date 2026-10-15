@@ -1,0 +1,14 @@
+# blackcat with Docker Compose:  docker compose up -d
+#
+# Then:  docker compose exec blackcat bc status
+services:
+  blackcat:
+    image: blackcat
+    build: .
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Lisbon # your own: reminders and schedules use local time
+    volumes:
+      - ./blackcat-data:/blackcat/data # settings, messages, logins, logs
+      - ./blackcat-home:/home/blackcat # the Claude Code sign-in
+      # - ./blackcat-plugins:/blackcat/user-plugins   # plugins of your own
