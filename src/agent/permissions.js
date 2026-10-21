@@ -1,6 +1,7 @@
 import { ownerDid } from '../activity/log.js';
 import { openAgentDb } from '../agentdb.js';
 import { upgrade, withDb } from '../db.js';
+import { asJson } from '../util/when.js';
 
 // Standing answers the owner has given to an approval prompt: "always allow" or "never
 // allow" for one exact command. The agent can neither read nor change them; the owner
@@ -77,7 +78,7 @@ export const clearRules = () => withDb(open, (db) => db.prepare('DELETE FROM per
 // `bc permissions`
 export async function show(opts) {
   const rules = listRules();
-  if (opts.json) return console.log(JSON.stringify(rules, null, 2));
+  if (opts.json) return console.log(asJson(rules));
   const pc = (await import('picocolors')).default;
   if (!rules.length) return console.log('No standing permissions. Every action that needs approval asks you each time.');
   for (const r of rules) {

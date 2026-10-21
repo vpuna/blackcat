@@ -4,7 +4,8 @@
 //
 // A source is told from the others by how its ids begin: its chats and people are
 // "<id>:…", and so are its messages. Two exceptions from before this rule existed:
-// WhatsApp ids have no prefix at all, and Telegram message ids are "tg<chat>_<n>".
+// WhatsApp's message ids are WhatsApp's own (its chats and people are "wa:…" like any
+// other's), and Telegram message ids are "tg<chat>_<n>".
 //
 //   id            the prefix, a short lowercase word
 //   label         what to call it ("Email")
@@ -59,12 +60,7 @@ const range = (col, id) => `(${col} >= '${id}:' AND ${col} < '${id};')`;
 export function sourceSql(col, id) {
   if (!id) return '1';
   if (!SOURCES[id]) throw new Error(`Unknown source "${id}". Use: ${Object.keys(SOURCES).join(', ')}`);
-  if (id !== 'wa') return range(col, id);
-  // WhatsApp is whatever belongs to none of the others.
-  return [...sources.keys()]
-    .filter((k) => k !== 'wa')
-    .map((k) => `NOT ${range(col, k)}`)
-    .join(' AND ');
+  return range(col, id);
 }
 // SQL condition: the column does not belong to a source that has to be asked for by name.
 export const notOptInSql = (col) =>

@@ -53,10 +53,11 @@ export function wanted(ref, kind, members, s = tgaSettings()) {
 }
 
 export function describeTga(s = tgaSettings()) {
-  const depth = s.days ? `last ${s.days} days` : 'all history';
+  const depth = s.days ? `history ${s.days} days back` : 'all history';
   if (s.mode === 'selected') return `${s.chats?.length ?? 0} selected chats, ${depth}`;
   const extra = Object.entries(s.include ?? {})
     .filter(([, v]) => v)
     .map(([k]) => ({ bots: 'bots', channels: 'channels', big: 'large groups' })[k]);
-  return `private chats and groups${extra.length ? ` plus ${extra.join(', ')}` : ''}, ${depth}`;
+  const out = s.exclude?.length ? `, ${s.exclude.length} left out` : '';
+  return `private chats and groups${extra.length ? ` plus ${extra.join(', ')}` : ''}${out}, ${depth}`;
 }

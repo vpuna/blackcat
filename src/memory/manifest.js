@@ -96,5 +96,5 @@ export default {
   settings: () => ({ remembered: count(), 'kept in': 'agent.db, on this machine', kinds }),
 
   // For `bc engine check`: what the owner might say, and the command it should lead to.
-  checks: [{ say: 'remember that my dentist is Dr Rao, on Palm Street', expect: /blackcat memory save\b/ }],
+  trials: [{ say: 'remember that my dentist is Dr Rao, on Palm Street', expect: /blackcat memory save\b/ }],
 };

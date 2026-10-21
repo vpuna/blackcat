@@ -55,6 +55,8 @@ let approver = null;
 export function setApprover(fn) {
   approver = fn;
 }
+// (Asking it directly, as a tool call does: for tests.)
+export const askApprover = (req) => (approver ? approver(req) : Promise.resolve({ allow: false }));
 
 class Session {
   constructor(chatId, onExit) {

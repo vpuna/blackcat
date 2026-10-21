@@ -2,7 +2,7 @@
 // in the archive, and never sends anything. Searching is done with the archive's own commands (bc msg …).
 import fs from 'node:fs';
 import { isPaired } from './paired.js';
-import { describeSelection, waSettings } from './settings.js';
+import { collects, describeSelection } from './settings.js';
 import { ARCHIVE_DB, withDb } from '../../src/api.js';
 
 const cmd = () => import('./commands.js');
@@ -18,9 +18,9 @@ export default {
   description: 'collects your WhatsApp messages into the archive, read-only (it can never send)',
   help: `Setup:
   bc wa pair      link WhatsApp (QR code or link code), pull history, pick chats
-  bc wa select    change how far back to keep, and which chats
-  bc wa recover   something is missing: ask your phone again for the last days
-                  (--since 60d, --chat "a name")
+  bc wa select    change how far back history is fetched, and which chats
+  bc wa recover   something is missing: ask your phone again, for the days of history chosen
+                  (--chat "a name" also looks for what is missing in between)
 
 Searching and reading what it collected is done with the archive's own commands:
   bc msg find <question> --source wa · bc msg chats --source wa
@@ -34,7 +34,7 @@ Searching and reading what it collected is done with the archive's own commands:
       run: async () => (await cmd()).pair(),
     },
     select: {
-      summary: 'choose how many days back, and all chats or only picked ones',
+      summary: 'choose how far back history is fetched, and all chats or only picked ones',
       access: 'owner',
       interactive: true,
       run: async () => (await cmd()).select(),
@@ -47,13 +47,12 @@ Searching and reading what it collected is done with the archive's own commands:
     },
     recover: {
       changes: true,
-      summary: 'ask your phone again for the messages of the last days, and keep what is missing',
+      summary: 'ask your phone again for the days of history chosen, and keep what is missing',
       // Only the owner's own phone is asked, and only what was missing is added.
       access: 'allow',
       untrusted: false,
       options: [
-        ['--since <time>', 'how far back, e.g. 60d or 2026-09-01 (default: the days you keep)'],
-        ['--chat <name>', 'only this chat (quicker: otherwise every chat with a message in those days)'],
+        ['--chat <name>', 'only this chat, looking for what is missing in between too (otherwise: each chat back from its oldest)'],
       ],
       run: async (ctx, i) => (await import('./recover.js')).recover(ctx, i),
     },
@@ -71,16 +70,13 @@ Searching and reading what it collected is done with the archive's own commands:
     },
   },
 
-  // WhatsApp as a source of messages in the archive. (Its ids have no prefix: it was the first.)
+  // WhatsApp as a source of messages in the archive.
   source: {
     id: 'wa',
     label: 'WhatsApp',
     connected: () => isPaired(),
     // The chats you chose to keep (bc wa select).
-    collects: (ref) => {
-      const w = waSettings();
-      return w.mode !== 'selected' || (w.chats ?? []).includes(ref);
-    },
+    collects: (ref) => collects(ref),
     fetchMedia: async (_ctx, { row, dest }) => (await import('./media.js')).fetchWhatsAppMedia(row, dest),
   },
 
@@ -124,15 +120,18 @@ Searching and reading what it collected is done with the archive's own commands:
   status: () => {
     if (!isPaired())
       return fs.existsSync(DB) ? 'not linked (stored messages are still searchable) → bc wa pair' : 'not linked → bc wa pair';
-    return `linked · keeping ${describeSelection()}`;
+    return `linked · collecting ${describeSelection()}`;
   },
 
   settings: async () => {
     const { waSettings } = await import('./settings.js');
     const w = waSettings();
     return {
-      keep: w.days ? `the last ${w.days} days` : 'all history',
-      chats: w.mode === 'selected' ? `${w.chats?.length ?? 0} chosen chats` : 'all chats',
+      history: w.days ? `fetched ${w.days} days back; everything stored is kept` : 'all of it',
+      chats:
+        w.mode === 'selected'
+          ? `${w.chats?.length ?? 0} chosen chats`
+          : `all chats${w.exclude?.length ? `, ${w.exclude.length} left out` : ''}`,
       'change them': 'bc wa select',
     };
   },

@@ -16,7 +16,9 @@ import makeWASocket, {
 import pino from 'pino';
 import {
   archiveMeta as getMeta,
+  accountFor,
   archiveStatements,
+  claimRows,
   now,
   openArchiveForWriting as openWrite,
   serveRecovery,
@@ -29,7 +31,8 @@ import { hushSessions } from './hush.js';
 import { openRequestsDb } from './requests.js';
 import { AUTH_DIR } from './paired.js';
 import { describe, protocolChange, toNum, unkept } from './message.js';
-import { cutoff, waSettings } from './settings.js';
+import { collects, cutoff, waSettings } from './settings.js';
+import { say } from './recover.js';
 
 // READ-ONLY by design: this file never sends messages, reactions, read receipts
 // or presence. Baileys itself only sends the passive "delivered" ack that every
@@ -44,6 +47,10 @@ const MAX_PAGES = 200; // per chat, so that one endless chat cannot hold the res
 export { isPaired } from './paired.js';
 
 const skipJid = (ref) => !ref || isJidBroadcast(ref) || isJidNewsletter(ref);
+// In the archive a chat or person is "wa:" and the id WhatsApp gives it; here, talking to
+// WhatsApp, it is that id. Turned from one to the other where the two meet.
+const toRef = (jid) => (jid ? `wa:${jid}` : jid);
+const toJid = (ref) => (ref?.startsWith('wa:') ? ref.slice(3) : ref);
 
 export function startService({
   log,
@@ -66,8 +73,10 @@ export function startService({
     db
       .prepare('SELECT lid, pn FROM lid_map')
       .all()
-      .map((r) => [r.lid, r.pn]),
+      .map((r) => [toJid(r.lid), toJid(r.pn)]),
   );
+  // The owner's account this is linked as (src/archive/db.js, accountFor): known once connected.
+  let account = null;
   let sock;
   let stopped = false;
   let retry = 0;
@@ -77,10 +86,11 @@ export function startService({
     lid: db.prepare('INSERT OR REPLACE INTO lid_map (lid, pn) VALUES (?, ?)'),
     moveChatMsgs: db.prepare('UPDATE OR IGNORE messages SET chat_ref = ? WHERE chat_ref = ?'),
     moveSender: db.prepare('UPDATE messages SET sender_ref = ? WHERE sender_ref = ?'),
-    mergeChat: db.prepare(`INSERT INTO chats (ref, name, is_group, last_ts) SELECT ?, name, is_group, last_ts FROM chats WHERE ref = ?
+    mergeChat:
+      db.prepare(`INSERT INTO chats (ref, name, is_group, last_ts, account) SELECT ?, name, is_group, last_ts, account FROM chats WHERE ref = ?
       ON CONFLICT (ref) DO UPDATE SET name = COALESCE(chats.name, excluded.name), last_ts = MAX(COALESCE(chats.last_ts, 0), COALESCE(excluded.last_ts, 0))`),
     dropChat: db.prepare('DELETE FROM chats WHERE ref = ?'),
-    ...archiveStatements(db),
+    ...archiveStatements(db, () => account),
     thumb: db.prepare('INSERT OR IGNORE INTO link_thumbs (msg_rowid, jpeg, width, height) VALUES (?, ?, ?, ?)'),
     raw: db.prepare('INSERT OR IGNORE INTO raw (msg_rowid, proto) VALUES (?, ?)'),
   };
@@ -93,11 +103,11 @@ export function startService({
     pn = jidNormalizedUser(pn);
     if (lidMap.get(lid) === pn) return;
     lidMap.set(lid, pn);
-    q.lid.run(lid, pn);
-    q.mergeChat.run(pn, lid);
-    q.dropChat.run(lid);
-    q.moveChatMsgs.run(pn, lid);
-    q.moveSender.run(pn, lid);
+    q.lid.run(toRef(lid), toRef(pn));
+    q.mergeChat.run(toRef(pn), toRef(lid));
+    q.dropChat.run(toRef(lid));
+    q.moveChatMsgs.run(toRef(pn), toRef(lid));
+    q.moveSender.run(toRef(pn), toRef(lid));
   }
 
   function canon(ref, alt) {
@@ -116,7 +126,7 @@ export function startService({
   // While older messages are being recovered, how far back they are kept: that may be
   // further than the days chosen for what arrives by itself.
   let reach = null;
-  const wanted = (w, chat, ts) => ts >= Math.min(cutoff(w), reach ?? Infinity) && (w.mode !== 'selected' || (w.chats ?? []).includes(chat));
+  const wanted = (w, chat, ts) => ts >= Math.min(cutoff(w), reach ?? Infinity) && collects(toRef(chat), w);
 
   const ingestContacts = db.transaction((contacts) => {
     for (const c of contacts ?? []) {
@@ -124,7 +134,7 @@ export function startService({
       if (c.lid && c.phoneNumber) addLid(c.lid, c.phoneNumber);
       const ref = canon(c.id, c.phoneNumber);
       q.contact.run({
-        ref,
+        ref: toRef(ref),
         name: c.name ?? null,
         notify: c.notify ?? c.verifiedName ?? null,
         phone: c.phoneNumber ?? (isPnUser(ref) ? ref.split('@')[0] : null),
@@ -138,7 +148,7 @@ export function startService({
       if (c.lidJid && c.pnJid) addLid(c.lidJid, c.pnJid);
       const ref = canon(c.id, c.pnJid);
       q.chat.run({
-        ref,
+        ref: toRef(ref),
         name: (isJidGroup(ref) ? (c.name ?? c.subject) : c.name) ?? c.displayName ?? null,
         isGroup: isJidGroup(ref) ? 1 : 0,
         ts: toNum(c.conversationTimestamp) || toNum(c.lastMsgTimestamp) || toNum(c.lastMessageRecvTimestamp) || null,
@@ -158,11 +168,11 @@ export function startService({
 
       const change = protocolChange(m.message);
       if (change) {
-        if (change.kind === 'delete') q.del.run(chat, change.id);
+        if (change.kind === 'delete') q.del.run(toRef(chat), change.id);
         else
           q.edit.run({
             text: change.text,
-            chat,
+            chat: toRef(chat),
             id: change.id,
             linkUrl: change.link?.url ?? null,
             linkTitle: change.link?.title ?? null,
@@ -189,14 +199,14 @@ export function startService({
       const group = isJidGroup(chat);
       const rawSender = k.fromMe ? null : group ? k.participant || m.participant : k.remoteJid;
       const sender = rawSender && !isJidGroup(rawSender) ? canon(rawSender, group ? k.participantAlt : k.remoteJidAlt) : null;
-      if (sender && m.pushName) q.contact.run({ ref: sender, name: null, notify: m.pushName, phone: null });
-      q.chat.run({ ref: chat, name: null, isGroup: isJidGroup(chat) ? 1 : 0, ts });
+      if (sender && m.pushName) q.contact.run({ ref: toRef(sender), name: null, notify: m.pushName, phone: null });
+      q.chat.run({ ref: toRef(chat), name: null, isGroup: isJidGroup(chat) ? 1 : 0, ts });
       const l = d.link;
-      const had = q.exists.get(chat, k.id);
+      const had = q.exists.get(toRef(chat), k.id);
       const r = q.msgFill.run({
-        chat,
+        chat: toRef(chat),
         id: k.id,
-        sender,
+        sender: toRef(sender),
         fromMe: k.fromMe ? 1 : 0,
         ts,
         type: d.type,
@@ -206,7 +216,7 @@ export function startService({
         linkTitle: l?.title ?? null,
         linkDesc: l?.description ?? null,
       });
-      const { rowid } = had ?? q.exists.get(chat, k.id);
+      const { rowid } = had ?? q.exists.get(toRef(chat), k.id);
       if (l?.thumb) q.thumb.run(rowid, l.thumb, l.width, l.height);
       const gotMedia = d.media ? q.media.run({ rowid, ...d.media }).changes : 0;
       try {
@@ -255,6 +265,13 @@ export function startService({
       if (u.connection === 'open') {
         retry = 0;
         setMeta(db, { state: 'connected', connected_at: now(), me: sock.user?.id, last_error: null });
+        // The account it is linked as: what it stores from now on is that account's, and so is
+        // what was stored before any account was noted.
+        const number = sock.user?.id?.split(/[:@]/)[0];
+        if (number) {
+          account = accountFor(db, { source: 'wa', identity: `+${number}` });
+          claimRows(db, account, (col) => sourceSql(col, 'wa'));
+        }
         log?.(`connected as ${sock.user?.id?.split(':')[0]}`);
         serviceConnected({ offlineMs: dropped ? Date.now() - dropped : null });
         dropped = null;
@@ -316,7 +333,7 @@ export function startService({
       setMeta(db, { last_history_at: now() });
       // The phone's answer to a question about one chat (see recover): how much came, and the oldest of it.
       if (asking && syncType === ON_DEMAND) {
-        const mine = (messages ?? []).filter((m) => m?.key?.remoteJid && canon(m.key.remoteJid, m.key.remoteJidAlt) === asking.chat);
+        const mine = (messages ?? []).filter((m) => m?.key?.remoteJid && toRef(canon(m.key.remoteJid, m.key.remoteJidAlt)) === asking.chat);
         const oldest = mine.reduce((a, m) => (!a || toNum(m.messageTimestamp) < toNum(a.messageTimestamp) ? m : a), null);
         asking.answer({ got: mine.length, stored, oldest: oldest && { key: oldest.key, ts: toNum(oldest.messageTimestamp) } });
       }
@@ -327,7 +344,7 @@ export function startService({
       if (ingestMessages(messages).stored) setMeta(db, { last_message_at: now() });
     });
     on('messages.delete', (e) => {
-      for (const k of e.keys ?? []) q.del.run(canon(k.remoteJid, k.remoteJidAlt), k.id);
+      for (const k of e.keys ?? []) q.del.run(toRef(canon(k.remoteJid, k.remoteJidAlt)), k.id);
     });
     on('chats.upsert', ingestChats);
     on('chats.update', ingestChats);
@@ -341,21 +358,25 @@ export function startService({
   // ---------- recovering what is missing ----------
   // The phone is asked for the messages of a chat older than one that is kept, fifty at a
   // time, back to the day asked for. What comes is stored like history: one already there
-  // is not stored twice, so only what was missing is added. A chat is started from its
-  // newest kept message, so what is newer than that cannot be reached this way.
+  // is not stored twice, so only what was missing is added. Every chat is asked from its
+  // oldest kept message, if that is not old enough (topped up: one question, for a chat that
+  // has nothing older); a chat named is gone through from its newest too, for what is missing
+  // in between. What is newer than the newest kept cannot be reached this way.
   let asking = null;
-  const newestOf = db.prepare(
-    `SELECT m.id, m.from_me AS fromMe, m.ts, r.proto FROM messages m LEFT JOIN raw r ON r.msg_rowid = m.rowid
-     WHERE m.chat_ref = ? ORDER BY m.ts DESC, m.rowid DESC LIMIT 1`,
-  );
+  const edgeOf = (order) =>
+    db.prepare(
+      `SELECT m.id, m.from_me AS fromMe, m.ts, r.proto FROM messages m LEFT JOIN raw r ON r.msg_rowid = m.rowid
+       WHERE m.chat_ref = ? ORDER BY m.ts ${order}, m.rowid ${order} LIMIT 1`,
+    );
+  const edges = { newest: edgeOf('DESC'), oldest: edgeOf('ASC') };
   const chatLabel = db.prepare('SELECT name FROM chats WHERE ref = ?').pluck();
   const contactLabel = db.prepare('SELECT COALESCE(name, notify) FROM contacts WHERE ref = ?').pluck();
   // A person's chat has no name of its own: the name they are saved under, or their number.
-  const nameOf = (ref) => contactLabel.get(ref) || (isPnUser(ref) ? `+${ref.split('@')[0]}` : ref.split('@')[0]);
-  function anchorOf(ref) {
-    const m = newestOf.get(ref);
+  const nameOf = (ref) => contactLabel.get(ref) || (isPnUser(toJid(ref)) ? `+${toJid(ref).split('@')[0]}` : toJid(ref).split('@')[0]);
+  function anchorOf(ref, edge) {
+    const m = edges[edge].get(ref);
     if (!m) return null;
-    let key = { remoteJid: ref, id: m.id, fromMe: !!m.fromMe };
+    let key = { remoteJid: toJid(ref), id: m.id, fromMe: !!m.fromMe };
     try {
       // As it arrived: a chat may be known to the phone under a hidden id.
       if (m.proto) key = proto.WebMessageInfo.decode(m.proto).key ?? key;
@@ -371,45 +392,79 @@ export function startService({
       asking = null;
     }
   }
-  async function recover({ days, chats: only = null } = {}, progress = () => {}) {
+  async function recover({ days, chats: named = null } = {}, progress = () => {}) {
     if (!sock || getMeta(db).state !== 'connected') throw new Error('WhatsApp is not connected right now');
+    const only = named?.map((c) => (c.startsWith('wa:') ? c : toRef(c))) ?? null; // (as left before ids were marked)
     const from = now() - days * 86400;
     const w = waSettings();
     const chats = db
       .prepare(
-        `SELECT chat_ref AS ref, MAX(ts) AS newest FROM messages WHERE ${sourceSql('chat_ref', 'wa')} GROUP BY chat_ref HAVING newest >= ? ORDER BY newest DESC`,
+        `SELECT chat_ref AS ref, MAX(ts) AS newest, MIN(ts) AS oldest FROM messages WHERE ${sourceSql('chat_ref', 'wa')} GROUP BY chat_ref ORDER BY newest DESC`,
       )
-      .all(from)
-      .filter((c) => (!only || only.includes(c.ref)) && (w.mode !== 'selected' || (w.chats ?? []).includes(c.ref)));
-    const out = { days, chats: chats.length, looked: 0, asked: 0, recovered: 0, silent: 0, per: [] };
-    let quiet = 0; // questions in a row that got no answer
+      .all()
+      .filter((c) => (!only || only.includes(c.ref)) && collects(c.ref, w))
+      // (One that reaches back far enough, and is not named, has nothing to ask about.)
+      .filter((c) => (only ? c.newest >= from : c.oldest > from));
+    const out = { days, chats: chats.length, looked: 0, asked: 0, recovered: 0, silent: 0, begin: 0, per: [] };
+    // Back from `anchor` to the day asked for. → { got, nothingOlder, reached } or null for no answer at all
+    const walk = async (ref, anchor) => {
+      let got = 0;
+      for (let page = 0; anchor && anchor.ts >= from && page < MAX_PAGES && !stopped; page++) {
+        if (out.asked) await sleep(askGapMs);
+        const a = await ask(ref, anchor);
+        out.asked++;
+        if (!a) {
+          // No answer to the first question of all: the phone is not there. Later on, a chat
+          // that has nothing older may simply not be answered.
+          if (out.asked === 1) throw new Error('your phone did not answer: it has to be switched on and connected');
+          return page ? { got, nothingOlder: true } : null;
+        }
+        got += a.stored;
+        if (!a.got || !a.oldest || a.oldest.ts > anchor.ts || a.oldest.key.id === anchor.key.id) return { got, nothingOlder: true };
+        anchor = a.oldest;
+      }
+      return { got, nothingOlder: false, reached: !!anchor && anchor.ts < from };
+    };
     reach = from;
     try {
+      // Whether the phone answers at all, asked first about what it surely has: what is older
+      // than the newest of the chat with the most kept. (Asked about what is older than the
+      // oldest of a chat that begins there, a phone may say nothing.)
+      if (!only && chats.length) {
+        const probe = db
+          .prepare(
+            `SELECT chat_ref FROM messages WHERE ${sourceSql('chat_ref', 'wa')} GROUP BY chat_ref HAVING COUNT(*) > 1 ORDER BY COUNT(*) DESC LIMIT 1`,
+          )
+          .pluck()
+          .get();
+        const anchor = probe && anchorOf(probe, 'newest');
+        if (anchor) {
+          const a = await ask(probe, anchor);
+          out.asked++;
+          if (!a) throw new Error('your phone did not answer: it has to be switched on and connected');
+          out.recovered += a.stored;
+        }
+      }
       for (const c of chats) {
         if (stopped) break;
-        let anchor = anchorOf(c.ref);
         let got = 0;
-        for (let page = 0; anchor && anchor.ts >= from && page < MAX_PAGES && !stopped; page++) {
-          const a = await ask(c.ref, anchor);
-          out.asked++;
-          if (!a) {
-            // No answer to the first question of all: the phone is not there. Later on, a chat
-            // that has nothing older may simply not be answered; several in a row is the phone gone.
-            if (++quiet >= 3 || out.asked === 1) throw new Error('your phone did not answer: it has to be switched on and connected');
-            if (!page) out.silent++;
-            break;
+        // What is missing between the newest and the oldest kept, for a chat named.
+        const through = only ? await walk(c.ref, anchorOf(c.ref, 'newest')) : null;
+        got += through?.got ?? 0;
+        // Older than the oldest kept, if that is not far enough back (and not just looked past).
+        const oldest = anchorOf(c.ref, 'oldest');
+        if (oldest && oldest.ts > from && !through?.reached) {
+          const r = await walk(c.ref, oldest);
+          if (!r) out.silent++;
+          else {
+            got += r.got;
+            if (r.nothingOlder) out.begin++;
           }
-          quiet = 0;
-          got += a.stored;
-          if (!a.got || !a.oldest || a.oldest.ts > anchor.ts || a.oldest.key.id === anchor.key.id) break; // nothing older
-          anchor = a.oldest;
-          await sleep(askGapMs);
         }
         out.looked++;
         out.recovered += got;
         if (got) out.per.push({ chat: chatLabel.get(c.ref) || nameOf(c.ref), recovered: got });
         progress(out);
-        await sleep(askGapMs);
       }
     } finally {
       reach = null;
@@ -427,6 +482,7 @@ export function startService({
     source: 'wa',
     label: 'WhatsApp',
     recover,
+    say,
     log,
     ready: () => !stopped && getMeta(db).state === 'connected',
   });

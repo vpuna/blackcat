@@ -99,7 +99,8 @@ These rules are not a sandbox. A plugin runs in the same process and can open an
 | `services` | See [Services](#services). |
 | `chat` | See [Chat](#chat). |
 | `channel` | See [Channels](#channels). |
-| `engine`, `checks`, `readerChecks` | See [Engines](#engines). |
+| `engine`, `trials`, `readerTrials` | See [Engines](#engines). |
+| `checks` | Checks you offer, ready to add: `[{ id, name, summary, run, measure, limit, context, every }]`, or a function of ctx returning them (only what is set up, by its real names). Nothing runs until the owner adds one (`bc check add --from <plugin>:<id>`, their options replacing yours); it is then a check like any other. |
 | `agent` | See [Agent notes](#agent-notes). |
 | `source` | See [Message sources](#message-sources). |
 | `fileReaders` | See [Reading files](#reading-files). |
@@ -195,8 +196,8 @@ Use these words, and only for these purposes. `test/conventions.test.js` holds b
 | To | Call it | Notes |
 |---|---|---|
 | connect the one system a plugin talks to | `setup` | Run again to change anything. `bc plugin enable` points to it. |
-| connect one of several | `add`, with `remove <name>` and `list` | SSH machines, mail accounts, calendars |
-| link a personal account | `pair`, `unpair` | WhatsApp, Telegram |
+| connect one of several | `add`, with `remove <name>` and `list` | SSH machines, mail accounts, calendars. A command called `add` always comes with `list` and `remove`, whatever it adds. |
+| link a personal account, or a device | `pair`, `unpair` | WhatsApp, Telegram, an Android phone |
 | change preferences | `setup` | quiet hours, alert limits, which model |
 | see one thing | `show <id>` | |
 | look something up | `find <text>` | |
@@ -306,18 +307,40 @@ Every hook receives `ctx`.
 | `ctx.store.get(k)` / `.set(k, v)` / `.delete(k)` / `.keys()` / `.update(k, fn)` | State that changes with use: what you last fetched, where you got to. Any JSON value under a key, in blackcat's database, private to your plugin. `update` is atomic. |
 | `ctx.dataDir` | A private folder for files (keys, a database of your own). |
 | `ctx.command(plugin, command, input)` | Run a command of a plugin in `uses`. Returns `{ text, data }`. |
-| `ctx.exec(cmd, args, { timeoutMs, input })` | Run a program without a shell. Never throws. Returns `{ code, stdout, stderr, timedOut }`. The default timeout is one minute. |
-| `ctx.notify(text)` | Message the owner on the channel in use. For jobs and alerts. Returns true if sent. |
+| `ctx.exec(cmd, args, { timeoutMs, input })` | Run a program without a shell. Never throws. Returns `{ code, stdout, stderr, timedOut }`, the output as text. The default timeout is one minute. For a program that writes binary data (a picture), have it write a file. |
+| `ctx.notify(text, { picture })` | Message the owner on the channel in use. For jobs and alerts. `picture` is a file sent with it, from a folder in your `agent.readDirs`. Returns true if sent. |
+| `ctx.progress(text)` | One message to the owner that shows how work is going, changed as it goes. Returns `{ update(text), done(text) }`, or null when there is nowhere to send it. Where messages cannot be changed, only the first and the last are sent. |
+| `ctx.askOwner({ text, choices, picture, expiresIn })` | Ask the owner and wait for the answer. See [Asking the owner](#asking-the-owner). |
 | `ctx.log(msg)` | Write to the service log (`bc logs`). Never log secrets. |
 | `ctx.ask(system, input, { model })` | Ask a model one question with no tools. Returns text. |
 | `ctx.reader(job, { values, input, schema, also })` | Ask a reader defined in `readers/<job>.md`. `also` is text added after the file's instructions. See [Readers](#readers). |
 | `ctx.fail(msg)` | Stop with a message for the person. |
 | `ctx.plugin` | Your plugin's name. |
 | `ctx.caller` | `'owner'`, `'agent'` or `'job'`. |
-| `ctx.surface` | `'terminal'`, `'chat'` or `'job'`: where the result is read. `'chat'` is the owner's chat on any channel. |
+| `ctx.surface` | `'terminal'`, `'chat'` or `'job'`: where the result is read. `'chat'` is the owner's chat on any channel: a command typed there, or run by the agent for it. |
 | `ctx.api` | Everything in `src/api.js`: `ctx.api.shell(…)`, `ctx.api.ymd()`. |
 
 The agent can open nothing under `data/` except `data/<name>-media/`, and only if you declare that folder with `agent: { readDirs: () => [it] }`.
+
+### Asking the owner
+
+A command, job or service that needs the owner's word in the middle of its work asks with `ctx.askOwner`:
+
+```js
+const a = await ctx.askOwner({
+  text: 'Book this ride? Price: €24 - 31',
+  picture: shot, // optional: a file in a folder you declare in agent.readDirs
+  choices: ['✅ Book it', '✖ Cancel'], // 2 to 4, up to 30 characters each; the last one does nothing
+  expiresIn: 120, // seconds, 30 to 600; 120 if left out
+});
+if (a.answer === '✅ Book it') …
+```
+
+It returns `{ answer, how, why }`. `answer` is the choice tapped, or null. `how` is `'answered'`, `'expired'` or `'unasked'`, with `why` when it could not ask (no channel in use, the agent service not running).
+
+The question goes to the owner's chat on the channel in use, with buttons. When the owner ran the command in a terminal on this machine, it is asked there instead, with the cursor on the last choice. Only the owner's tap answers it, once, and not after it expires; a message they write instead ends it unanswered (`how: 'answered'`, `answer: null`), as Cancel would. There is no "always": the same question is asked every time. Each question and its outcome are on the activity record.
+
+Use it where the answer depends on something only known at that moment (a price, what a camera shows). For permission to run a command at all, use [access levels](#access-levels).
 
 ## Storing data
 
@@ -400,7 +423,7 @@ The core calls these on every plugin that defines them.
 |---|---|---|
 | `names: (ctx, address) => 'Ana Silva'` | a plugin calls `ctx.api.nameOf(address)` or `personLabel({ name, email })` | a name you know for the address |
 | `agenda: (ctx, { from, to }) => [...]` | the briefing is built | dated items, copied onto "Things I need to do": `{ id, source, sourceName, title, start, end, allDay, day, lastDay, location, from }`. `source` is the calendar's key, `sourceName` its current name, `from` the organiser. |
-| `briefing: (ctx) => ({ problems: ['html'], fine: 'html', buttons: [{ label, id }] })` | the daily briefing is built | what is wrong, a line for when all is well, and optional buttons to act on what is wrong |
+| `briefing: (ctx) => ({ problems: ['html'], fine: 'html', buttons: [{ label, id }], note: 'html' })` | the daily briefing is built | what is wrong, a line for when all is well, optional buttons to act on what is wrong, and a note shown at the end every time |
 | `waiting: async (ctx) => ({ heading, lines: [{ text, note }] })` | the owner opens the terminal chat and no channel is in use | what you could not send, such as reminders that came due, or `null`. Handed over once. |
 | `inboxKeeps: async (ctx) => [paths]` | files the owner sent are tidied (they are kept a month) | the ones you still need |
 | `ownerMoved: async (ctx, { from, to }) => n` | another channel is put in use | move what you were going to send; return how many |
@@ -542,6 +565,7 @@ All plugins share one space of action ids. Start yours with your plugin's name (
 | `ui.command(name, (c, next) => …)` | The owner typed `/name`. Several handlers may answer one name; `next()` passes it on. |
 | `ui.action(pattern, (c) => …)` | The owner tapped a button whose id matches a string or regular expression. |
 | `ui.text((c, next) => …)` | Any other text, before the agent. Call `next()` unless it is yours. |
+| `ui.heard((ev) => …)` | Told of every message the owner writes (not a number answering a list of choices), before anyone takes it. It cannot take the message: use it to give up on something that waited for a tap. |
 | `ui.send(chat, text, opts)` | Send unprompted. Returns a reference for `ui.edit(chat, ref, text, opts)`, `ui.setActions(chat, ref, actions \| null)` and `ui.remove(chat, ref)`. Text longer than the channel takes is split at line ends, with the actions under the last part. Formatted text that long goes as plain text, so keep formatted messages under the limit. |
 | `ui.sendFile(chat, path, { caption })` | Send a file from a folder the agent may read. Returns false if it may not be sent. |
 | `opts` | `{ html: true, actions: actions().add(label, id).row()…, preview: false, what: 'the weekly report', dueTs }`. `what` names, for the activity record, what you send from `tick` (never the text itself). `dueTs` (seconds) is when it was meant to go. |
@@ -662,14 +686,14 @@ Everything a plugin may import from `src/api.js` (or reach as `ctx.api` outside 
 | Text and sizes | `size`, `esc`, `errMsg`, `chunks`, `plain`, `explainErrors`, `plural(n, one, many)` ("3 messages"), `took(ms)` ("4.2s"), `count(n)` ("36.0k"), `usd(x)` ("$0.13") |
 | Errors | `PluginError` |
 | Paths a person wrote | `expandHome`, `resolveHome` |
-| Running programs | `shell`, and `ctx.exec`. `withoutSecrets(env, keep)` removes keys and logins from an environment before a program gets it. `classify`, `commandAccess` and `COMMAND_MODES` say whether a shell command only looks (`'read'`, `'sensitive'`, `'change'`). `touchesSecrets` says whether it would show blackcat's private files. |
+| Running programs | `shell`, and `ctx.exec`. `withoutSecrets(env, keep)` removes keys and logins from an environment before a program gets it. `classify`, `commandAccess` and `COMMAND_MODES` say whether a shell command only looks (`'read'`, `'sensitive'`, `'change'`); for a machine of another kind, pass its own looking programs and its personal patterns (`classify(cmd, { programs, sensitive })`, as the android plugin does for a device's shell). `touchesSecrets` says whether it would show blackcat's private files. |
 | People | `nameOf`, `personLabel` |
 | Named accounts (mail accounts, calendars, machines) | Keep each under a key that never changes and file everything for it under that key, so the owner can rename it. `accountNameQuestions` are the name questions for an `add` form; `chosenAccountName` gives `{ name, key, replacing }` from the answers. `renameAccount` for a `rename` command. `accountName`, `accountKey`, `accountNames`, `freeAccountKey` convert between names and keys. `chatRenamed(ref, name)` when an account's chat in the archive has a new name; `mentioning(regex)` lists the shortcuts, checks and permissions that still use an old name. |
 | The chat | `actions`, `refreshMenu`, `chatCommands`, `directCommands`, `sendable`, `hasBot`, `notifyOwner` |
 | Reading the archive | `openArchive`, `searchMessages`, `readThread`, `listChats`, `countChats`, `archiveStats`, `formatMessage`, `archiveMeta`, `sourceSql`, `QueryError`, `await semantic()` for search by meaning |
 | Message files | `mediaPaths`, `downloadedPath`, `MEDIA_DIR`, `ARCHIVE_DB`, `reading`, `setReading` |
 | Writing the archive (a source) | `openArchiveForWriting`, `archiveStatements`, `messageRow`, `mediaRow`, `setArchiveMeta`, `ownRefs` |
-| Going back over a source's last days (`bc wa recover`) | `recoverCommand`, `recoveredText`, `serveRecovery`, `workTable`, `MAX_DAYS` |
+| Going back over a source's days of history (`bc wa recover`); work whose end the owner is sent | `recoverCommand`, `recoveredText`, `serveRecovery`, `workTable`, `leaveWork` |
 | A database of your own | `openSqlite`, `upgrade`, `withDb`, `hasTable`, `hasColumn`, `addColumns` |
 | A model with no tools | `askModel`; `ctx.ask` and `ctx.reader` are the same with your plugin's name on them |
 | The activity record | `recordActivity`, `serviceConnected`, `askedBy`, `asAsked`. See [The activity record](#the-activity-record). |
@@ -951,17 +975,17 @@ The core handles the rest. The chat and the readers each have their own engine, 
 
 The core side is in `src/agent/policy.js` (every call), `src/agent/brain.js` (conversations and `on.request`), `src/agent/oneshot.js` (readers), `src/tools/` (the tool server) and `src/engines/registry.js` (roles and `TOOLS`).
 
-### Requests for the engine check
+### Trials: requests for the engine check
 
 Any plugin, not only an engine, can supply these. `bc engine check` gives the model requests the owner might make and looks at which commands it asks to run. Each plugin supplies requests for its own commands:
 
 ```js
-checks: [
+trials: [
   { say: 'what reminders do i have', expect: /blackcat remind list\b/ },
   { say: 'whats 17 times 23', never: /./ },            // nothing to look up: no command at all
 ],
 // or a function, for requests that apply only once the plugin is set up:
-checks: (ctx) => (Object.keys(hosts(ctx)).length ? [{ say: `how much disk is free on ${first}`, expect: … }] : []),
+trials: (ctx) => (Object.keys(hosts(ctx)).length ? [{ say: `how much disk is free on ${first}`, expect: … }] : []),
 ```
 
 `expect` is a pattern on a command line the agent should ask to run; `never` is one it must not. The check runs in a copy with none of your plugin's secrets, so a request is judged by what was asked for, not by whether it worked. Decide "set up" the same way your `agent.fill` does.
@@ -969,7 +993,7 @@ checks: (ctx) => (Object.keys(hosts(ctx)).length ? [{ say: `how much disk is fre
 A plugin with a [reader](#readers) can have it asked too, with its real instructions and a made-up input, and judge the answer:
 
 ```js
-readerChecks: () => [
+readerTrials: () => [
   {
     say: 'a long exchange is put in one short clause',     // shown in the report
     job: 'summary',                                       // readers/summary.md, as ctx.reader('summary', …) uses it
@@ -1002,6 +1026,6 @@ Before sharing a plugin:
 1. `bc plugin info <name>` shows every command with the access level you intend.
 2. `bc <name> --help` reads well.
 3. Each form command works in the terminal, with options, and in `/setup`. On a second run of `setup`, every question offers the current value and a saved secret can be kept.
-4. The commands use the standard words. See [Naming](#naming).
+4. The commands use the standard words. See [Naming](#naming). For a bundled plugin, run `npm run docs:commands` after changing its commands: `docs/commands.md` is made from them, and a test compares the two.
 5. With the plugin enabled, ask the agent to use it. Then ask for something it should not be able to do (an `owner` command, a change to something read-only) and check that it is refused.
 6. No command gives the agent more than it needs: large results can be narrowed.

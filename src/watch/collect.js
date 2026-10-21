@@ -43,6 +43,7 @@ import { LIST, TIDY, clause } from './shape.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withDb } from '../db.js';
+import { visible } from '../archive/db.js';
 import { listening, readSince, reads as fileIsRead, wordsOf } from '../archive/reading.js';
 
 const BATCH = 60; // messages per call to the model
@@ -74,7 +75,7 @@ export const reader = (w, job, { values, input, schema }) =>
 // and Telegram's Saved Messages (recorded by the Telegram source as tg_me).
 function selfRefs(archive) {
   const meta = getMeta(archive);
-  return [meta.me ? `${meta.me.split(/[:@]/)[0]}@s.whatsapp.net` : null, meta.tg_me ?? null].filter(Boolean);
+  return [meta.me ? `wa:${meta.me.split(/[:@]/)[0]}@s.whatsapp.net` : null, meta.tg_me ?? null].filter(Boolean);
 }
 
 // Messages this watch covers (the caller filters out the ones already examined).
@@ -130,7 +131,7 @@ function candidates(archive, w, covered = []) {
       ${SENDER_LABEL} AS sender,
       d.dl_type, d.mimetype, d.file_name AS fileName, d.seconds, m.heard
     FROM messages m LEFT JOIN chats ch ON ch.ref = m.chat_ref LEFT JOIN media d ON d.msg_rowid = m.rowid
-    WHERE m.rowid > @rowid AND m.deleted = 0 AND (${parts.join(' OR ')})
+    WHERE m.rowid > @rowid AND m.deleted = 0 AND ${visible('m.account')} AND (${parts.join(' OR ')})
       AND (${s.linksOnly ? 'm.link_url IS NOT NULL' : "(m.text IS NOT NULL AND m.text != '')"}${hasFile})
     ORDER BY m.rowid`,
     )

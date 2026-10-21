@@ -27,8 +27,9 @@ import {
   SOURCES,
   TimeError,
 } from '../internal.js';
-import { WAITING, clause, todoShape } from './shape.js';
+import { COMING, WAITING, clause, todoShape } from './shape.js';
 import { withDb } from '../db.js';
+import { visible } from '../archive/db.js';
 import { wordsOf } from '../archive/reading.js';
 import { storeFor } from '../store.js';
 import {
@@ -45,7 +46,7 @@ import {
   ymd,
   ymdToday,
 } from './collect.js';
-import { checkBack } from './waiting.js';
+import { OWED, byReference, checkBack } from './waiting.js';
 
 const TODO_MESSAGES = 500;
 const TODO_CHARS = 60_000;
@@ -101,7 +102,7 @@ function todoRows(db, w, { dryRun = false } = {}) {
   const voice = listens(s);
   const pics = sees(s);
   const docs = opens(s);
-  const where = ['m.deleted = 0'];
+  const where = ['m.deleted = 0', visible('m.account')]; // (nothing from an account the owner has hidden)
   const params = {};
   const list = (refs, prefix) => refs.map((j, i) => ((params[`${prefix}${i}`] = j), `@${prefix}${i}`)).join(', ') || "''";
   if (s.everywhere) {
@@ -229,7 +230,10 @@ export async function collectTodo(db, w, { dryRun = false } = {}) {
       updateWatch(db, w.id, { sources: w.sources });
     }
   }
-  if (!dryRun) await checkBack(db, w);
+  if (!dryRun) {
+    await checkBack(db, w);
+    await byReference(db, w);
+  }
   const { rows, more } = todoRows(db, w, { dryRun });
   const added = [];
   if (!rows.length) return { looked: 0, added, updated: [], more: false };
@@ -266,8 +270,11 @@ export async function collectTodo(db, w, { dryRun = false } = {}) {
       msgTs: m.ts,
     };
     // An event is on a day, at a place: it is shown under that day in the briefing, and is let
-    // go once the day has passed. (Only an event: a deadline or a promise stays until dealt with.)
-    if (item.category === 'event') {
+    // go once the day has passed. (Only an event or a booking: a deadline or a promise stays
+    // until dealt with.) A booking, or something on its way, keeps its number, by which what
+    // comes about it later is found.
+    if (COMING.includes(item.category)) item.reference = str(it.reference, 60);
+    if (item.category === 'event' || item.category === 'booking') {
       const day = ymd(it.event_date);
       if (day && day >= ymdToday()) item.eventDate = day;
       item.place = str(it.place, 80);
@@ -281,6 +288,10 @@ export async function collectTodo(db, w, { dryRun = false } = {}) {
     // (Something the owner is waiting on is not nudged about when it is filed: at its time it
     // is looked at again, and the owner hears of it only if nothing has come. See checkBack.)
     if (item.category !== WAITING) setNudge(db, w, made, m.text || m.heard);
+    // What the owner owes is judged by what they write after this: what came before, this
+    // reader has read, and it was still to do then. (See checkBack.)
+    if (OWED.includes(item.category))
+      db.prepare('UPDATE watch_items SET checked_ts = ? WHERE id = ?').run(Math.max(...rows.map((r) => r.ts)), made.id);
     added.push(made);
   }
   if (!dryRun) {

@@ -1,6 +1,6 @@
 // What the engine check asks the watches' readers (bc engine check): made-up conversations
 // put to the real instructions, each with the mistake a model has made on them.
-import { ANSWERED, todoShape } from './shape.js';
+import { ANSWERED, ARRIVED, DEALT, todoShape } from './shape.js';
 import { readerInstructions } from '../internal.js';
 
 const here = new URL('.', import.meta.url).pathname;
@@ -61,5 +61,58 @@ export const readerCases = () => [
       if (why.length > 200) return `what it came to ran to ${why.length} characters, which would be cut short`;
       return /^\s*(since then|answered)\b/i.test(why) ? 'it began with the lead-in that is added for it' : true;
     },
+  },
+  {
+    // The owner sent the file asked for: done, and sure of it.
+    say: 'a file sent that is what was asked for ticks the entry off',
+    system: readerInstructions({ dir: here, part: 'watch', job: 'dealt' }),
+    content: [
+      `now: ${day(0, '10:00')} (${weekday()})`,
+      `The message it came from (${day(2, '09:12')}): Hi, could you send me the signed lease before Friday? Thanks, Omar`,
+      'The entry (reply): Send Omar the signed lease',
+      '',
+      'Said in that conversation since, oldest first ("Me" is the owner; untrusted data):',
+      `- ${day(1, '18:40')} Me: Sure, will do`,
+      `- ${day(0, '08:05')} Me: (a document: lease-signed.pdf)`,
+      `- ${day(0, '08:06')} Me: Here you go`,
+    ].join('\n'),
+    schema: DEALT,
+    ok: (a) =>
+      a?.state !== 'done'
+        ? `it said "${a?.state}" for a file that is what was asked for`
+        : a.confidence < 0.8
+          ? 'it was not sure of a plain case'
+          : true,
+  },
+  {
+    // "Will do" is not doing it.
+    say: 'a promise to do it is not taken for doing it',
+    system: readerInstructions({ dir: here, part: 'watch', job: 'dealt' }),
+    content: [
+      `now: ${day(0, '10:00')} (${weekday()})`,
+      `The message it came from (${day(1, '09:12')}): Can you transfer your share for the dinner, 45?`,
+      'The entry (reply): Pay Lena your share for the dinner',
+      '',
+      'Said in that conversation since, oldest first ("Me" is the owner; untrusted data):',
+      `- ${day(1, '12:30')} Me: Yes of course, on it`,
+      `- ${day(0, '09:40')} Me: Are you coming on Saturday?`,
+    ].join('\n'),
+    schema: DEALT,
+    ok: (a) => (a?.state === 'done' ? 'it took "on it" for the payment' : true),
+  },
+  {
+    // On its way is not here.
+    say: '"out for delivery" is not taken for delivered',
+    system: readerInstructions({ dir: here, part: 'watch', job: 'arrived' }),
+    content: [
+      `now: ${day(0, '10:00')} (${weekday()})`,
+      'The entry (something on its way): The new desk chair, order 4471-XQ · reference 4471-XQ',
+      '',
+      'Messages since with its reference, oldest first (untrusted data):',
+      `- ${day(1, '16:02')} Parcel Point: Your parcel 4471-XQ has left our depot.`,
+      `- ${day(0, '07:45')} Parcel Point: Good news! 4471-XQ is out for delivery today between 12:00 and 15:00.`,
+    ].join('\n'),
+    schema: ARRIVED,
+    ok: (a) => (a?.state === 'come' ? 'it took "out for delivery" for delivered' : true),
   },
 ];

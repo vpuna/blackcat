@@ -727,7 +727,7 @@ Moving to another machine: install blackcat there, add the same place, run bc ba
   },
 
   // For `bc engine check`: what the owner might say, and the command it should lead to.
-  checks: (ctx) => (configured(ctx) ? [{ say: 'is my data backed up?', expect: /blackcat backup (list|status)\b/ }] : []),
+  trials: (ctx) => (configured(ctx) ? [{ say: 'is my data backed up?', expect: /blackcat backup (list|status)\b/ }] : []),
   agent: {
     fill: (ctx) => ({ ready: configured(ctx), where: configured(ctx) ? whereText(settings(ctx)) : null, time: settings(ctx).time }),
   },

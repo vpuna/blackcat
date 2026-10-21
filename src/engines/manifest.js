@@ -162,7 +162,7 @@ they read. After a change, what was checked no longer stands: bc engine check
   },
 
   // For `bc engine check`: what the owner might say, and the command it should lead to.
-  checks: [
+  trials: [
     { say: 'which model do the background readers use, and has it been checked?', expect: /blackcat engine status\b/ },
     { say: 'whats 17 times 23', never: /./ }, // nothing to look up: no command at all
   ],

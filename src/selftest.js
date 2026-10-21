@@ -17,6 +17,7 @@ import path from 'node:path';
 import { DATA, CONFIG_FILE } from './config.js';
 import { openSqlite, withDb } from './db.js';
 import { loadPlugins, loaded, makeCtx } from './plugins/registry.js';
+import { asJson } from './util/when.js';
 
 // (The timer is what keeps the process alive for a probe that never answers; the command ends it itself when all are in.)
 const PROBE_MS = 30_000;
@@ -266,7 +267,7 @@ export async function command(names, opts) {
     ].join(' · '),
     data: { passed: out.passed, failed, slow },
   });
-  if (opts.json) console.log(JSON.stringify(out, null, 2));
+  if (opts.json) console.log(asJson(out));
   else {
     const mark = { ok: pc.green('✓'), failed: pc.red('✗'), skipped: pc.dim('·') };
     for (const p of out.parts) {

@@ -4,8 +4,12 @@ import { openRequestsDb } from './requests.js';
 import { chatRef, describe, displayName, kindOf, msgId } from './map.js';
 import { readSession, tgaSettings, wanted } from './paired.js';
 import {
+  accountFor,
+  archiveMeta as getMeta,
   archiveStatements,
+  claimRows,
   mediaPaths,
+  notifyOwner,
   now,
   openArchiveForWriting as openWrite,
   plural,
@@ -15,6 +19,7 @@ import {
   setArchiveMeta as setMeta,
   settingsChangedAt,
   sleep,
+  sourceSql,
 } from '../../src/api.js';
 
 // READ-ONLY by design: this file never sends a message, marks anything read, or
@@ -55,9 +60,13 @@ export async function startTgService({ client, log, events, utils, gapMs = 700 }
   const meRef = chatRef(String(me.id));
   // Rows stored before the rule above existed: the owner's own messages recorded as someone else's.
   db.prepare('UPDATE messages SET from_me = 1, sender_ref = NULL WHERE sender_ref = ? AND from_me = 0').run(meRef);
+  // The owner's account this is logged in as, by its Telegram user (which stays the same if
+  // the phone number changes): what it stores is that account's, and so is what came before.
+  const account = accountFor(db, { source: 'tg', identity: String(me.id) });
+  claimRows(db, account, (col) => sourceSql(col, 'tg'));
 
   const q = {
-    ...archiveStatements(db),
+    ...archiveStatements(db, () => account),
     info: db.prepare(`INSERT INTO chat_info (ref, kind, members, username) VALUES (@ref, @kind, @members, @username)
       ON CONFLICT (ref) DO UPDATE SET kind = excluded.kind, members = COALESCE(excluded.members, chat_info.members), username = COALESCE(excluded.username, chat_info.username)`),
     getInfo: db.prepare('SELECT * FROM chat_info WHERE ref = ?'),
@@ -206,6 +215,7 @@ export async function startTgService({ client, log, events, utils, gapMs = 700 }
       todo.push({ entity, chat });
     }
     let n = 0;
+    let added = 0;
     for (const { entity, chat } of todo) {
       if (stopped) return;
       setMeta(db, { tg_backfill: `${n}/${todo.length}` });
@@ -217,12 +227,28 @@ export async function startTgService({ client, log, events, utils, gapMs = 700 }
         batch.push(msg);
       }
       stored = keep(batch, chat);
+      added += stored;
       q.setCutoff.run(cutoff, chat.ref);
       n++;
       if (stored) log?.(`history: ${stored} messages from one chat (${n}/${todo.length})`);
       await sleep(700); // go gently: Telegram rate-limits history requests
     }
     setMeta(db, { tg_backfill: todo.length ? `done ${todo.length}/${todo.length}` : 'done', tg_backfill_at: now() });
+    if (todo.length)
+      recordActivity({
+        kind: 'event',
+        category: 'messages: tg',
+        ms: Date.now() - began,
+        summary: `history fetched ${s.days ? `${s.days} days back` : 'in full'} for ${plural(todo.length, 'chat')}: ${plural(added, 'message')} added`,
+        data: { chats: todo.length, added, days: s.days ?? null },
+      });
+    // The owner changed what is collected (bc tg account select, or pair) and is sent how the fetch went.
+    if (getMeta(db).tg_history_tell) {
+      setMeta(db, { tg_history_tell: null });
+      await notifyOwner(
+        `Telegram: history fetched ${s.days ? `${s.days} days back` : 'in full'}: ${todo.length ? `${plural(added, 'message')} added in ${plural(todo.length, 'chat')}` : 'every chat already had it'}.`,
+      ).catch(() => false);
+    }
 
     // What was missed: newest first, back to the newest message already kept. One that is
     // already there is not stored twice.
@@ -359,6 +385,12 @@ export async function startTgService({ client, log, events, utils, gapMs = 700 }
       await backfill();
     } catch (e) {
       log?.(`history fetch stopped: ${e.message}`);
+      // Said once; it is tried again within the hour, and how that ends is said too. (Not when
+      // the service is stopping: that is what stopped it.)
+      if (!stopped && getMeta(db).tg_history_tell === '1') {
+        setMeta(db, { tg_history_tell: 'failed' });
+        await notifyOwner(`Telegram: fetching history stopped (${e.message}). It is tried again within the hour.`).catch(() => false);
+      }
     } finally {
       busy = false;
       lookedAt = now();

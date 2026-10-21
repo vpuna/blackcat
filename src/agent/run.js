@@ -7,6 +7,7 @@ import { modelState } from '../engines/registry.js';
 import { supervisorState } from '../service/units.js';
 import { loadPlugins, loaded, makeCtx } from '../plugins/registry.js';
 import { installApprovals } from '../channels/approvals.js';
+import { installAsks } from '../channels/asks.js';
 import { chatCommands, directCommands } from '../channels/commands.js';
 import { desk, setCarrier, ui } from '../channels/desk.js';
 import { installDirect } from '../channels/direct.js';
@@ -59,6 +60,22 @@ async function runWithoutChannel() {
   log('a channel is now in use: starting it');
 }
 
+// After stopping, the process ends once nothing is left open. Should something still be open a
+// few seconds on (a connection being closed, a worker, a timer), what it is goes in the log and
+// the process ends itself, rather than being killed by the supervisor (which waits 15 seconds).
+const EXIT_AFTER_MS = 8000;
+function endSoon() {
+  setTimeout(() => {
+    const open = {};
+    for (const r of process.getActiveResourcesInfo?.() ?? []) open[r] = (open[r] ?? 0) + 1;
+    const said = Object.entries(open)
+      .map(([k, n]) => `${k}${n > 1 ? ` ×${n}` : ''}`)
+      .join(', ');
+    log(`still open ${EXIT_AFTER_MS / 1000}s after stopping: ${said || 'nothing known'}; ending now`);
+    process.exit(0);
+  }, EXIT_AFTER_MS).unref();
+}
+
 export async function run() {
   // Started by hand while blackcat is already running one: two would answer every message twice.
   if (!process.env.BLACKCAT_SERVICE && supervisorState()?.services?.agent?.state === 'running') {
@@ -89,6 +106,8 @@ export async function run() {
 
   // Everything the owner can do in the chat, on whichever channel this is.
   const approvals = installApprovals();
+  // A plugin's question to the owner mid-work (ctx.askOwner): sent from here, answered here.
+  const asks = installAsks();
   installSetup();
   // Plugins add their own screens and commands (reminders, watches, …).
   for (const p of loaded()) {
@@ -111,10 +130,12 @@ export async function run() {
   const stop = () => {
     scheduler?.stop();
     warm.stop();
+    asks.stop();
     approvals.cancel(null, '🚫 blackcat restarted, nothing was done');
     stopAll();
     stopReaders();
     carrier.stop();
+    endSoon();
   };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);

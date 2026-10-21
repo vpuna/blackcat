@@ -111,6 +111,14 @@ export function installApprovals() {
     await c.toast(can().edit ? { y: 'Allowed once', a: 'Always allowed', n: 'Not now', v: 'Never allowed' }[what] : undefined);
   });
 
+  // The owner wrote instead of tapping: what was waiting is not allowed, and the agent goes on
+  // to what they wrote, which comes next. (A turn is not left waiting on a button for minutes.)
+  ui.heard((ev) => {
+    for (const [id, p] of pending)
+      if (p.chatId === (ev.conversation ?? ev.chat))
+        finish(id, false, '✖ Not now: you wrote instead', 'the owner wrote a message instead of answering; it comes next');
+  });
+
   // /permissions: the standing answers, each with a button to take it back.
   const permissionsView = () => {
     const rules = listRules();

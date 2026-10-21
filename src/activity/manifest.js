@@ -110,7 +110,7 @@ export default {
     },
     problems: {
       summary:
-        'what looks wrong in the record, by plain rules (no model): the same thing failing again and again, a command refused by policy, a service that stopped by itself, an account that is not paired writing to the bot, a look that keeps taking in as much as it may, scheduled work costing or running far more than usual. The check "blackcat itself" runs it; it fails when something is found',
+        'what looks wrong in the record, by plain rules (no model): the same thing failing again and again, a command refused by policy, a service that stopped by itself, an account that is not paired writing to the bot, a look that keeps taking in as much as it may, scheduled work costing or running far more than usual. The check "blackcat health" runs it; it fails when something is found',
       access: 'allow',
       untrusted: false,
       run: async (_c, i) => (await cmd()).problems(i),
@@ -169,6 +169,9 @@ export default {
     },
   },
 
+  // In the daily briefing: what the model used yesterday, and the week before it.
+  briefing: async () => (await cmd()).forBriefing(),
+
   status: () => {
     const s = settings();
     if (!s.on) return 'off (bc activity setup)';
@@ -197,9 +200,10 @@ export default {
   },
 
   // For `bc engine check`: what the owner might say, and the command it should lead to.
-  checks: [
+  trials: [
     { say: 'what did you run to answer my last question', expect: /blackcat activity recent\b/ },
     { say: 'did my briefing go out this morning', expect: /blackcat activity recent\b.*--kind sent\b/ },
+    { say: 'what did the model cost yesterday, and on what?', expect: /blackcat activity usage\b/ },
     { say: 'what have i changed about what you are allowed to do this week', expect: /blackcat activity recent\b.*--kind owner\b/ },
   ],
 };

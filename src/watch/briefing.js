@@ -3,7 +3,7 @@
 // on asking (bc watch briefing --print).
 import { isCalendarItem, syncAgenda } from './agenda.js';
 import { isQuiet } from './lists.js';
-import { WAITING } from './shape.js';
+import { COMING, WAITING } from './shape.js';
 import { pendingNudge, wasNudged } from '../reminders/nudges.js';
 import { expirePast, listItems, listWatches, openWatchDb, sameAsText, setItemStatus } from './db.js';
 import { actions, errMsg, esc, hm, listReminders, loaded, log, makeCtx, ymd } from '../internal.js';
@@ -11,7 +11,8 @@ import { withDb } from '../db.js';
 import { dateLabel, numbered } from './chat.js';
 
 // What the other parts of blackcat, and plugins, have for the briefing: each may offer
-// `briefing` in its manifest, giving { problems: [html], fine: html | null, buttons?: [{ label, id }] }.
+// `briefing` in its manifest, giving { problems: [html], fine: html | null, buttons?: [{ label, id }],
+// note?: html } (a note is shown at the end, every time: what the model used).
 export async function fromOthers() {
   const out = [];
   for (const p of loaded()) {
@@ -89,7 +90,9 @@ export async function composeBriefing(db, chatId, { terminal = false } = {}) {
     const everything = watches.flatMap((w) => listItems(db, w.id, { status: 'new,kept' }));
     const waiting = everything.filter((i) => i.category === WAITING);
     const told = new Set(waiting.filter((i) => wasNudged(db, i.id) || pendingNudge(db, i.id)).map((i) => i.id));
-    const items = everything.filter((i) => i.category !== WAITING);
+    // (What is still to come, a booking or something on its way, is under "Coming up" too, not under a day.)
+    const items = everything.filter((i) => i.category !== WAITING && !COMING.includes(i.category));
+    const coming = everything.filter((i) => COMING.includes(i.category));
     // The day an item belongs to: its own date, or the day it is due to be nudged.
     const dayOf = (it) => it.event_date ?? (it.remind_ts ? ymd(it.remind_ts * 1000) : null);
     const now = Date.now();
@@ -126,8 +129,15 @@ export async function composeBriefing(db, chatId, { terminal = false } = {}) {
       for (const r of rows) {
         listed.push(r);
         const where = [r.place, r.area].filter(Boolean).join(', ');
-        const when =
-          r.category === WAITING
+        const when = COMING.includes(r.category)
+          ? ` · <i>${esc(
+              r.category === 'booking'
+                ? dateLabel(r.event_date ?? ymd(r.remind_ts * 1000))
+                : r.remind_ts
+                  ? `due ${dateLabel(ymd((r.remind_ts - 86400) * 1000))}`
+                  : 'on its way',
+            )}</i>${/^Moved: /.test(r.summary ?? '') ? ` · ${esc(r.summary.replace(/^Moved: /, 'moved: '))}` : ''}`
+          : r.category === WAITING
             ? ` · <i>${[
                 r.msg_ts ? `asked ${dateLabel(ymd(r.msg_ts * 1000))}` : null,
                 told.has(r.id)
@@ -170,15 +180,28 @@ export async function composeBriefing(db, chatId, { terminal = false } = {}) {
       items.filter((i) => dayOf(i) > tomorrow && dayOf(i) <= weekEnd).sort((a, b) => dayOf(a).localeCompare(dayOf(b))),
       own.filter((r) => r.status === 'pending' && ymd(r.due_ts * 1000) > tomorrow && ymd(r.due_ts * 1000) <= weekEnd),
     );
+    section(
+      'Coming up',
+      coming.filter((i) => (i.event_date ?? ymd((i.remind_ts ?? 0) * 1000)) <= ymd(now + 30 * 86400000)),
+    );
     section('Waiting on others', waiting);
-    // What was answered in the last day is said once here, since nothing else says it.
-    const answered = watches
-      .flatMap((w) => listItems(db, w.id, { status: 'done' }))
-      .filter((i) => i.category === WAITING && /^Answered: /.test(i.summary ?? '') && (i.checked_ts ?? 0) > now / 1000 - 86400);
+    // What was answered, or done, in the last day is said once here, since nothing else says
+    // it. What was done can be undone: it was ticked off by a reader, not by the owner.
+    const closed = watches.flatMap((w) => listItems(db, w.id, { status: 'done' })).filter((i) => (i.checked_ts ?? 0) > now / 1000 - 86400);
+    const answered = closed.filter((i) => i.category === WAITING && /^Answered: /.test(i.summary ?? ''));
     if (answered.length) {
       if (!waiting.length) out.push('', '<b>Waiting on others</b>');
       for (const i of answered)
         out.push(`✓ <i>${esc(i.title.replace(/^Waiting on /, ''))}</i> · ${esc(i.summary.replace(/^Answered: /, 'answered: '))}`);
+    }
+    const done = closed.filter((i) => i.category !== WAITING && /^(Done|Arrived|Cancelled): /.test(i.summary ?? ''));
+    if (done.length) {
+      out.push('', '<b>Done, by the look of it</b>');
+      for (const i of done)
+        out.push(
+          `✓ <i>${esc(i.title)}</i> · ${esc(i.summary.replace(/^(Done|Arrived|Cancelled): /, (_, k) => `${{ Done: 'done', Arrived: 'arrived', Cancelled: 'cancelled' }[k]}: `))}${terminal ? ` [item ${i.id}]` : ''}`,
+        );
+      if (terminal) out.push('Not done after all? bc watch item &lt;id&gt; keep');
     }
     // What's new, for the watches that report here rather than on a schedule of their own.
     const fresh = [];
@@ -207,12 +230,18 @@ export async function composeBriefing(db, chatId, { terminal = false } = {}) {
           : 'Tap a number to open it, and to mark it done, keep it or drop it.',
       );
 
+    const notes = said
+      .filter((x) => x.note)
+      .map((x) => `\n\n${x.note}`)
+      .join('');
     const kb = actions();
     numbered(kb, listed, (it) => (it.reminder ? `rm:${it.reminder.id}:o` : `wi:${it.id}:o`));
+    for (const i of done) kb.row().add(`↩ Not done: ${i.title.slice(0, 40)}`, `wi:${i.id}:k`);
     // And what the other parts offer to act on (a check that is not working: snooze it, say it is fixed).
     for (const b of said.flatMap((x) => x.buttons ?? [])) kb.row().add(b.label, b.id);
     return {
-      html: out.join('\n').slice(0, 4000),
+      // (The notes at the end are kept whole: what is cut, when it is too long, is the lists.)
+      html: [out.join('\n').slice(0, 4000 - notes.length), notes].join('').trim(),
       keyboard: kb,
       listed,
       // New items have now been reported: they stay on the list as "kept" until dealt with.

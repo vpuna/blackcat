@@ -7,6 +7,7 @@ import { about } from '../activity/command.js';
 import { ownerDid } from '../activity/log.js';
 import { load } from '../config.js';
 import { logo } from '../logo.js';
+import { asJson } from '../util/when.js';
 import { duration, gb, systemInfo } from '../system.js';
 import { sleep } from '../util/wait.js';
 import { UNIT, bootInstalled, hasSystemd, lingerEnabled, otherHome as bootOtherHome, removeUnit, systemctl, writeUnit } from './boot.js';
@@ -188,7 +189,7 @@ async function pluginsSummary() {
 export async function status(opts) {
   const st = await collect();
   if (opts.json) {
-    console.log(JSON.stringify(st, null, 2));
+    console.log(asJson(st));
     return;
   }
 

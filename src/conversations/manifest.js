@@ -122,5 +122,5 @@ export default {
   },
 
   // For `bc engine check`: what the owner might say, and the command it should lead to.
-  checks: [{ say: 'yesterday i asked you about the school trip and it took ages, why?', expect: /blackcat conversations find\b.*trip/i }],
+  trials: [{ say: 'yesterday i asked you about the school trip and it took ages, why?', expect: /blackcat conversations find\b.*trip/i }],
 };

@@ -260,7 +260,7 @@ test('a command at a terminal is one piece of work: what it did is recorded with
   fs.writeFileSync(flag, '');
   assert.equal(bc(['check', 'add', 'Never well', '--run', `test -e ${flag}`, '--every', '1h']).status, 0);
   assert.equal(bc(['check', 'add', 'Always well', '--run', 'true', '--every', '1h']).status, 0);
-  assert.equal(bc(['check', 'edit', 'blackcat itself', '--pause']).status, 0);
+  assert.equal(bc(['check', 'edit', 'blackcat health', '--pause']).status, 0);
   fs.rmSync(flag);
   clear();
   bc(['check', 'run']);

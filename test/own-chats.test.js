@@ -61,6 +61,16 @@ test("the archive's writer leaves those chats out, whatever source is writing: t
   });
 });
 
+test('Telegram: all chats with some left out, or only those picked', async () => {
+  const { wanted, describeTga } = await import('../plugins/tg/paired.js');
+  const all = { mode: 'all', include: { bots: true }, exclude: ['tg:500'], days: 30 };
+  assert.equal(wanted('tg:500', 'bot', 0, all), false, 'a chat left out');
+  assert.equal(wanted('tg:501', 'bot', 0, all), true, 'the other bots still');
+  assert.equal(wanted('tg:99', 'user', 0, all), true);
+  assert.equal(describeTga(all), 'private chats and groups plus bots, 1 left out, history 30 days back');
+  assert.equal(describeTga({ ...all, exclude: [] }), 'private chats and groups plus bots, history 30 days back');
+});
+
 test('the Telegram source never keeps or offers the bot, and asks the core, not the bot plugin', async () => {
   const { wanted, isOwn } = await import('../plugins/tg/paired.js');
   assert.equal(isOwn('tg:4242'), true);

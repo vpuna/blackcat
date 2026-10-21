@@ -57,7 +57,7 @@ const sent = () =>
         })
     : [];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const say = (text, from = 'me') => fs.appendFileSync(path.join(chan, 'in.jsonl'), `${JSON.stringify({ from, text })}\n`);
+const say = (text, from = 'me', at) => fs.appendFileSync(path.join(chan, 'in.jsonl'), `${JSON.stringify({ from, text, at })}\n`);
 // Say something (or do something) and collect what is sent next, once it has gone quiet.
 async function then(act, { until = () => true, ms = 20_000 } = {}) {
   const mark = sent().length;
@@ -104,6 +104,31 @@ test('a conversation, the built-in commands, and nobody but the owner', async ()
   const parts = await ask('long please');
   assert.ok(parts.length > 10 && parts.every((p) => p.length <= 500));
   assert.equal(parts.join('\n').split('\n').length, 90);
+});
+
+test('a message that arrives long after it was written is shown and asked about, not acted on', async () => {
+  const hourAgo = Math.floor(Date.now() / 1000) - 3600;
+  const [asked] = (await then(() => say('switch the heater on', 'me', hourAgo))).map((m) => m.text);
+  assert.match(
+    asked,
+    /^⏸ You sent this (today|yesterday) \d\d:\d\d, while I was away, so I haven't acted on it:\n“switch the heater on”\n\n1\. ▶️ Do it now\n2\. Leave it\n/,
+  );
+  // nothing went to the agent until it was asked for
+  const done = await then(() => say('1'), { until: (m) => m.text === 'echo: switch the heater on' });
+  assert.ok(done.some((m) => /▶️ Done now$/.test(m.text ?? '')));
+  // left: nothing is done
+  await then(() => say('turn the lights off', 'me', hourAgo), { until: (m) => /Leave it/.test(m.text ?? '') });
+  const left = await then(() => say('2'), { until: (m) => /✖ Left$/.test(m.text ?? '') });
+  assert.ok(!left.some((m) => /echo:/.test(m.text ?? '')));
+  // a few minutes late is still acted on
+  assert.deepEqual(await ask('/ping'), ['pong 🏓']);
+  const recent = await then(() => say('hello again', 'me', Math.floor(Date.now() / 1000) - 120), {
+    until: (m) => /echo/.test(m.text ?? ''),
+  });
+  assert.deepEqual(
+    recent.map((m) => m.text),
+    ['echo: hello again'],
+  );
 });
 
 test('a reminder arrives with its choices as a numbered list, and a number answers', async () => {

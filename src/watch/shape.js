@@ -26,6 +26,10 @@ export const FIELDS = {
     description: 'When the owner should be nudged about it, local time, as YYYY-MM-DD HH:MM.',
   },
   confidence: { type: 'number', minimum: 0, maximum: 1, description: 'How sure you are, from 0 to 1.' },
+  reference: {
+    type: ['string', 'null'],
+    description: 'Its booking, order or tracking number, exactly as written in the message, if it has one.',
+  },
   existing_id: {
     type: ['integer', 'null'],
     description: 'Only for an update to an entry already on the list: its #id, as a number. Leave out for a new thing.',
@@ -52,18 +56,22 @@ export const LIST = listOf({
 
 // "Things I need to do": what it is, of which kind, and when to nudge. An event also says the
 // day it is on and where, like an entry on any other list.
-export const TODO_KINDS = ['note to self', 'event', 'commitment', 'reply', 'waiting', 'deadline', 'other'];
+export const TODO_KINDS = ['note to self', 'event', 'commitment', 'reply', 'waiting', 'deadline', 'booking', 'expected', 'other'];
+// What is still to come: a booking (a flight, a stay, a ticket), and something the owner was
+// told will arrive (a parcel, a refund). In the briefing under "Coming up"; found again by its reference.
+export const COMING = ['booking', 'expected'];
 // What the owner is waiting on somebody else for: kept quietly until its time, then looked at again.
 export const WAITING = 'waiting';
 export const todoShape = (max) =>
   listOf(
     {
-      properties: pick(['message_id', 'title', 'category', 'summary', 'nudge_at', 'event_date', 'place', 'confidence'], {
+      properties: pick(['message_id', 'title', 'category', 'summary', 'nudge_at', 'event_date', 'place', 'reference', 'confidence'], {
         category: { enum: TODO_KINDS, description: 'Which kind of thing it is.' },
         summary: { type: 'string', description: 'One short clause: why it is there.' },
         nudge_at: { type: 'string' },
-        event_date: { description: 'For an event only: the day it is on, as YYYY-MM-DD.' },
-        place: { description: 'For an event only: where it is, if the message says.' },
+        event_date: { description: 'For an event or a booking only: the day it is on, as YYYY-MM-DD.' },
+        place: { description: 'For an event or a booking only: where it is, if the message says.' },
+        reference: { description: 'For a booking or something expected only: its booking, order or tracking number, exactly as written.' },
       }),
       required: ['message_id', 'title', 'category', 'nudge_at', 'confidence'],
     },
@@ -77,7 +85,7 @@ export function clause(v, max = 200) {
   let s = v
     .replace(/\s+/g, ' ')
     .trim()
-    .replace(/^(since then|answered)\s*[:,]\s*/i, '');
+    .replace(/^(since then|answered|done)\s*[:,]\s*/i, '');
   if (!s || s.toLowerCase() === 'null') return null;
   if (s.length <= max) return s;
   s = s.slice(0, max - 1);
@@ -107,6 +115,46 @@ export const TIDY = {
         },
       },
     },
+  },
+};
+
+// A message with a booking's or an order's number in it: has it come, moved, or been cancelled?
+export const ARRIVED = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['state', 'date', 'why'],
+  properties: {
+    state: {
+      enum: ['come', 'moved', 'cancelled', 'nothing'],
+      description:
+        'come: what was expected has arrived. moved: it is now for another day. cancelled: it will not happen. nothing: none of these.',
+    },
+    date: { type: ['string', 'null'], pattern: DAY, description: 'Only for "moved": the new day, as YYYY-MM-DD.' },
+    why: { type: 'string', description: 'One short clause, under 150 characters: what the message said, with the day.' },
+  },
+};
+
+// Looking again at something the owner owes (an answer, a promise, something due): have they done it?
+export const DEALT = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['state', 'by', 'why', 'confidence'],
+  properties: {
+    state: {
+      enum: ['done', 'later', 'not done'],
+      description:
+        'done: the owner plainly did it, or said they will not. later: they named a later time for it. not done: neither, or you cannot tell.',
+    },
+    by: {
+      type: ['string', 'null'],
+      description: 'Only for "later": the time named, as YYYY-MM-DD HH:MM (18:00 when only a day was named).',
+    },
+    why: {
+      type: 'string',
+      description:
+        'One short clause, under 150 characters: what settled it, with when, or why it is still open. Do not begin it with "Done".',
+    },
+    confidence: { type: 'number', description: 'How sure you are, from 0 to 1.' },
   },
 };
 

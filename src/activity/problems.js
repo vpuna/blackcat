@@ -1,5 +1,5 @@
 // What looks wrong in the activity record, by plain rules: no model is asked. The built-in
-// check "blackcat itself" runs `bc activity problems` on a schedule; each problem becomes one
+// check "blackcat health" runs `bc activity problems` on a schedule; each problem becomes one
 // of its findings, with a key that stays the same while it lasts.
 //
 // Each rule looks at the last day, and some compare it with the week before. What the owner
@@ -7,7 +7,7 @@
 // Each problem says when its latest sign was (`last`): told it is fixed, the check lets go of
 // what came before that.
 import { withDb } from '../db.js';
-import { openActivityDb } from './log.js';
+import { dayOf, openActivityDb } from './log.js';
 
 const DAY = 86400;
 // Rules, and how far each goes before it says something.
@@ -144,12 +144,11 @@ export function findProblems(db, nowS, { from = 0 } = {}) {
       });
   }
 
-  // What blackcat does by itself, against the seven days before: cost, cost per call, how
-  // often. Compared with a usual day (the middle one) and, for the cost of a call, with the
+  // What blackcat does by itself, against the seven days before: cost, cost per call. Compared with a usual day (the middle one) and, for the cost of a call, with the
   // cheapest day, so that a cost creeping up day by day is still found, and does not come and
   // go with the hour.
   // (Only scheduled work: what was asked for in a chat or at a terminal was someone's choice.)
-  const MINE = `${NOT_MINE} AND surface = 'job' AND (kind = 'model' OR (kind IN ('job', 'event') AND lead = 1))`;
+  const MINE = `${NOT_MINE} AND surface = 'job' AND kind = 'model'`;
   const day = all(
     `SELECT category, kind, COUNT(*) AS n, SUM(COALESCE(cost, 0)) AS cost, MAX(ts) AS last FROM activity a
       WHERE ts > ? AND ts <= ? AND ${MINE} GROUP BY category, kind`,
@@ -183,13 +182,43 @@ export function findProblems(db, nowS, { from = 0 } = {}) {
           title: `${d.category} cost ${money(d.cost)} in the last day, against ${money(usual)} on a usual day before (${money(each)} a call, was ${money(cheapest)} at least)`,
           last: d.last,
         });
-    } else {
+    }
+  }
+
+  // How often scheduled work ran: from the daily totals, which count every run (one that
+  // found nothing to do is counted there, not listed: a check that is not working is listed
+  // each time, and would seem to run more), for yesterday against the seven days before.
+  // What is scheduled work is told by the record: what a schedule set off (not a message
+  // coming in, which is how many were sent).
+  const midnight = new Date(nowS * 1000).setHours(0, 0, 0, 0) / 1000;
+  if (from < midnight) {
+    const scheduled = new Set(
+      all(
+        `SELECT DISTINCT kind, category FROM activity a WHERE ts > ? AND ts < ? AND ${NOT_MINE} AND surface = 'job' AND kind IN ('job', 'event') AND lead = 1`,
+        midnight - 8 * DAY,
+        midnight,
+      ).map((r) => `${r.kind}\n${r.category}`),
+    );
+    const runs = Map.groupBy(
+      all(
+        `SELECT category, kind, day, SUM(n) AS n FROM activity_daily
+          WHERE day >= ? AND day < ? AND kind IN ('job', 'event') AND who = 'blackcat' GROUP BY category, kind, day`,
+        dayOf(midnight - 8 * DAY),
+        dayOf(midnight),
+      ).filter((r) => scheduled.has(`${r.kind}\n${r.category}`)),
+      (r) => `${r.kind}\n${r.category}`,
+    );
+    const yesterday = dayOf(midnight - DAY);
+    for (const rows of runs.values()) {
+      const d = rows.find((r) => r.day === yesterday);
+      const before = rows.filter((r) => r !== d);
+      if (!d || before.length < 3) continue;
       const usual = middle(before.map((x) => x.n));
       if (d.n >= RULES.often.times * usual && d.n >= usual + RULES.often.least)
         out.push({
           key: `often-${slug(d.category)}`,
-          title: `${d.category} ran ${d.n} times in the last day, against ${usual} on a usual day before`,
-          last: d.last,
+          title: `${d.category} ran ${d.n} times yesterday, against ${usual} on a usual day before`,
+          last: midnight,
         });
     }
   }

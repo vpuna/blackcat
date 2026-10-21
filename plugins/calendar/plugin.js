@@ -19,7 +19,7 @@ import {
   ymd,
 } from '../../src/api.js';
 
-const BACK_DAYS = 7;
+const BACK_DAYS = 182; // about six months of past events
 const AHEAD_DAYS = 120;
 const SYNC_EVERY = '30m';
 const FETCH_TIMEOUT_MS = 30_000;
@@ -94,8 +94,8 @@ export const fingerprint = (text) =>
     .digest('hex');
 
 // What is read from an event. Raised when more is read (2: who it is from and with), so that
-// a calendar copied before is read again though it has not changed.
-const READS = 2;
+// a calendar copied before is read again though it has not changed. (3: six months back.)
+const READS = 3;
 
 // `full`: read every calendar again, whether or not it looks the same.
 async function sync(ctx, { full = false } = {}) {
@@ -370,7 +370,7 @@ Read-only: the iCal address of a calendar cannot be used to change it.`,
         return {
           text: rows.length
             ? rows.map((e) => `${dayLabel(e.day)}  ${line(ctx, e, many)}`).join('\n')
-            : `Nothing in your calendar matches "${i.text.join(' ')}" (from a week ago to ${AHEAD_DAYS} days ahead).`,
+            : `Nothing in your calendar matches "${i.text.join(' ')}" (from six months ago to ${AHEAD_DAYS} days ahead).`,
           data: { events: rows.map((e) => shown(ctx, e)) },
         };
       },
@@ -387,7 +387,7 @@ Read-only: the iCal address of a calendar cannot be used to change it.`,
         const bad = Object.entries(c.errors);
         return {
           text: [
-            `Fetched: ${plural(c.events.length, 'event')} from a week ago to ${AHEAD_DAYS} days ahead.`,
+            `Fetched: ${plural(c.events.length, 'event')} from six months ago to ${AHEAD_DAYS} days ahead.`,
             ...bad.map(([n, e]) => `${n} could not be fetched: ${e.message}. Its earlier events are kept.`),
           ].join('\n'),
           data: { events: c.events.length, errors: c.errors },
@@ -470,11 +470,11 @@ Read-only: the iCal address of a calendar cannot be used to change it.`,
   settings: (ctx) => ({
     ...Object.fromEntries(Object.entries(cals(ctx)).map(([n, v]) => [label(ctx, n), v.title])),
     fetched: `every ${SYNC_EVERY}`,
-    keeps: `a week back and ${AHEAD_DAYS} days ahead`,
+    keeps: `six months back and ${AHEAD_DAYS} days ahead`,
   }),
 
   // For `bc engine check`: what the owner might say, and the command it should lead to.
-  checks: (ctx) => (Object.keys(cals(ctx)).length ? [{ say: 'whats on my calendar this week', expect: /blackcat calendar agenda\b/ }] : []),
+  trials: (ctx) => (Object.keys(cals(ctx)).length ? [{ say: 'whats on my calendar this week', expect: /blackcat calendar agenda\b/ }] : []),
   agent: {
     fill: (ctx) => ({
       ready: Object.keys(cals(ctx)).length > 0,

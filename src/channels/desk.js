@@ -7,6 +7,7 @@
 //   ui.command('reminders', (c) => c.reply('…'))        the owner typed /remind
 //   ui.action(/^rm:(\d+):d$/, (c) => { c.match[1] … })   the owner tapped a button
 //   ui.text((c, next) => …)                              any other text, before the agent gets it
+//   ui.heard((ev) => …)                                   told of every message, before anyone takes it
 //   ui.send(chat, 'text', { html, actions })             say something unprompted → a reference
 //   ui.edit(chat, ref, 'text', { … }) · ui.setActions(chat, ref, actions | null) · ui.remove(chat, ref)
 //   ui.sendFile(chat, '/path', { caption })
@@ -26,6 +27,7 @@ import { resolveHome } from '../util/paths.js';
 const commandHandlers = new Map(); // name → [handlers], asked in the order they were added
 const actionHandlers = []; // [{ pattern, fn }], tried in the order they were added
 const textHandlers = []; // [(c, next) => …]
+const heard = []; // [(ev) => …]: told of everything the owner writes, before it goes anywhere
 let fallback = null; // what happens to text nobody else took (set by the core: the agent)
 let carrier = null; // the channel in use: what actually sends
 
@@ -60,6 +62,11 @@ export const ui = {
   },
   text(fn) {
     textHandlers.push(fn);
+  },
+  // Told of every message the owner writes (not a number answering choices), before it goes
+  // to whoever takes it. It cannot take it: what waits for a tap gives up on it here.
+  heard(fn) {
+    heard.push(fn);
   },
   // Say something. → a reference to the message, for edit / setActions / remove.
   // (One too long for the channel goes as several, cut at line ends, with any buttons under
@@ -202,6 +209,13 @@ export const desk = {
       numbered.delete(offerKey(ev.chat));
       return desk.action({ chat: ev.chat, conversation: ev.conversation, who: ev.who, id: offered[Number(n[1]) - 1], ref: null });
     }
+    for (const fn of heard) {
+      try {
+        await fn(ev);
+      } catch (e) {
+        log(`something told of a message failed: ${e.message}`);
+      }
+    }
     const c = moment(ev);
     const m = COMMAND.exec(ev.text ?? '');
     const forCommand = (m && commandHandlers.get(m[1].toLowerCase())) || [];
@@ -222,9 +236,10 @@ export const desk = {
     // A command typed in the chat is something the owner did: noted by its name and first
     // word, not its text; with how long it took, whether it failed, and whether it was a
     // command of blackcat's or was left to the agent (whose turn is then part of the time).
+    const late = waited(ev); // (how long it waited before reaching blackcat: now, not when it is done)
     const words = (m[2] ?? '').trim().split(/\s+/).filter(Boolean);
     const typed = `/${m[1].toLowerCase()}${words[0] ? ` ${words[0].slice(0, 30)}` : ''}${words.length > 1 ? ' …' : ''}`;
-    return ownerDoing('typed', typed, next, { surface: 'chat', data: () => ({ by: toAgent ? 'agent' : 'command', ...waited(ev) }) });
+    return ownerDoing('typed', typed, next, { surface: 'chat', data: () => ({ by: toAgent ? 'agent' : 'command', ...late }) });
   },
   // The owner tapped a button. ev: { chat, who, id, ref, … whatever the channel needs to acknowledge it }
   async action(ev) {
@@ -232,6 +247,7 @@ export const desk = {
     // A button tapped: noted by what the button said (where the channel can tell) and its
     // id, with how long what it set off took, and whether that failed.
     const tapped = `${ev.label ? `"${String(ev.label).slice(0, 40)}" · ` : ''}${String(ev.id ?? '').slice(0, 60)}`;
+    const late = waited(ev);
     let known = false;
     return ownerDoing(
       'tapped',
@@ -251,7 +267,7 @@ export const desk = {
         }
         return c.toast().catch(() => {});
       },
-      { surface: 'chat', data: () => ({ ...(known ? {} : { unknown: true }), ...(ev.gone ? { gone: true } : {}), ...waited(ev) }) },
+      { surface: 'chat', data: () => ({ ...(known ? {} : { unknown: true }), ...(ev.gone ? { gone: true } : {}), ...late }) },
     );
   },
   moment,
@@ -269,6 +285,7 @@ export function resetDesk() {
   numbered.clear();
   actionHandlers.length = 0;
   textHandlers.length = 0;
+  heard.length = 0;
   fallback = null;
   carrier = null;
 }

@@ -35,14 +35,18 @@ const counted = (stmt, isNew = null) => ({
   },
 });
 
-export function archiveStatements(db) {
+// `account()`: the key of the owner's account it collects through (src/archive/db.js,
+// accountFor), written on every chat and message; null while it is not known yet (the rows
+// are claimed for it once it is).
+export function archiveStatements(db, account = () => null) {
   const q = statements(db);
+  const on = (stmt) => ({ run: (row) => stmt.run({ account: account() ?? null, ...row }) });
   return {
     ...q,
-    chat: unlessOwn(q.chat, (r) => r.ref),
-    msg: counted(unlessOwn(q.msg, (r) => r.chat)),
+    chat: unlessOwn(on(q.chat), (r) => r.ref),
+    msg: counted(unlessOwn(on(q.msg), (r) => r.chat)),
     msgFill: counted(
-      unlessOwn(q.msgFill, (r) => r.chat),
+      unlessOwn(on(q.msgFill), (r) => r.chat),
       (r) => !q.exists.get(r.chat, r.id),
     ),
   };
@@ -51,22 +55,23 @@ export function archiveStatements(db) {
 function statements(db) {
   return {
     // A chat. A name already known is kept when none is given.
-    chat: db.prepare(`INSERT INTO chats (ref, name, is_group, last_ts) VALUES (@ref, @name, @isGroup, @ts)
+    chat: db.prepare(`INSERT INTO chats (ref, name, is_group, last_ts, account) VALUES (@ref, @name, @isGroup, @ts, @account)
       ON CONFLICT (ref) DO UPDATE SET name = COALESCE(excluded.name, chats.name),
-        last_ts = MAX(COALESCE(chats.last_ts, 0), COALESCE(excluded.last_ts, 0))`),
+        last_ts = MAX(COALESCE(chats.last_ts, 0), COALESCE(excluded.last_ts, 0)),
+        account = COALESCE(chats.account, excluded.account)`),
     // A person: the name saved for them, the name they gave themselves, their number.
     contact: db.prepare(`INSERT INTO contacts (ref, name, notify, phone) VALUES (@ref, @name, @notify, @phone)
       ON CONFLICT (ref) DO UPDATE SET name = COALESCE(excluded.name, contacts.name),
         notify = COALESCE(excluded.notify, contacts.notify), phone = COALESCE(excluded.phone, contacts.phone)`),
     // A message. One already stored is left as it is.
-    msg: db.prepare(`INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text, quoted_id, link_url, link_title, link_desc)
-      VALUES (@chat, @id, @sender, @fromMe, @ts, @type, @text, @quoted, @linkUrl, @linkTitle, @linkDesc)
+    msg: db.prepare(`INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text, quoted_id, link_url, link_title, link_desc, account)
+      VALUES (@chat, @id, @sender, @fromMe, @ts, @type, @text, @quoted, @linkUrl, @linkTitle, @linkDesc, @account)
       ON CONFLICT (chat_ref, id) DO NOTHING`),
     // The same, for a source that sends a message more than once with more detail the
     // second time (a WhatsApp history sync): a missing sender or link preview is filled in.
     msgFill:
-      db.prepare(`INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text, quoted_id, link_url, link_title, link_desc)
-      VALUES (@chat, @id, @sender, @fromMe, @ts, @type, @text, @quoted, @linkUrl, @linkTitle, @linkDesc)
+      db.prepare(`INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text, quoted_id, link_url, link_title, link_desc, account)
+      VALUES (@chat, @id, @sender, @fromMe, @ts, @type, @text, @quoted, @linkUrl, @linkTitle, @linkDesc, @account)
       ON CONFLICT (chat_ref, id) DO UPDATE SET
         sender_ref = COALESCE(messages.sender_ref, excluded.sender_ref),
         link_url = COALESCE(messages.link_url, excluded.link_url),
@@ -88,7 +93,6 @@ function statements(db) {
     // Taking something out altogether (a source forgetting what it no longer keeps).
     remove: db.prepare('DELETE FROM messages WHERE chat_ref = ? AND id = ?'),
     removeLike: db.prepare('DELETE FROM messages WHERE chat_ref = ? AND id LIKE ?'),
-    removeBefore: db.prepare('DELETE FROM messages WHERE chat_ref = ? AND ts < ?'),
     removeChat: db.prepare('DELETE FROM chats WHERE ref = ?'),
     removeChatMessages: db.prepare('DELETE FROM messages WHERE chat_ref = ?'),
     text: db.prepare('SELECT text FROM messages WHERE chat_ref = ? AND id = ?').pluck(),

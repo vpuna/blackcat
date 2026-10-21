@@ -44,7 +44,7 @@ export {
 
 // ---- small helpers: times, sizes, text, running a command
 export { ago, agoShort, clock, hm, isoLocal, now, ymd } from './util/time.js';
-export { TimeError, fmtWhen, parseAt, parseDuration, sinceTs } from './util/when.js';
+export { TimeError, asJson, fmtWhen, parseAt, parseDuration, sinceTs } from './util/when.js';
 // Repeating schedules are cron everywhere. schedule() checks one, describeSchedule() says it in English, nextRuns() and scheduleDue() work out when.
 export {
   ScheduleError,
@@ -77,7 +77,7 @@ export { notifyOwner } from './channels/send.js';
 // ---- the message archive: reading
 export { DB_PATH as ARCHIVE_DB, getMeta as archiveMeta, setMeta as setArchiveMeta } from './archive/db.js';
 // Going through a source's last days again (`bc wa recover`): the command, the table the work is left in, and the service's side.
-export { MAX_DAYS, recoverCommand, recoveredText, serveRecovery, workTable } from './archive/recovery.js';
+export { leaveWork, recoverCommand, recoveredText, serveRecovery, workTable } from './archive/recovery.js';
 // How the files that come with messages are read: by this machine, a model, both or not at all (bc msg reading).
 export { reading, setReading } from './archive/reading.js';
 export {
@@ -98,6 +98,8 @@ export const semantic = () => import('./archive/semantic.js');
 
 // ---- the message archive: writing (for a plugin that declares a `source`)
 export { openWrite as openArchiveForWriting } from './archive/db.js';
+// The owner's account a source collects through, and the rows it stored before that was known.
+export { accountFor, claimRows } from './archive/db.js';
 export { archiveStatements, mediaRow, messageRow } from './archive/writer.js';
 // The chats that are blackcat itself (its bot, as your account sees it): never collected, never offered.
 export { ownRefs } from './channels/registry.js';

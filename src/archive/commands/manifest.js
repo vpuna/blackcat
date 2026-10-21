@@ -312,7 +312,7 @@ ${HELP}`,
   },
 
   // For `bc engine check`: what the owner might say, and the command it should lead to.
-  checks: [
+  trials: [
     { say: 'did maya say anything about dinner this week', expect: /blackcat msg (find|search|thread)\b/ },
     { say: 'remind me about the last thing maya sent, in 2 hours', expect: /blackcat msg (thread|find|search)\b/ },
   ],

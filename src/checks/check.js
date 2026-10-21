@@ -8,12 +8,14 @@ import {
   currentFindings,
   justResolved,
   markTold,
+  pastFindings,
   resolveFinding,
   seenAgain,
   setFixNote,
   updateCheck,
   wakeFinding,
 } from './db.js';
+import { DEFAULT_KEEP, addContext, addReading, lastContextTs, readings } from './history.js';
 import { duration, fmtWhen, isoLocal, log, parseDuration, ruleFor, shell, askReader } from '../internal.js';
 import { fileURLToPath } from 'node:url';
 import { sleep } from '../util/wait.js';
@@ -81,12 +83,12 @@ const VERDICT = {
 const judge = (c, input) => askReader({ dir: here, part: 'check', job: 'working', input, schema: VERDICT, category: `check: ${c.name}` });
 
 // A smaller copy of a large image: cheaper to look at, and enough to tell if it is a proper picture.
-async function forJudging(file) {
+async function forJudging(file, { size = 1568, quality = 80 } = {}) {
   // (Named apart from the engine check's temporary copy, "blackcat-check-…".)
   const small = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'blackcat-look-')), 'small.jpg');
   // No shell: the file's name is passed as it is, whatever characters it contains.
   const r = await new Promise((resolve) =>
-    execFile('convert', [file, '-resize', '1568x1568>', '-quality', '80', small], { timeout: 60_000 }, (err) =>
+    execFile('convert', [file, '-resize', `${size}x${size}>`, '-quality', String(quality), small], { timeout: 60_000 }, (err) =>
       resolve({ code: err ? 1 : 0 }),
     ),
   );
@@ -142,10 +144,49 @@ function listed(out) {
   return v;
 }
 
-// Look once. → { ok: true | false | null, reason, problems: [{ key, title }] }. null means
+// ---- figures ----
+// The figures a check keeps (--measure) and the ones it has limits on (--limit).
+export const measured = (c) => [...new Set([...(c.measure ?? []), ...(c.limits ?? []).map((l) => l.field)])];
+// "temp>75" → { field, op, value }
+export function parseLimit(text) {
+  const m = /^\s*([A-Za-z_][\w.]*)\s*([<>])\s*(-?\d+(?:\.\d+)?)\s*$/.exec(String(text ?? ''));
+  if (!m) throw new Error(`A limit is a figure, > or <, and a number, like "temp>75" or "free<10" (not "${text}").`);
+  return { field: m[1], op: m[2], value: Number(m[3]) };
+}
+export const limitKey = (l) => `${l.field}-${l.op === '>' ? 'high' : 'low'}`.replace(/[^a-z0-9-]+/gi, '-').toLowerCase();
+const num = (n) => String(Math.round(n * 100) / 100);
+const limitText = (l, v) => `${l.field} ${num(v)}, ${l.op === '>' ? 'above' : 'below'} ${num(l.value)}`;
+// The figures in a command's output: JSON with those fields (a.b.0 for one inside it), one
+// number on its own when one figure is measured, or lines of "name=value" or "name: value".
+// → { numbers, missing }
+export function figures(out, names) {
+  const text = String(out ?? '').trim();
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    json = undefined;
+  }
+  const numbers = {};
+  for (const n of names) {
+    let v;
+    if (json !== undefined && typeof json === 'object') v = n.split('.').reduce((o, k) => (o == null ? undefined : o[k]), json);
+    else if (names.length === 1 && /^-?\d+(\.\d+)?$/.test(text)) v = text;
+    else v = new RegExp(`^\\s*${n.replace(/\./g, '\\.')}\\s*[=:]\\s*(-?\\d+(?:\\.\\d+)?)`, 'm').exec(text)?.[1];
+    if (v !== undefined && v !== null && v !== '' && Number.isFinite(Number(v))) numbers[n] = Number(v);
+  }
+  return { numbers, missing: names.filter((n) => !(n in numbers)) };
+}
+
+// Look once. → { ok: true | false | null, reason, problems: [{ key, title }], numbers? }. null means
 // "could not tell" (the model was unavailable): nothing is changed or fixed on that.
 // `known`: what is wrong already, so that a reader calls the same thing by the same key.
 export async function evaluate(c, known = []) {
+  const seen = {};
+  const r = await look(c, known, seen);
+  return seen.numbers ? { ...r, numbers: seen.numbers } : r;
+}
+async function look(c, known, seen) {
   const bad = (reason) => ({ ok: false, reason, problems: [{ key: DOWN, title: reason }] });
   const fine = { ok: true, reason: 'all checks passed', problems: [] };
   let output = null;
@@ -154,6 +195,19 @@ export async function evaluate(c, known = []) {
     if (r.timedOut) return bad(`\`${c.command}\` did not finish within a minute`);
     if (r.code !== 0) return listed(r.out) ?? bad(`\`${c.command}\` failed (exit ${r.code})${r.out ? `: ${lastLine(r.out)}` : ''}`);
     output = r.out.slice(-3000);
+    const names = measured(c);
+    if (names.length) {
+      const got = figures(r.out, names);
+      if (got.missing.length) return bad(`\`${c.command}\` printed no ${got.missing.join(' or ')}`);
+      seen.numbers = got.numbers;
+      const over = (c.limits ?? []).filter((l) => (l.op === '>' ? got.numbers[l.field] > l.value : got.numbers[l.field] < l.value));
+      if (over.length)
+        return {
+          ok: false,
+          reason: over.map((l) => limitText(l, got.numbers[l.field])).join('; '),
+          problems: over.map((l) => ({ key: limitKey(l), title: limitText(l, got.numbers[l.field]) })),
+        };
+    }
   }
   let file = null;
   if (c.file) {
@@ -258,6 +312,58 @@ export const lasted = (sec) => {
 // A finding left alone for a few minutes after it worked again is the same outage if it comes back.
 export const BOUNCE_S = 10 * 60;
 
+// ---- what was going on ----
+// While something stays wrong, what was going on is kept again this often.
+const CONTEXT_EVERY_S = 15 * 60;
+export const keepS = (c) => parseDuration(c.keep ?? DEFAULT_KEEP);
+// What its context command prints, and its picture made small. Never throws: a check that
+// could not keep what was going on still looks, and says what it found.
+async function keepContext(c) {
+  try {
+    let output = null;
+    if (c.context) {
+      const r = await shell(c.context, { timeoutMs: CHECK_TIMEOUT_MS, keep: 64_000 });
+      output = `${r.out}${r.timedOut ? '\n(it did not finish within a minute)' : r.code ? `\n(it exited ${r.code})` : ''}`.trim();
+    }
+    let file = null;
+    const src = c.file && resolveHome(c.file);
+    if (src && IMAGES[path.extname(src).toLowerCase()] && fs.existsSync(src)) {
+      const pic = await forJudging(src, { size: 1024, quality: 70 });
+      file = fs.readFileSync(pic.file);
+      if (pic.temp) fs.rmSync(path.dirname(pic.file), { recursive: true, force: true });
+    }
+    if (output != null || file) addContext(c.id, { output, file, fileType: file ? 'image/jpeg' : null }, keepS(c));
+    return output != null || !!file;
+  } catch (e) {
+    log(`[check] "${c.name}": what was going on could not be kept (${e.message})`);
+    return false;
+  }
+}
+const limitOf = (c, f) => (c.limits ?? []).find((l) => limitKey(l) === f.key) ?? null;
+// For an alert about a limit: which way it is going, and how long it lasted last time.
+function story(db, c, f, t) {
+  const l = limitOf(c, f);
+  if (!l) return '';
+  const then = readings(c.id, t - 3600, t - 1800).find((r) => l.field in r.numbers);
+  const now = readings(c.id, t - 600, t).at(-1)?.numbers[l.field];
+  const way =
+    then && now != null && now !== then.numbers[l.field]
+      ? ` ${now > then.numbers[l.field] ? 'Rising' : 'Falling'}: it was ${num(then.numbers[l.field])} ${lasted(t - then.ts)} ago.`
+      : '';
+  const last = pastFindings(db, c.id, 50).find((x) => x.key === f.key && x.state === 'resolved' && x.id !== f.id && x.resolved_ts);
+  return `${way}${last ? ` Last time (${fmtWhen(last.first_seen)}) it lasted ${lasted(last.resolved_ts - last.first_seen)}.` : ''}`;
+}
+// For "working again" after a limit: how far it went.
+function peak(c, f, t) {
+  const l = limitOf(c, f);
+  const vs = l
+    ? readings(c.id, f.first_seen, t)
+        .map((r) => r.numbers[l.field])
+        .filter((v) => v != null)
+    : [];
+  return vs.length ? `, ${l.op === '>' ? 'peak' : 'lowest'} ${l.field} ${num(l.op === '>' ? Math.max(...vs) : Math.min(...vs))}` : '';
+}
+
 // Run the fix until it works or the tries run out. → { r, tried }
 async function fixing(c, r, known) {
   let tried = 0;
@@ -292,6 +398,7 @@ export async function runCheck(db, c, { dryRun = false, fixAgain = false } = {})
   let r = await evaluate(c, known);
   const done = (notices = [], changed = null) => ({ result: r, notices, changed });
   if (dryRun) return done();
+  if (r.numbers) addReading(c.id, r.numbers, keepS(c));
   if (r.ok === null) {
     log(`[check] "${c.name}": ${r.reason}`);
     return done();
@@ -344,9 +451,15 @@ export async function runCheck(db, c, { dryRun = false, fixAgain = false } = {})
     changed = changed ?? 'working again';
     if (f.alerted)
       tell(
-        `✅ ${c.name}: working again${known.length > 1 ? ` (${f.title})` : ''}. It had not been since ${fmtWhen(f.first_seen)}: down ${lasted(t - f.first_seen)}. ${r.reason}`,
+        `✅ ${c.name}: working again${known.length > 1 ? ` (${f.title})` : ''}. It had not been since ${fmtWhen(f.first_seen)}: down ${lasted(t - f.first_seen)}${peak(c, f, t)}. ${r.reason}`,
       );
   }
+
+  // What was going on: kept when it goes wrong, and again now and then while it stays so.
+  const kept =
+    found.length && (c.context || c.file) && (changed === 'not working' || t - lastContextTs(c.id) >= CONTEXT_EVERY_S)
+      ? await keepContext(c)
+      : false;
 
   // Who is told what: a new finding when its time has come, a snooze that has run out, and a
   // reminder for one still open. Nothing in the quiet window.
@@ -369,7 +482,8 @@ export async function runCheck(db, c, { dryRun = false, fixAgain = false } = {})
       ? `⚠️ ${c.name}: ${many ? f.title : `not working. ${f.title}`}`
       : `⚠️ ${c.name}: still not working, since ${fmtWhen(f.first_seen)}${many ? `. ${f.title}` : ''}`;
     const fixed = f.fix_note ? ` ${f.fix_note.replace(/^ran/, 'I ran')}.` : '';
-    tell(`${head}${/[.!?]$/.test(head) ? '' : '.'}${fixed}`, f);
+    const more = first ? `${story(db, c, f, t)}${kept ? ` What was going on is kept: bc check history ${c.id}` : ''}` : '';
+    tell(`${head}${/[.!?]$/.test(head) ? '' : '.'}${fixed}${more}`, f);
     markTold(db, f.id);
   }
   updateCheck(db, c.id, { state: { ok: r.ok, checked: t, reason: r.reason } });
@@ -391,15 +505,22 @@ export function stateText(c) {
   return `fine (checked ${ago} ago${s.reason ? `: ${s.reason}` : ''})`;
 }
 
-export function checkText(c) {
+// `short`: a long command cut to its start (in a list; `bc check show` has it whole).
+export function checkText(c, { short = false } = {}) {
+  const cmd = (s) => (short && s.length > 70 ? `${s.slice(0, 69)}…` : s);
   const bits = [];
   const told = [
     c.alert && c.alert.at !== 'now' ? `tells you ${alertText(c.alert)}` : null,
     c.quiet ? `quiet ${c.quiet}` : null,
     c.remind ? `reminds every ${c.remind}` : null,
   ].filter(Boolean);
-  if (c.command) bits.push(`runs \`${c.command}\``);
+  if (c.command) bits.push(`runs \`${cmd(c.command)}\``);
   if (c.file) bits.push(`looks at ${c.file}${c.maxAge ? ` (must have changed in the last ${c.maxAge})` : ''}`);
+  if (c.measure?.length) bits.push(`keeps ${c.measure.join(', ')}`);
+  if (c.limits?.length)
+    bits.push(`not working when ${c.limits.map((l) => `${l.field} is ${l.op === '>' ? 'above' : 'below'} ${num(l.value)}`).join(' or ')}`);
+  if (c.context) bits.push(`when it is not, keeps what \`${cmd(c.context)}\` prints`);
+  if (c.keep && c.keep !== DEFAULT_KEEP) bits.push(`history kept ${c.keep}`);
   if (c.fix)
     bits.push(
       `fix: \`${c.fix}\`, up to ${c.tries ?? 2} tries, ${c.wait ?? '90s'} apart${fixAllowed(c) ? '' : ' (NOT PERMITTED: see /permissions)'}`,

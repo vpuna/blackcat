@@ -4,7 +4,11 @@
 import { openWrite } from '../../archive/db.js';
 import { withDb } from '../../db.js';
 
-export const PEOPLE = { maya: '15550000001@s.whatsapp.net', bob: '15550000002@s.whatsapp.net', school: '15550000003-1600000000@g.us' };
+export const PEOPLE = {
+  maya: 'wa:15550000001@s.whatsapp.net',
+  bob: 'wa:15550000002@s.whatsapp.net',
+  school: 'wa:15550000003-1600000000@g.us',
+};
 
 // → the messages, oldest first: [chat, sender, hours ago, text]
 export const messages = (planted) => [
@@ -29,7 +33,7 @@ export function load(planted) {
     for (const [chat, , hoursAgo, text] of messages(planted)) {
       db.prepare(
         "INSERT OR REPLACE INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES (?, ?, ?, 0, ?, 'text', ?)",
-      ).run(chat, `CHECK${++n}`, chat.endsWith('@g.us') ? `1555000010${n}@s.whatsapp.net` : chat, now - hoursAgo * 3600, text);
+      ).run(chat, `CHECK${++n}`, chat.endsWith('@g.us') ? `wa:1555000010${n}@s.whatsapp.net` : chat, now - hoursAgo * 3600, text);
     }
     return n;
   });

@@ -28,6 +28,7 @@ plugin(
   setup: { summary: 'x', access: 'owner', form: [{ id: 'address', type: 'text', message: 'Where is it?' }], run: (ctx, a) => 'at ' + a.address },
   quiet: { summary: 'x', access: 'allow', run: () => {} },
   broken: { summary: 'x', access: 'allow', run: (ctx) => ctx.fail('the lamp is unplugged') },
+  when: { summary: 'x', access: 'allow', untrusted: false, run: () => ({ data: { on_at: '1792328461', next: [1792375200], lastTs: 1792346595123, bytes: 1737633792, last: 30 } }) },
 }`,
 );
 // What uses it.
@@ -128,4 +129,33 @@ test('uses is a list of names; a plugin cannot use itself; a circle is said', as
   assert.deepEqual(usesProblems([p('a', ['b']), p('b', [])]), []);
   assert.match(usesProblems([p('a', ['a'])]).join('; '), /"a": it cannot use itself/);
   assert.deepEqual(usesProblems([p('a', ['b']), p('b', ['c']), p('c', ['a'])]), ['plugins use each other in a circle: a → b → c → a']);
+});
+
+test('the agent is given times as dates, which it can read; a script is given the numbers', async () => {
+  save({ plugins: { enabled: ['lamp', 'evening', 'nosy'] } }); // (a test above switches the lamp off)
+  const { readableTimes } = await import('../src/util/when.js');
+  const date = (secs) => readableTimes({ ts: secs }).ts;
+  assert.match(date(1792375200), /^[A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2} 2026 \d\d:\d\d$/);
+  const agent = bc('agent', 'lamp', 'when');
+  assert.equal(agent.status, 0, agent.said);
+  assert.deepEqual(agent.out, {
+    on_at: date(1792328461),
+    next: [date(1792375200)],
+    lastTs: date(1792346595),
+    bytes: 1737633792,
+    last: 30,
+  });
+  // The same for a command that prints its own --json (wa status, tg account status…).
+  const { asJson } = await import('../src/util/when.js');
+  process.env.BLACKCAT_CALLER = 'agent';
+  assert.equal(JSON.parse(asJson({ ts: 1792375200 })).ts, date(1792375200));
+  delete process.env.BLACKCAT_CALLER;
+  assert.equal(JSON.parse(asJson({ ts: 1792375200 })).ts, 1792375200);
+  assert.deepEqual(bc('owner', 'lamp', 'when').out, {
+    on_at: '1792328461',
+    next: [1792375200],
+    lastTs: 1792346595123,
+    bytes: 1737633792,
+    last: 30,
+  });
 });

@@ -337,7 +337,10 @@ function words(segment) {
 
 // → 'read' (safe to run without asking), 'sensitive' (reads, but may expose secrets),
 //   or 'change' (anything else).
-export function classify(command) {
+// A machine of another kind (an Android device) brings its own looking programs: `programs`,
+// in the same form as PROGRAMS (name → args → true when it only looks), asked when these
+// say no; and `sensitive`, patterns for commands whose output is personal.
+export function classify(command, { programs = {}, sensitive: alsoSensitive = [] } = {}) {
   const cmd = String(command ?? '').trim();
   if (!cmd) return 'change';
   const segments = pipeline(cmd);
@@ -351,11 +354,12 @@ export function classify(command) {
     const prog = first.text.slice(slash + 1);
     const args = rest.map((w) => w.text);
     // (hasOwn: "constructor" and the like are not programs.)
-    if (!Object.hasOwn(PROGRAMS, prog) || !PROGRAMS[prog](args)) return 'change';
+    const looks = (table) => Object.hasOwn(table, prog) && table[prog](args);
+    if (!looks(PROGRAMS) && !looks(programs)) return 'change';
     // The secrets test is made on the words as the shell would see them, so quotes in the
     // middle of a name ("/root/.s''sh") hide nothing.
     const plain = [prog, ...args].join(' ');
-    if (SENSITIVE.some((re) => re.test(plain)) || SENSITIVE_COMMANDS.some((re) => re.test(plain))) sensitive = true;
+    if ([...SENSITIVE, ...SENSITIVE_COMMANDS, ...alsoSensitive].some((re) => re.test(plain))) sensitive = true;
     if (SHOWS_CONTENTS.includes(prog) && rest.some((w) => w.glob)) sensitive = true;
     // A search through whole folders prints from every file in them, whatever they are
     // (keys and password files included) without naming one of them.
@@ -372,9 +376,10 @@ export const COMMAND_MODES = {
   full: 'any command runs without asking (only for machines you could afford to lose)',
 };
 // → the access level for one command. `where`: "on this machine", "on nas (me@10.0.0.5)";
-// `machine`: what it is called when it is refused ("this machine", '"nas"').
-export function commandAccess(mode, cmd, { where, machine }) {
-  const kind = classify(cmd);
+// `machine`: what it is called when it is refused ("this machine", '"nas"'). `kind`: already
+// judged (what is not a shell command); `programs`, `sensitive`: as for classify.
+export function commandAccess(mode, cmd, { where, machine, kind: judged, programs, sensitive }) {
+  const kind = judged ?? classify(cmd, { programs, sensitive });
   if (mode === 'full' || kind === 'read') return { level: 'allow' };
   if (mode === 'ask')
     return {

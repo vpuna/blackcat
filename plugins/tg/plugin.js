@@ -16,9 +16,9 @@ export default {
   description: 'collects the chats of your own Telegram account into the archive, read-only (it can never send)',
   help: `Setup:
   bc tg account pair      log in (needs api_id and api_hash from https://my.telegram.org), choose chats
-  bc tg account select    change how far back to keep, and which chats
-  bc tg account recover   something is missing: go through the last days again
-                          (--since 60d, --chat "a name")
+  bc tg account select    change how far back history is fetched, and which chats
+  bc tg account recover   something is missing: go through the days of history chosen again
+                          (--chat "a name")
 
 Searching and reading what it collected is done with the archive's own commands:
   bc msg find <question> --source tg · bc msg chats --source tg
@@ -35,7 +35,7 @@ are left out unless you choose them.
       run: async () => (await cmd()).pair(),
     },
     select: {
-      summary: 'choose how many days back, and which chats',
+      summary: 'choose how far back history is fetched, and which chats',
       access: 'owner',
       interactive: true,
       run: async () => (await cmd()).select(),
@@ -48,14 +48,11 @@ are left out unless you choose them.
     },
     recover: {
       changes: true,
-      summary: 'go through the messages of the last days again, and keep what is missing',
+      summary: 'go through the days of history chosen again, and keep what is missing',
       // Reading only, and only what was missing is added.
       access: 'allow',
       untrusted: false,
-      options: [
-        ['--since <time>', 'how far back, e.g. 60d or 2026-09-01 (default: the days you keep)'],
-        ['--chat <name>', 'only this chat'],
-      ],
+      options: [['--chat <name>', 'only this chat']],
       run: async (ctx, i) => (await import('./recover.js')).recover(ctx, i),
     },
     unpair: {
@@ -118,14 +115,14 @@ are left out unless you choose them.
     },
   ],
 
-  status: () => (isLinked() ? `linked · keeping ${describeTga()}` : 'not linked → bc tg account pair'),
+  status: () => (isLinked() ? `linked · collecting ${describeTga()}` : 'not linked → bc tg account pair'),
 
   settings: async () => {
     const { tgaSettings } = await import('./paired.js');
     const t = tgaSettings();
     const inc = t.include ?? {};
     return {
-      keep: t.days ? `the last ${t.days} days` : 'all history',
+      history: t.days ? `fetched ${t.days} days back; everything stored is kept` : 'all of it',
       chats: t.mode === 'selected' ? `${t.chats?.length ?? 0} chosen chats` : 'private chats and groups',
       'other bots': inc.bots ? 'yes' : 'no',
       channels: inc.channels ? 'yes' : 'no',

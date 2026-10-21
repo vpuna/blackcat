@@ -45,7 +45,13 @@ function dueFor(w, it) {
   return ts > Date.now() / 1000 ? ts : null;
 }
 
-const textFor = (w, it) => (w.nudge.mode === 'suggested' || !it.event_date ? it.title : `${it.title} · ${niceDate(it.event_date)}`);
+// (Something on its way is nudged about only if it has not come by then: the nudge asks.)
+const textFor = (w, it) =>
+  it.category === 'expected'
+    ? `Not here yet? · ${it.title}`
+    : w.nudge.mode === 'suggested' || !it.event_date
+      ? it.title
+      : `${it.title} · ${niceDate(it.event_date)}`;
 
 // Make, move or remove the nudge for one item so it matches the watch's setting.
 // `quote` is the message text to show with it. Returns the due time, or null.

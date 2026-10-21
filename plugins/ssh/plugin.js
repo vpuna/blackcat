@@ -26,6 +26,18 @@ const DEFAULT_KEEP_OPEN = 30; // minutes
 // Each host is kept under a key that never changes (its key file is named after it, and a
 // backup kept there names it); the name it is known by can change (bc ssh rename).
 const hosts = (ctx) => ctx.config.get().hosts ?? {};
+// For the checks it offers: the processor's temperature (°C) and the load, as name=value lines;
+// and what is using the processor, the busiest first. (No single quotes: they are sent inside some.)
+const HEAT = [
+  't=; for h in /sys/class/hwmon/hwmon*; do case "$(cat $h/name 2>/dev/null)" in coretemp|k10temp|zenpower|cpu_thermal|soc_thermal) t=$(cat $h/temp1_input 2>/dev/null); break;; esac; done',
+  '[ -n "$t" ] || t=$(cat /sys/class/thermal/thermal_zone0/temp 2>/dev/null)',
+  '[ -n "$t" ] && echo temp=$((t/1000))',
+  'echo load=$(cut -d" " -f1 /proc/loadavg)',
+].join('; ');
+const BUSY = [
+  'ps -eo pcpu,pmem,comm --sort=-pcpu | head -11',
+  'command -v docker >/dev/null && docker stats --no-stream --format "{{.Name}} {{.CPUPerc}} {{.MemUsage}}" 2>/dev/null | sort -k2 -rn | head -10',
+].join('; ');
 const label = (ctx, key) => accountName(hosts(ctx), key);
 const RULE_TEXT = 'Lowercase letters, digits and dashes';
 const keepOpen = (ctx) => ctx.config.get().keepOpenMinutes ?? DEFAULT_KEEP_OPEN;
@@ -516,7 +528,22 @@ count as sensitive: refused in read mode, and need approval in ask mode.`,
   }),
 
   // For `bc engine check`: what the owner might say, and the command it should lead to.
-  checks: (ctx) => {
+  // Checks offered for each host (bc check offered): how hot it runs and how busy it is, kept
+  // over time, and what was using it when it ran too hot. (Linux: the processor's own sensor.)
+  checks: (ctx) =>
+    accountNames(hosts(ctx))
+      .filter((name) => /^[\w.-]+$/.test(name))
+      .map((name) => ({
+        id: `${name}-heat`,
+        name: `${name} heat`,
+        summary: `${name}: the processor's temperature and the load, every 5 minutes; above the limit, what was using it`,
+        run: `blackcat ssh run ${name} '${HEAT}'`,
+        measure: ['temp', 'load'],
+        limit: ['temp>80'],
+        context: `blackcat ssh run ${name} '${BUSY}'`,
+        every: '5m',
+      })),
+  trials: (ctx) => {
     const name = accountNames(hosts(ctx))[0];
     return name
       ? [{ say: `how much disk space is free on ${name}`, expect: new RegExp(`blackcat (ssh run ${name}|shortcut run \\w+)\\b`) }]

@@ -648,7 +648,22 @@ Examples:
   },
 
   // For `bc engine check`: what the owner might say, and the command it should lead to.
+  // A check offered (bc check offered): every device and camera online; when one is not, what
+  // the console logged about it is kept.
   checks: (ctx) =>
+    settings(ctx).host
+      ? [
+          {
+            id: 'online',
+            name: 'Network devices',
+            summary: "every device and camera online, every 10 minutes; when one is not, the console's events",
+            run: 'blackcat unifi check',
+            context: 'blackcat unifi events --since 1h',
+            every: '10m',
+          },
+        ]
+      : [],
+  trials: (ctx) =>
     settings(ctx).host ? [{ say: 'which device used the most data on the network today', expect: /blackcat unifi usage\b/ }] : [],
   agent: {
     readDirs: () => [MEDIA],

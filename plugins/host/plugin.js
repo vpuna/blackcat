@@ -232,7 +232,20 @@ export default {
 
   // Added to the agent's instructions while the plugin is enabled.
   // For `bc engine check`: what the owner might say, and the command it should lead to.
-  checks: [{ say: 'how hot is this machine running, and how full is its disk', expect: /blackcat host (health|status)\b/ }],
+  // A check offered (bc check offered): this machine's figures kept over time, and what was
+  // using it when one went past a limit the owner gives.
+  checks: [
+    {
+      id: 'health',
+      name: 'This machine',
+      summary: "this machine's temperature, load, memory and disk, every 5 minutes; add --limit to be told",
+      run: 'blackcat host health --json',
+      measure: ['tempC', 'load.0', 'memoryUsedPercent', 'diskUsedPercent'],
+      context: 'ps -eo pcpu,pmem,comm --sort=-pcpu | head -11',
+      every: '5m',
+    },
+  ],
+  trials: [{ say: 'how hot is this machine running, and how full is its disk', expect: /blackcat host (health|status)\b/ }],
   agent: {
     fill: (ctx) => ({ hostname: os.hostname(), mode: MODES[mode(ctx)] }),
   },

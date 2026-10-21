@@ -1,0 +1,5 @@
+u2.jar is blackcat's build of android-uiautomator-server-jar (MIT, see LICENSE):
+github.com/vpuna/android-uiautomator-server-jar, tag v-blackcat.1 (commit 188b699), a fork of
+github.com/openatx/android-uiautomator-server-jar. It differs in two ways: it listens on
+127.0.0.1 only, and with -t <key> it answers only requests that carry X-Blackcat-Key: <key>.
+SHA-256: ac169be0099a8277c3dbd5a255e5d65b05f7fabb9eed504c43ad0db437a7cd6c

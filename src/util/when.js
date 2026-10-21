@@ -76,6 +76,26 @@ export function fmtWhen(ts, nowMs = Date.now()) {
   return `${DAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}${year}, ${time}`;
 }
 
+// For the agent, which cannot read a Unix time: every value under a key that names a time
+// (ts, next, since, last, newest, oldest, until, due, and …Ts, …_ts, …_at, …At, …Since,
+// …Until), in seconds or milliseconds, as a date ("Mon 19 Oct 2026 06:00"). Anything else,
+// and a number too small or large to be a time, is left as it is.
+const TIME_KEY = /^(ts|next|since|last|newest|oldest|until|due)$|(Ts|_ts|_at|At|Since|Until)$/;
+export function readableTimes(v, key = '') {
+  if (Array.isArray(v)) return v.map((x) => readableTimes(x, key));
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, readableTimes(x, k)]));
+  if (!TIME_KEY.test(key)) return v;
+  const n = typeof v === 'string' && /^\d{10}(\d{3})?$/.test(v) ? Number(v) : v;
+  if (typeof n !== 'number') return v;
+  const secs = n >= 1e12 && n < 1e13 ? n / 1000 : n >= 1e9 && n < 1e10 ? n : null;
+  if (secs == null) return v;
+  const d = new Date(secs * 1000);
+  return `${DAYS[d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// A command's --json, as the one who ran it reads it: dates for the agent, numbers for a script.
+export const asJson = (v) => JSON.stringify(process.env.BLACKCAT_CALLER === 'agent' ? readableTimes(v) : v, null, 2);
+
 // When a repeating reminder comes round next, after it fires at `ts`. `repeat` is cron
 // (several expressions separated by ";"). The words daily, weekdays, weekly and monthly are
 // how it was kept before, and still work for reminders made then.

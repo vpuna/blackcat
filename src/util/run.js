@@ -41,10 +41,15 @@ export function killGroup(pid, sig = 'SIGTERM') {
   }
 }
 
-// Run a command line through bash, the way the owner approved it. Never throws.
-// → { code, out (the end of what it printed, stdout then stderr), timedOut }
-export const shell = async (cmd, { timeoutMs = 60_000, keep = 3000, cwd } = {}) => {
-  const r = await exec('bash', ['-c', cmd], { timeoutMs, maxBuffer: 4 * 1024 ** 2, cwd });
+// Run a command line through bash, the way the owner approved it. Never throws. `env`: added
+// to this process's own. → { code, out (the end of what it printed, stdout then stderr), timedOut }
+export const shell = async (cmd, { timeoutMs = 60_000, keep = 3000, cwd, env } = {}) => {
+  const r = await exec('bash', ['-c', cmd], {
+    timeoutMs,
+    maxBuffer: 4 * 1024 ** 2,
+    cwd,
+    ...(env ? { env: { ...process.env, ...env } } : {}),
+  });
   return { code: r.code, out: `${r.stdout}${r.stderr}`.trim().slice(-keep), timedOut: r.timedOut };
 };
 

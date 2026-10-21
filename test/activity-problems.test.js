@@ -1,5 +1,5 @@
 // What looks wrong in the activity record, found by plain rules (no model), and the check that
-// is always there to run them: "blackcat itself". Each rule is tried both ways: what should be
+// is always there to run them: "blackcat health". Each rule is tried both ways: what should be
 // found, and what should not (the owner's own doings, a developer session, too few to matter).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -36,7 +36,15 @@ const put = ({
     .prepare('INSERT INTO activity (ts, kind, category, surface, ok, cost, summary, data, who, lead) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(now() - ago, kind, category, surface, ok, cost, summary, data ? JSON.stringify(data) : null, who, lead);
 const keys = () => problems().map((p) => p.key);
-const fresh = () => db.exec('DELETE FROM activity');
+const fresh = () => db.exec('DELETE FROM activity; DELETE FROM activity_daily');
+// A day's count in the daily totals, `ago` days back.
+const { dayOf } = await import('../src/activity/log.js');
+const runs = (ago, category, n, { kind = 'job', who = 'blackcat' } = {}) =>
+  db
+    .prepare(
+      "INSERT INTO activity_daily (day, kind, category, model, who, n) VALUES (?, ?, ?, '', ?, ?) ON CONFLICT DO UPDATE SET n = n + excluded.n",
+    )
+    .run(dayOf(now() - ago * 86400), kind, category, who, n);
 
 test('the same thing failing again and again is found; once or twice, or what the owner or a developer did, is not', () => {
   fresh();
@@ -133,13 +141,32 @@ test("scheduled work costing far more than on a usual day, or each call far more
   assert.deepEqual(keys(), []);
 });
 
-test('scheduled work running far more often than usual is found', () => {
+test('scheduled work running far more often than usual is found, counting every run, not only those listed', () => {
   fresh();
-  for (let d = 1; d <= 5; d++) for (let k = 0; k < 24; k++) put({ category: 'mail/sync', ago: d * 86400 + k * H });
-  for (let k = 0; k < 24; k++) put({ category: 'mail/sync', ago: k * H + 60 });
+  put({ category: 'mail/sync', ago: 2 * 86400 });
+  for (let d = 2; d <= 6; d++) runs(d, 'mail/sync', 24);
+  runs(1, 'mail/sync', 30);
   assert.deepEqual(keys(), []);
-  for (let k = 0; k < 40; k++) put({ category: 'mail/sync', ago: k * 60 + 30 });
-  assert.match(problems()[0].title, /^mail\/sync ran 64 times in the last day, against 24 on a usual day before$/);
+  runs(1, 'mail/sync', 34);
+  assert.match(problems()[0].title, /^mail\/sync ran 64 times yesterday, against 24 on a usual day before$/);
+  // A check that was not working is listed at each look, but it looked as often as ever.
+  fresh();
+  for (let d = 1; d <= 6; d++) runs(d, 'check: blackcat', 24, { kind: 'event' });
+  for (let d = 2; d <= 6; d++) put({ kind: 'event', category: 'check: blackcat', summary: 'working again', ago: d * 86400 });
+  for (let k = 0; k < 24; k++) put({ kind: 'event', category: 'check: blackcat', summary: 'not working', ago: k * H + 60 });
+  assert.deepEqual(keys(), []);
+  // Messages coming in are how many were sent, not work done on a schedule.
+  fresh();
+  put({ kind: 'event', category: 'messages: tg', surface: null, ago: 2 * 86400 });
+  for (let d = 2; d <= 6; d++) runs(d, 'messages: tg', 30, { kind: 'event' });
+  runs(1, 'messages: tg', 125, { kind: 'event' });
+  assert.deepEqual(keys(), []);
+  // What the owner or a developer ran is theirs.
+  fresh();
+  put({ category: 'mail/sync', ago: 2 * 86400 });
+  for (let d = 2; d <= 6; d++) runs(d, 'mail/sync', 2, { who: 'dev' });
+  runs(1, 'mail/sync', 64, { who: 'dev' });
+  assert.deepEqual(keys(), []);
 });
 
 test('told it is fixed, a rule counts only what happened after that', () => {
@@ -152,7 +179,7 @@ test('told it is fixed, a rule counts only what happened after that', () => {
     who: 'owner',
     surface: 'chat',
     ago: H,
-    data: { check: 'blackcat itself', key: 'failing-mail-sync' },
+    data: { check: 'blackcat health', key: 'failing-mail-sync' },
   });
   assert.deepEqual(keys(), [], 'the failures were before the fix');
   for (let k = 0; k < 3; k++) put({ category: 'mail/sync', ok: 0, ago: 60 });
@@ -173,48 +200,48 @@ test('`bc activity problems` says what it found, and fails when it found somethi
   );
 });
 
-test('the check "blackcat itself" is there from the start: each problem is a finding of its own; it can be paused, not removed or pointed elsewhere', () => {
+test('the check "blackcat health" is there from the start: each problem is a finding of its own; it can be paused, not removed or pointed elsewhere', () => {
   fresh();
   const list = bc('check', 'list', '--json').json().checks;
-  const it = list.find((c) => c.name === 'blackcat itself');
+  const it = list.find((c) => c.name === 'blackcat health');
   assert.ok(it, 'there from the start');
   assert.equal(it.builtin, true);
   assert.equal(it.runs, 'blackcat activity problems --json');
   assert.equal(it.looks, 'at 5 minutes past the hour');
   assert.equal(it.lookFor, null, 'no model judges it');
 
-  let r = bc('check', 'remove', 'blackcat itself');
+  let r = bc('check', 'remove', 'blackcat health');
   assert.notEqual(r.status, 0);
   assert.match(r.said, /part of blackcat and can't be removed\. Pause it instead/);
-  r = bc('check', 'edit', 'blackcat itself', '--run', 'true');
+  r = bc('check', 'edit', 'blackcat health', '--run', 'true');
   assert.notEqual(r.status, 0);
   assert.match(r.said, /what it looks at stays as it is/);
-  r = bc('check', 'edit', 'blackcat itself', '--look-for', 'anything');
+  r = bc('check', 'edit', 'blackcat health', '--look-for', 'anything');
   assert.notEqual(r.status, 0);
-  assert.equal(bc('check', 'edit', 'blackcat itself', '--alert', 'briefing').status, 0);
+  assert.equal(bc('check', 'edit', 'blackcat health', '--alert', 'briefing').status, 0);
 
   // Two things wrong: two findings, each of its own.
   for (let k = 0; k < 3; k++) put({ category: 'mail/sync', ok: 0, summary: 'timeout' });
   put({ kind: 'event', category: 'service: wa', ok: 0, who: null, summary: 'stopped after 2 s; started again' });
-  const run = bc('check', 'run', 'blackcat itself', '--json').json().checks[0];
+  const run = bc('check', 'run', 'blackcat health', '--json').json().checks[0];
   assert.equal(run.result.ok, false);
   assert.equal(run.result.reason, '2 things are wrong');
   assert.deepEqual(run.result.problems.map((p) => p.key).sort(), ['failing-mail-sync', 'service-wa']);
-  const shown = bc('check', 'show', 'blackcat itself', '--json').json();
+  const shown = bc('check', 'show', 'blackcat health', '--json').json();
   assert.equal(shown.now.length, 2);
   assert.ok(shown.now.every((f) => f.state === 'open'));
 
   // "I fixed it": the failures before now no longer count, and both are over.
-  r = bc('check', 'fixed', 'blackcat itself', '--no-wait', '--json');
+  r = bc('check', 'fixed', 'blackcat health', '--no-wait', '--json');
   assert.equal(r.json().working, true);
-  assert.equal(bc('check', 'show', 'blackcat itself', '--json').json().now.length, 0);
+  assert.equal(bc('check', 'show', 'blackcat health', '--json').json().now.length, 0);
   assert.equal(
     db.prepare('SELECT COUNT(*) FROM activity WHERE category = ?').pluck().get(FIXED),
     2,
     'what the owner said was fixed is on the record, one entry each',
   );
 
-  assert.equal(bc('check', 'edit', 'blackcat itself', '--pause').status, 0);
+  assert.equal(bc('check', 'edit', 'blackcat health', '--pause').status, 0);
   assert.equal(
     bc('check', 'list', '--json')
       .json()
@@ -230,4 +257,22 @@ test('the built-in check tells the owner, wherever they are', async () => {
   assert.equal(cdb.prepare('SELECT chat_id FROM checks WHERE id = ?').pluck().get(it.id), null, 'no chat of its own');
   assert.equal(it.chat_id, 42, "the owner's");
   cdb.close();
+});
+
+test('a check still called "blackcat itself" is renamed "blackcat health"; a name the owner gave it stays', async () => {
+  const { openChecksDb } = await import('../src/checks/db.js');
+  const { openAgentDb } = await import('../src/agentdb.js');
+  const back = (name) => {
+    const a = openAgentDb();
+    a.prepare("UPDATE checks SET name = ? WHERE builtin = 'itself'").run(name);
+    a.prepare("UPDATE shapes SET step = step - 1 WHERE part = 'checks'").run();
+    a.close();
+    const c = openChecksDb();
+    const got = c.prepare("SELECT name FROM checks WHERE builtin = 'itself'").get().name;
+    c.close();
+    return got;
+  };
+  assert.equal(back('blackcat itself'), 'blackcat health');
+  assert.equal(back('Mine'), 'Mine');
+  back('blackcat health');
 });

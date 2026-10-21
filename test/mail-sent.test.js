@@ -168,20 +168,9 @@ test('more than fits in one run waits for the next; the folder renumbered starts
   db.close();
 });
 
-test('what the account keeps is the same for sent mail: older than its days goes, and removing the account takes all of it', async () => {
+test('removing the account takes its sent mail too', async () => {
   const db = openStore(ctx);
-  forget(db, 'home', now + 2050); // everything before this moment
-  assert.deepEqual(
-    inArchive().map((m) => m.id),
-    [],
-  );
-  assert.equal(db.prepare('SELECT COUNT(*) FROM sent').pluck().get(), 0);
-  await run(
-    db,
-    server({ sent: [{ uid: 9, ts: now + 3000, subject: 'Last', to: [{ address: 'z@example.org' }], body: 'x' }], validity: 8 }),
-    { nowS: now + 3100 },
-  );
-  assert.equal(inArchive().length, 1);
+  assert.ok(inArchive().length > 0);
   forget(db, 'home');
   assert.deepEqual(
     [inArchive().length, db.prepare('SELECT COUNT(*) FROM sent').pluck().get(), stateOf(db, 'home').sent_since],

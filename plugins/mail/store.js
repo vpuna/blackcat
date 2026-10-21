@@ -6,7 +6,17 @@
 //     it like any other message.
 //     One account is one chat there ("Mail: personal"), and each sender is a person in it.
 import path from 'node:path';
-import { archiveStatements, mediaRow, messageRow, openArchiveForWriting as openWrite, openSqlite, upgrade, withDb } from '../../src/api.js';
+import {
+  accountFor,
+  archiveStatements,
+  claimRows,
+  mediaRow,
+  messageRow,
+  openArchiveForWriting as openWrite,
+  openSqlite,
+  upgrade,
+  withDb,
+} from '../../src/api.js';
 
 export const chatRef = (account) => `mail:${account}`;
 export const msgId = (account, uid) => `mail:${account}:${uid}`;
@@ -64,78 +74,100 @@ const sender = (m) => `mail:${m.from_addr || 'unknown'}`;
 export const filesOf = (m) => JSON.parse(m.files || '[]').filter((f) => f && typeof f === 'object');
 
 // Run `fn` with the archive open for writing and the shared statements, and close it after.
-function withArchive(fn) {
+// `owner`: { account, address, label } for what is written as that mail account's (the
+// owner's account in the archive, by its address: src/archive/db.js, accountFor).
+function withArchive(fn, owner = null) {
   return withDb(openWrite, (wa) => {
-    return fn(archiveStatements(wa), wa);
+    let key = null;
+    if (owner?.address) {
+      key = accountFor(wa, { source: 'mail', identity: owner.address.toLowerCase(), name: owner.label });
+      const ref = chatRef(owner.account).replace(/'/g, "''");
+      claimRows(wa, key, (col) => `${col} = '${ref}'`);
+    }
+    return fn(
+      archiveStatements(wa, () => key),
+      wa,
+    );
   });
 }
 
-// `label`: the name the account goes by now (its key, unless it was renamed).
-export function archive(account, rows, textOf, label = account) {
-  withArchive((q, wa) =>
-    wa.transaction(() => {
-      for (const m of rows) {
-        const files = filesOf(m);
-        const base = { chat: chatRef(account), sender: sender(m), fromMe: m.from_me ? 1 : 0, ts: m.ts };
-        q.chat.run({ ref: chatRef(account), name: chatName(label), isGroup: 1, ts: m.ts });
-        q.contact.run({
-          ref: sender(m),
-          name: m.from_name ? `${m.from_name} <${m.from_addr}>` : m.from_addr || 'Unknown sender',
-          notify: null,
-          phone: null,
-        });
-        q.msg.run(
-          messageRow({
-            ...base,
-            id: msgId(account, m.uid),
-            text: `Subject: ${m.subject || '(no subject)'}\n\n${textOf(m) || '(this mail has no readable text)'}${files.length ? `\n\n[attached: ${files.map((f) => f.name).join(', ')}]` : ''}`,
-          }),
-        );
-        // Each attachment follows as a message of its own, the way a file arrives in a chat,
-        // so it can be fetched and read like any other (bc msg media, watches with attachments on).
-        files.forEach((f, n) => {
-          const r = q.msg.run(
+// `label`: the name the account goes by now (its key, unless it was renamed). `address`: its own.
+export function archive(account, rows, textOf, label = account, address = null) {
+  withArchive(
+    (q, wa) =>
+      wa.transaction(() => {
+        for (const m of rows) {
+          const files = filesOf(m);
+          const base = { chat: chatRef(account), sender: sender(m), fromMe: m.from_me ? 1 : 0, ts: m.ts };
+          q.chat.run({ ref: chatRef(account), name: chatName(label), isGroup: 1, ts: m.ts });
+          q.contact.run({
+            ref: sender(m),
+            name: m.from_name ? `${m.from_name} <${m.from_addr}>` : m.from_addr || 'Unknown sender',
+            notify: null,
+            phone: null,
+          });
+          q.msg.run(
             messageRow({
               ...base,
-              id: `${msgId(account, m.uid)}:${n + 1}`,
-              type: f.type.startsWith('image/') ? 'image' : 'document',
-              text: `${f.name} (attached to "${m.subject || 'a mail with no subject'}")`,
+              id: msgId(account, m.uid),
+              text: `Subject: ${m.subject || '(no subject)'}\n\n${textOf(m) || '(this mail has no readable text)'}${files.length ? `\n\n[attached: ${files.map((f) => f.name).join(', ')}]` : ''}`,
             }),
           );
-          // dlType "mail": fetched from the mail server when asked for; directPath is the part of the mail it is.
-          if (r.changes)
-            q.media.run(
-              mediaRow({ rowid: r.lastInsertRowid, dlType: 'mail', mimetype: f.type, size: f.size, fileName: f.name, directPath: f.part }),
+          // Each attachment follows as a message of its own, the way a file arrives in a chat,
+          // so it can be fetched and read like any other (bc msg media, watches with attachments on).
+          files.forEach((f, n) => {
+            const r = q.msg.run(
+              messageRow({
+                ...base,
+                id: `${msgId(account, m.uid)}:${n + 1}`,
+                type: f.type.startsWith('image/') ? 'image' : 'document',
+                text: `${f.name} (attached to "${m.subject || 'a mail with no subject'}")`,
+              }),
             );
-        });
-      }
-    })(),
+            // dlType "mail": fetched from the mail server when asked for; directPath is the part of the mail it is.
+            if (r.changes)
+              q.media.run(
+                mediaRow({
+                  rowid: r.lastInsertRowid,
+                  dlType: 'mail',
+                  mimetype: f.type,
+                  size: f.size,
+                  fileName: f.name,
+                  directPath: f.part,
+                }),
+              );
+          });
+        }
+      })(),
+    { account, address, label },
   );
 }
 
 // What the owner sent, in the same chat as what the account received, as theirs ("Me").
 export function archiveSent(account, me, rows, textOf, label = account) {
   const ref = `mail:${me || 'me'}`;
-  withArchive((q, wa) =>
-    wa.transaction(() => {
-      for (const m of rows) {
-        q.chat.run({ ref: chatRef(account), name: chatName(label), isGroup: 1, ts: m.ts });
-        q.contact.run({ ref, name: me || 'Me', notify: null, phone: null });
-        const to = m.to_addr
-          ? `${m.to_name ? `${m.to_name} <${m.to_addr}>` : m.to_addr}${m.others ? ` and ${m.others} more` : ''}`
-          : 'nobody named';
-        q.msg.run(
-          messageRow({
-            chat: chatRef(account),
-            sender: ref,
-            fromMe: 1,
-            ts: m.ts,
-            id: sentId(account, m.uid),
-            text: `Subject: ${m.subject || '(no subject)'}\nTo: ${to}\n\n${textOf(m) || '(this mail has no readable text)'}`,
-          }),
-        );
-      }
-    })(),
+  withArchive(
+    (q, wa) =>
+      wa.transaction(() => {
+        for (const m of rows) {
+          q.chat.run({ ref: chatRef(account), name: chatName(label), isGroup: 1, ts: m.ts });
+          q.contact.run({ ref, name: me || 'Me', notify: null, phone: null });
+          const to = m.to_addr
+            ? `${m.to_name ? `${m.to_name} <${m.to_addr}>` : m.to_addr}${m.others ? ` and ${m.others} more` : ''}`
+            : 'nobody named';
+          q.msg.run(
+            messageRow({
+              chat: chatRef(account),
+              sender: ref,
+              fromMe: 1,
+              ts: m.ts,
+              id: sentId(account, m.uid),
+              text: `Subject: ${m.subject || '(no subject)'}\nTo: ${to}\n\n${textOf(m) || '(this mail has no readable text)'}`,
+            }),
+          );
+        }
+      })(),
+    { account, address: me, label },
   );
 }
 
@@ -162,17 +194,12 @@ export function unarchive(account, uids) {
   );
 }
 
-// Forget an account's mail entirely (or, with a cutoff, what is older than it).
-export function forget(db, account, beforeTs = null) {
+// Forget an account's mail entirely.
+export function forget(db, account) {
   withArchive((q) => {
-    if (beforeTs == null) {
-      q.removeChatMessages.run(chatRef(account));
-      q.removeChat.run(chatRef(account));
-      for (const t of ['mail', 'sent', 'known', 'state']) db.prepare(`DELETE FROM ${t} WHERE account = ?`).run(account);
-    } else {
-      q.removeBefore.run(chatRef(account), beforeTs);
-      for (const t of ['mail', 'sent']) db.prepare(`DELETE FROM ${t} WHERE account = ? AND ts < ?`).run(account, beforeTs);
-    }
+    q.removeChatMessages.run(chatRef(account));
+    q.removeChat.run(chatRef(account));
+    for (const t of ['mail', 'sent', 'known', 'state']) db.prepare(`DELETE FROM ${t} WHERE account = ?`).run(account);
   });
 }
 

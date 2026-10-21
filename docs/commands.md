@@ -6,7 +6,7 @@ In a chat channel the same commands work with a slash: `bc backup now` is `/back
 
 ## Contents
 
-[chat](#bc-chat) · [channel](#bc-channel) · [notify](#bc-notify) · [permissions](#bc-permissions) · [status](#bc-status) · [selftest](#bc-selftest) · [start](#bc-start) · [stop](#bc-stop) · [restart](#bc-restart) · [logs](#bc-logs) · [service](#bc-service) · [plugin](#bc-plugin) · [allsky](#bc-allsky) · [calendar](#bc-calendar) · [claude](#bc-claude) · [docs](#bc-docs) · [ha](#bc-ha) · [host](#bc-host) · [mail](#bc-mail) · [ocr](#bc-ocr) · [shortcut](#bc-shortcut) · [ssh](#bc-ssh) · [tg](#bc-tg) · [unifi](#bc-unifi) · [voice](#bc-voice) · [wa](#bc-wa) · [activity](#bc-activity) · [backup](#bc-backup) · [check](#bc-check) · [conversations](#bc-conversations) · [engine](#bc-engine) · [memory](#bc-memory) · [msg](#bc-msg) · [remind](#bc-remind) · [watch](#bc-watch)
+[chat](#bc-chat) · [channel](#bc-channel) · [notify](#bc-notify) · [permissions](#bc-permissions) · [status](#bc-status) · [selftest](#bc-selftest) · [start](#bc-start) · [stop](#bc-stop) · [restart](#bc-restart) · [logs](#bc-logs) · [service](#bc-service) · [plugin](#bc-plugin) · [allsky](#bc-allsky) · [android](#bc-android) · [calendar](#bc-calendar) · [claude](#bc-claude) · [docs](#bc-docs) · [ha](#bc-ha) · [host](#bc-host) · [mail](#bc-mail) · [ocr](#bc-ocr) · [shortcut](#bc-shortcut) · [ssh](#bc-ssh) · [tg](#bc-tg) · [unifi](#bc-unifi) · [voice](#bc-voice) · [wa](#bc-wa) · [webos](#bc-webos) · [activity](#bc-activity) · [backup](#bc-backup) · [check](#bc-check) · [conversations](#bc-conversations) · [engine](#bc-engine) · [memory](#bc-memory) · [msg](#bc-msg) · [remind](#bc-remind) · [watch](#bc-watch)
 
 ## bc chat
 
@@ -154,6 +154,70 @@ Examples:
 
 In the bot the same commands send the picture: /allsky now, /allsky startrails.
 ```
+
+## bc android
+
+Android: apps on Android phones and TVs, on USB or the network, gone through by routines that ask before anything is booked, paid or sent
+
+- `bc android pair`  
+  connect an Android device on USB or the network, name it, and put the screen reader on it [you only, in a terminal]
+  - `--name <name>`: what to call it: phone, tv, …
+  - `--address <host:port>`: a device on the network, at this address
+- `bc android unpair [name]`  
+  forget a device, and take the screen reader off it [you only]
+- `bc android devices`  
+  the paired devices, and whether each is connected [agent may run it]
+- `bc android screen`  
+  what a device shows now: its elements, and a picture [agent may run it]
+  - `--on <device>`: the paired device, by its name (when there are several)
+  - `--no-picture`: only the list of elements
+- `bc android adb`  
+  run an adb command on a device: bc android adb <device> shell '<command>' [depends on the arguments]
+- `bc android mode <name> <mode>`  
+  what the agent may run with adb on a device: read, ask or full [you only]
+- `bc android check`  
+  succeed only if an app is in front on a device, or its screen is on or off; --wait gives it time (made for checks) [agent may run it]
+  - `--on <device>`: the paired device, by its name (when there are several)
+  - `--app <app>`: this app in front: a word of its package, or the package
+  - `--screen <on|off>`: its screen on or off
+  - `--wait <seconds>`: look again each second for up to this long (up to 120)
+- `bc android test`  
+  whether each device is connected, allowed and charging [agent may run it]
+  - `--on <device>`: the paired device, by its name (when there are several)
+- `bc android list`  
+  the routines, whether each is approved, and how its last run went [agent may run it]
+- `bc android show <name>`  
+  one routine whole, or what is kept for an app (by its package); --json gives what add takes back [agent may run it]
+- `bc android add <file>`  
+  add or replace a routine, or what is kept for an app, from a file: a routine starts as a draft [you only]
+- `bc android learn <name>`  
+  make a routine from words: a model goes through the app step by step, stops before what books, pays or sends, then it is tried again and you approve it [you only]
+  - `--app <app>`: the app: a word of its name, or its package
+  - `--stop-at <button>`: the label of the button that books, buys, pays or sends: it stops at its screen, and it is pressed only on your word
+  - `--goal <words>`: what to do, and where to stop, in plain words
+  - `--set <name=value>`: a value it may type or choose, such as --set item="AA batteries"; each becomes a value of the routine
+  - `--picture <file>`: a picture of the app, such as its screen after the booking is made (up to 4): it says what to expect; taps are found on the device
+  - `--on <device>`: the paired device, by its name (when there are several)
+  - `--step`: ask before each step, with a picture of the screen, so you can watch it
+- `bc android edit <name>`  
+  change a routine in words (and pictures): in its steps, or by learning new steps in the app from where they go; then it is tried again and you approve it [depends on the arguments]
+  - `--change <words>`: what to change, in plain words
+  - `--set <name=value>`: the values to go through it with, as for run
+  - `--picture <file>`: a picture of the app, such as its screen after the booking is made (up to 4): it says what to expect; taps are found on the device
+  - `--on <device>`: the paired device, by its name (when there are several)
+- `bc android remove <name>`  
+  delete a routine [you only]
+- `bc android approve <name>`  
+  let the agent run a routine that was run to its confirmation screen as it is now [you only]
+- `bc android run <name>`  
+  go through a routine on a device; it stops at its confirmation screen and asks you [depends on the arguments]
+  - `--on <device>`: the paired device, by its name (when there are several)
+  - `--set <name=value>`: a value the routine asks for, such as --set to="the airport"
+  - `--dry`: stop at the confirmation screen and decline, by itself (to test a routine)
+- `bc android settings`  
+  how it is set up (secrets are named, never shown) [agent may run it]
+- `bc android status`  
+  how it is doing right now [agent may run it]
 
 ## bc calendar
 
@@ -376,9 +440,11 @@ Mail: reads your email accounts (Gmail and others, over IMAP), read-only; keeps 
   - `--other-name <value>`: Another name for this mail account
   - `--address <value>`: The email address
   - `--host <value>`: The mail server (leave as it is unless you know otherwise)
-  - `--days <value>`: How far back to keep mail?
+  - `--days <value>`: How far back to fetch mail? (What is stored is kept.)
 - `bc mail remove <name>`  
   disconnect an account and forget its mail [agent must ask you first]
+- `bc mail history <name> <days>`  
+  how far back an account's mail is fetched: 7, 30, 90 or 180 days (what is stored is kept) [depends on the arguments]
 - `bc mail rename <name> <newName>`  
   give an account another name [you only]
 - `bc mail list`  
@@ -387,8 +453,7 @@ Mail: reads your email accounts (Gmail and others, over IMAP), read-only; keeps 
   fetch new mail now [agent may run it]
   - `--account <name>`: only this account
 - `bc mail recover`  
-  go through the mail of the last days again, and keep what is missing [agent may run it]
-  - `--since <time>`: how far back, e.g. 14d (default, and at most: the days kept for the account)
+  go through the mail of the days fetched again, and keep what is missing [agent may run it]
   - `--account <name>`: only this account
 - `bc mail recent`  
   what arrived lately: kept (●) and skipped (○, with the reason) [agent may run it]
@@ -587,12 +652,11 @@ count as sensitive: refused in read mode, and need approval in ask mode.
 - `bc tg account pair`  
   log in to your Telegram account and choose what to collect [you only, in a terminal]
 - `bc tg account select`  
-  choose how many days back, and which chats [you only, in a terminal]
+  choose how far back history is fetched, and which chats [you only, in a terminal]
 - `bc tg account status`  
   link, service, what is kept, history progress [agent may run it]
 - `bc tg account recover`  
-  go through the messages of the last days again, and keep what is missing [agent may run it]
-  - `--since <time>`: how far back, e.g. 60d or 2026-09-01 (default: the days you keep)
+  go through the days of history chosen again, and keep what is missing [agent may run it]
   - `--chat <name>`: only this chat
 - `bc tg account unpair`  
   log out (optionally delete stored Telegram messages) [you only, in a terminal]
@@ -612,9 +676,9 @@ count as sensitive: refused in read mode, and need approval in ask mode.
 ```
 Setup:
   bc tg account pair      log in (needs api_id and api_hash from https://my.telegram.org), choose chats
-  bc tg account select    change how far back to keep, and which chats
-  bc tg account recover   something is missing: go through the last days again
-                          (--since 60d, --chat "a name")
+  bc tg account select    change how far back history is fetched, and which chats
+  bc tg account recover   something is missing: go through the days of history chosen again
+                          (--chat "a name")
 
 Searching and reading what it collected is done with the archive's own commands:
   bc msg find <question> --source tg · bc msg chats --source tg
@@ -723,13 +787,12 @@ WhatsApp: collects your WhatsApp messages into the archive, read-only (it can ne
 - `bc wa pair`  
   link WhatsApp, receive history, and pick chats [you only, in a terminal]
 - `bc wa select`  
-  choose how many days back, and all chats or only picked ones [you only, in a terminal]
+  choose how far back history is fetched, and all chats or only picked ones [you only, in a terminal]
 - `bc wa status`  
   link, service, what is kept, archive size [agent may run it]
 - `bc wa recover`  
-  ask your phone again for the messages of the last days, and keep what is missing [agent may run it]
-  - `--since <time>`: how far back, e.g. 60d or 2026-09-01 (default: the days you keep)
-  - `--chat <name>`: only this chat (quicker: otherwise every chat with a message in those days)
+  ask your phone again for the days of history chosen, and keep what is missing [agent may run it]
+  - `--chat <name>`: only this chat, looking for what is missing in between too (otherwise: each chat back from its oldest)
 - `bc wa unpair`  
   unlink from WhatsApp (optionally delete stored messages) [you only, in a terminal]
 - `bc wa settings`  
@@ -738,13 +801,63 @@ WhatsApp: collects your WhatsApp messages into the archive, read-only (it can ne
 ```
 Setup:
   bc wa pair      link WhatsApp (QR code or link code), pull history, pick chats
-  bc wa select    change how far back to keep, and which chats
-  bc wa recover   something is missing: ask your phone again for the last days
-                  (--since 60d, --chat "a name")
+  bc wa select    change how far back history is fetched, and which chats
+  bc wa recover   something is missing: ask your phone again, for the days of history chosen
+                  (--chat "a name" also looks for what is missing in between)
 
 Searching and reading what it collected is done with the archive's own commands:
   bc msg find <question> --source wa · bc msg chats --source wa
 ```
+
+## bc webos
+
+LG TV: LG webOS TVs on the network: on and off, the volume, the input, apps, the remote, and what each is doing
+
+- `bc webos pair`  
+  connect an LG TV on the network and name it: the TV asks you to allow it [you only, in a terminal]
+  - `--name <name>`: what to call it: tv, bedroom-tv, …
+  - `--address <ip>`: the TV's address on the network
+  - `--mac <address>`: its network card, to turn it on (when it does not say it itself)
+- `bc webos unpair [name]`  
+  forget a TV [you only]
+- `bc webos devices`  
+  the paired TVs [agent may run it]
+- `bc webos status`  
+  what a TV is doing: on or off, the app or input, the volume and where the sound goes [agent may run it]
+  - `--on <tv>`: the paired TV, by its name (when there are several)
+- `bc webos test`  
+  whether each TV answers and lets blackcat in [agent may run it]
+  - `--on <tv>`: the paired TV, by its name (when there are several)
+- `bc webos check`  
+  succeed only if a TV is on or off, on an input, or showing an app; --wait gives it time (made for checks) [agent may run it]
+  - `--on <tv>`: the paired TV, by its name (when there are several)
+  - `--power <on|off>`: on (its screen on) or off
+  - `--input <name>`: on this input (a few words of its name)
+  - `--app <name>`: showing this app
+  - `--wait <seconds>`: look again each second for up to this long (up to 120)
+- `bc webos on`  
+  turn a TV on (or its screen, when only that is off) [depends on the arguments]
+  - `--on <tv>`: the paired TV, by its name (when there are several)
+- `bc webos off`  
+  turn a TV off [depends on the arguments]
+  - `--on <tv>`: the paired TV, by its name (when there are several)
+- `bc webos volume <how> [steps]`  
+  the volume: up or down a few steps, mute, unmute, or a level (for its own speakers) [depends on the arguments]
+  - `--on <tv>`: the paired TV, by its name (when there are several)
+- `bc webos input [name...]`  
+  switch to an input by its name (HDMI 1, or what the TV calls it); with none, the inputs [depends on the arguments]
+  - `--on <tv>`: the paired TV, by its name (when there are several)
+- `bc webos launch [app...]`  
+  open an app by its name; with none, the apps [depends on the arguments]
+  - `--on <tv>`: the paired TV, by its name (when there are several)
+- `bc webos button <names...>`  
+  press the remote's buttons: HOME, BACK, UP, ENTER, a number (its digits one by one), … [depends on the arguments]
+  - `--on <tv>`: the paired TV, by its name (when there are several)
+- `bc webos notify <text...>`  
+  show a short message on the TV [depends on the arguments]
+  - `--on <tv>`: the paired TV, by its name (when there are several)
+- `bc webos settings`  
+  how it is set up (secrets are named, never shown) [agent may run it]
 
 ## bc activity
 
@@ -786,7 +899,7 @@ Activity: a record of what blackcat did and what it used: every call to the mode
   - `--dev`: only what a developer session used (it is left out otherwise)
   - `--all`: what a developer session used as well
 - `bc activity problems`  
-  what looks wrong in the record, by plain rules (no model): the same thing failing again and again, a command refused by policy, a service that stopped by itself, an account that is not paired writing to the bot, a look that keeps taking in as much as it may, scheduled work costing or running far more than usual. The check "blackcat itself" runs it; it fails when something is found [agent may run it]
+  what looks wrong in the record, by plain rules (no model): the same thing failing again and again, a command refused by policy, a service that stopped by itself, an account that is not paired writing to the bot, a look that keeps taking in as much as it may, scheduled work costing or running far more than usual. The check "blackcat health" runs it; it fails when something is found [agent may run it]
 - `bc activity setup`  
   what is recorded and for how long [depends on the arguments]
   - `--on`: Keep the record?
@@ -866,7 +979,7 @@ Moving to another machine: install blackcat there, add the same place, run bc ba
 
 Checks: have something looked at on a schedule: you are told when it stops working, a fix can be tried, and when it recovers
 
-- `bc check add <name...>`  
+- `bc check add [name...]`  
   set up a check [depends on the arguments]
   - `--run <command>`: a shell command to run; failing (a non-zero exit) means "not working" (printing {"problems": [{"key", "title"}]} as it fails names several things, each kept on its own). Often a plugin's own check: "blackcat unifi check"
   - `--file <path>`: a file to look at, e.g. a camera's latest image
@@ -878,6 +991,11 @@ Checks: have something looked at on a schedule: you are told when it stops worki
   - `--alert <when>`: when you are told: now (default), briefing (only in the daily briefing), "after 3" (looks in a row), "after 15m" (down that long)
   - `--quiet <from-to>`: a time of day when it tells you nothing, e.g. 03:00-03:30 (it still looks and fixes)
   - `--remind <duration>`: tell you again this often while it is not working and not snoozed, e.g. 1h
+  - `--measure <figures>`: figures to keep from what --run prints, e.g. "temp,load": JSON with those fields, one number alone, or lines of name=value
+  - `--limit <limits>`: past one of these it is not working, e.g. "temp>75" or "temp>75,free<10" (the figures are kept too)
+  - `--context <command>`: when it is not working, what this prints is kept with the time (and its picture, with --file): bc check history
+  - `--keep <duration>`: how long what it saw is kept (default 30d)
+  - `--from <ref>`: one a plugin offers (bc check offered), e.g. ssh:nas-heat; what you give besides replaces what it says
   - `--every <when>`: when it looks: "30m" (default), "1h", times like "08:00,20:00", or cron. Never more often than every 5 minutes
 - `bc check list`  
   every check and how it is doing [agent may run it]
@@ -895,14 +1013,27 @@ Checks: have something looked at on a schedule: you are told when it stops worki
   - `--alert <when>`: when you are told: now (default), briefing (only in the daily briefing), "after 3" (looks in a row), "after 15m" (down that long)
   - `--quiet <from-to>`: a time of day when it tells you nothing, e.g. 03:00-03:30 (it still looks and fixes)
   - `--remind <duration>`: tell you again this often while it is not working and not snoozed, e.g. 1h
+  - `--measure <figures>`: figures to keep from what --run prints, e.g. "temp,load": JSON with those fields, one number alone, or lines of name=value
+  - `--limit <limits>`: past one of these it is not working, e.g. "temp>75" or "temp>75,free<10" (the figures are kept too)
+  - `--context <command>`: when it is not working, what this prints is kept with the time (and its picture, with --file): bc check history
+  - `--keep <duration>`: how long what it saw is kept (default 30d)
   - `--no-fix`: remove the fix
   - `--no-look-for`: drop the description, so only the plain rules decide
   - `--no-quiet`: no quiet time
   - `--no-remind`: no reminders
+  - `--no-measure`: keep no figures
+  - `--no-limit`: no limits
+  - `--no-context`: keep nothing of what was going on
   - `--every <when>`: when it looks
   - `--name <name>`: a new name
   - `--pause`: stop looking
   - `--resume`: start looking again
+- `bc check history <check>`  
+  what it saw: its figures over a while, and each time it was not working, with what was going on then [agent may run it]
+  - `--since <when>`: how far back: 6h, 24h, 7d (default 24h)
+  - `--pictures`: save the pictures it kept, where they can be sent
+- `bc check offered`  
+  the checks the plugins you use offer, ready to add [agent may run it]
 - `bc check remove <check>`  
   delete a check [agent must ask you first]
 - `bc check snooze <check>`  
@@ -937,6 +1068,9 @@ Examples:
   bc check snooze camera --for 4h             not working, and you know: quiet until then (or --until-fixed)
   bc check fixed camera                       you fixed it: look now, and again over a few minutes
   bc check fix camera                         run its fix again now, and look
+  bc check add "Disk" --run "df --output=pcent / | tail -1 | tr -d ' %'" --limit "used>90"
+  bc check history disk --since 7d            its figures, and each time it was not working with what was going on
+  bc check offered                            checks the plugins you use have ready: bc check add --from <ref>
 
 What is wrong is kept one row an outage, from when it was first found until it works again:
 found again meanwhile, that row is brought up to date. You are told when it starts (or as

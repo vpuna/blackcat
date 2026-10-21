@@ -2,11 +2,11 @@
 //
 // A plugin supplies the requests for its own commands, in its manifest:
 //
-//   checks: [
+//   trials: [
 //     { say: 'what reminders do i have', expect: /blackcat remind list\b/ },
 //     { say: 'whats 17 times 23', never: /./ },
 //   ]
-//   checks: (ctx) => (ctx.config.get().hosts ? [ … ] : [])     // only what is set up, by its real names
+//   trials: (ctx) => (ctx.config.get().hosts ? [ … ] : [])     // only what is set up, by its real names
 //
 // `expect`: a command the agent should ask to run (a pattern on the command line).
 // `never`: one it must not ask for. A request is judged by what was asked for, whether or
@@ -22,7 +22,7 @@ export function collect({ quick = false } = {}) {
   const out = [];
   const skipped = [];
   for (const p of loaded()) {
-    let list = p.manifest.checks;
+    let list = p.manifest.trials;
     if (!list) continue;
     try {
       if (typeof list === 'function') list = list(makeCtx(p, { caller: 'owner', surface: 'job' }));
@@ -31,7 +31,7 @@ export function collect({ quick = false } = {}) {
       continue;
     }
     const mine = (list ?? []).filter((c) => c?.say && (c.expect instanceof RegExp || c.never instanceof RegExp));
-    if (!mine.length && typeof p.manifest.checks === 'function') skipped.push(`${p.name}: not set up`);
+    if (!mine.length && typeof p.manifest.trials === 'function') skipped.push(`${p.name}: not set up`);
     for (const c of quick ? mine.slice(0, 1) : mine) out.push({ plugin: p.name, say: c.say, expect: pat(c.expect), never: pat(c.never) });
   }
   return { cases: out, skipped };
@@ -40,7 +40,7 @@ export function collect({ quick = false } = {}) {
 // What each part asks of the background readers: its real instructions, a made-up input, and
 // how the answer is judged. In a manifest:
 //
-//   readerChecks: () => [{ say, job, values, content, schema, ok: (answer) => true | 'what was wrong' }]
+//   readerTrials: () => [{ say, job, values, content, schema, ok: (answer) => true | 'what was wrong' }]
 //
 // (`job` names the plugin's readers/<job>.md; a part of blackcat may give `system` whole.)
 //
@@ -48,7 +48,7 @@ export function collect({ quick = false } = {}) {
 export function collectReaders() {
   const out = [];
   for (const p of loaded()) {
-    let list = p.manifest.readerChecks;
+    let list = p.manifest.readerTrials;
     if (!list) continue;
     try {
       if (typeof list === 'function') list = list(makeCtx(p, { caller: 'owner', surface: 'job' }));

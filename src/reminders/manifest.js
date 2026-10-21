@@ -169,7 +169,7 @@ Quiet hours, when nudges wait:  bc remind setup`,
   // For `bc engine check`: what the owner might say, and the command it should lead to.
   // For its notes: is this a terminal, and is there a chat to push anything to.
   agent: { fill: (ctx) => ({ terminal: ctx.surface === 'terminal', unreached: !hasBot() }) },
-  checks: [
+  trials: [
     { say: 'what reminders do i have', expect: /blackcat remind list\b.*--json/ },
     { say: 'remind me tomorrow at 9am to call the bank', expect: /blackcat remind add .*bank.*--at ["']?\d{4}-\d\d-\d\d 09:00/i },
     {

@@ -4,7 +4,7 @@ import { openSqlite, withDb } from '../db.js';
 import { bornAt, sameProcess } from '../service/units.js';
 import * as sqliteVec from 'sqlite-vec';
 
-import { CHAT_NAME, SENDER_LABEL, sourceOf } from './db.js';
+import { ACCOUNT_NAME, CHAT_NAME, SENDER_LABEL, sourceOf, visible } from './db.js';
 import { getEmbedder } from './embed/index.js';
 import { QueryError, fmtTime, open as openArchive, parseTime, resolveChats, search as ftsSearch } from './query.js';
 import { plural } from '../util/format.js';
@@ -46,9 +46,20 @@ function openIndex({ readonly = false } = {}) {
   if (readonly && !fs.existsSync(INDEX_DB)) return null;
   const db = openSqlite(INDEX_DB, { readonly });
   sqliteVec.load(db);
-  if (!readonly) db.exec(SCHEMA);
+  if (!readonly) {
+    db.exec(SCHEMA);
+    // WhatsApp's chats, as the archive has named them since its ids were marked (src/archive/db.js, step 8).
+    if (meta(db, 'refs') !== 'marked')
+      db.transaction(() => {
+        db.exec(`UPDATE windows SET chat_ref = 'wa:' || chat_ref WHERE chat_ref GLOB '[0-9]*@*';
+          UPDATE OR IGNORE changed SET chat_ref = 'wa:' || chat_ref WHERE chat_ref GLOB '[0-9]*@*';`);
+        setMeta(db, 'refs', 'marked');
+      })();
+  }
   return db;
 }
+// A window's chat as the archive names it, in an index not yet opened for writing since then.
+const marked = (ref) => (/^[0-9][^:]*@/.test(ref) ? `wa:${ref}` : ref);
 
 // Something already indexed in this chat has changed (a voice note was listened to): the
 // chat is indexed again at the next run. (Where there is no index yet, there is nothing to do.)
@@ -391,8 +402,19 @@ export async function find(questions, { chat, since, until, limit = 8, source, o
         const refs = chat ? resolveChats(archive, chat, source).map((c) => c.ref) : null;
         const from = since ? parseTime(since) : 0;
         const to = until ? parseTime(until) : 2 ** 31;
+        // The chats of accounts the owner has hidden: none of theirs is found.
+        const hidden = new Set(
+          archive
+            .prepare(`SELECT ref FROM chats ch WHERE NOT ${visible('ch.account')}`)
+            .pluck()
+            .all(),
+        );
         const keep = (w) =>
-          (!refs || refs.includes(w.chat_ref)) && (!source || sourceOf(w.chat_ref) === source) && w.end_ts >= from && w.start_ts <= to;
+          (!refs || refs.includes(w.chat_ref)) &&
+          (!source || sourceOf(w.chat_ref) === source) &&
+          !hidden.has(w.chat_ref) &&
+          w.end_ts >= from &&
+          w.start_ts <= to;
 
         const K = 60;
         const scores = new Map(); // window id → { score, by: Set }
@@ -403,7 +425,11 @@ export async function find(questions, { chat, since, until, limit = 8, source, o
           scores.set(id, s);
         };
 
-        const getWindow = ix.prepare('SELECT * FROM windows WHERE id = ?');
+        const window = ix.prepare('SELECT * FROM windows WHERE id = ?');
+        const getWindow = (id) => {
+          const w = window.get(id);
+          return w && { ...w, chat_ref: marked(w.chat_ref) };
+        };
         const nearest = ix.prepare(
           `SELECT rowid AS id, distance FROM ${vecTable(embedder.id)} WHERE embedding MATCH ? AND k = ? ORDER BY distance`,
         );
@@ -412,8 +438,8 @@ export async function find(questions, { chat, since, until, limit = 8, source, o
         for (const [qi, question] of questions.entries()) {
           // By meaning. Filters are applied after the nearest-neighbour search, so ask for extra.
           let rank = 0;
-          for (const n of nearest.all(blob(vectors[qi]), refs || since || until || source ? 200 : 40)) {
-            const w = getWindow.get(n.id);
+          for (const n of nearest.all(blob(vectors[qi]), refs || since || until || source || hidden.size ? 200 : 40)) {
+            const w = getWindow(n.id);
             if (w && keep(w)) bump(w.id, rank++, 'meaning');
           }
 
@@ -433,7 +459,8 @@ export async function find(questions, { chat, since, until, limit = 8, source, o
             }
             const found = new Map(); // window id → { matched, order }
             hits.forEach((h, order) => {
-              const w = windowAt.get(h.chatRef, h.ts, h.ts);
+              const w =
+                windowAt.get(h.chatRef, h.ts, h.ts) ?? (h.chatRef.startsWith('wa:') ? windowAt.get(h.chatRef.slice(3), h.ts, h.ts) : null);
               if (!w || found.has(w.id)) return;
               const text = w.text.toLowerCase();
               const matched = words.filter((x) => new RegExp(`(^|[^\\p{L}\\p{N}])${x}`, 'u').test(text)).length;
@@ -445,15 +472,18 @@ export async function find(questions, { chat, since, until, limit = 8, source, o
           }
         } // each phrasing
 
-        const chatName = archive.prepare(`SELECT ${CHAT_NAME} AS name, ch.is_group AS isGroup FROM chats ch WHERE ch.ref = ?`);
+        const chatName = archive.prepare(
+          `SELECT ${CHAT_NAME} AS name, ch.is_group AS isGroup, ${ACCOUNT_NAME('ch.account')} AS account FROM chats ch WHERE ch.ref = ?`,
+        );
         const results = [...scores.entries()]
           .sort((a, b) => b[1].score - a[1].score)
           .slice(0, limit)
           .map(([id, s]) => {
-            const w = getWindow.get(id);
+            const w = getWindow(id);
             const c = chatName.get(w.chat_ref);
             return {
               source: sourceOf(w.chat_ref),
+              account: c?.account ?? null,
               chat: c?.name ?? w.chat_ref,
               isGroup: !!c?.isGroup,
               from: fmtTime(w.start_ts),

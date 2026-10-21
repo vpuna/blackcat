@@ -15,7 +15,7 @@ FROM node:22-bookworm-slim AS base
 # pass on signals and clean up after ended processes, procps for looking at processes.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      git zstd gnupg openssh-client ffmpeg unzip imagemagick poppler-utils tesseract-ocr antiword \
+      git zstd gnupg openssh-client ffmpeg unzip imagemagick poppler-utils tesseract-ocr antiword adb \
       ca-certificates tzdata tini procps \
  && rm -rf /var/lib/apt/lists/*
 

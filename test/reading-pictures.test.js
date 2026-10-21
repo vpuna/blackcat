@@ -93,13 +93,13 @@ const seen = () =>
   fs.existsSync(path.join(dir, 'seen.log')) ? fs.readFileSync(path.join(dir, 'seen.log'), 'utf8').trim().split('\n') : [];
 
 const wa = openWrite();
-wa.prepare("INSERT INTO chats (ref, name, is_group) VALUES ('111@s.whatsapp.net', 'Maya', 0)").run();
+wa.prepare("INSERT INTO chats (ref, name, is_group) VALUES ('wa:111@s.whatsapp.net', 'Maya', 0)").run();
 let n = 0;
 const at = () => nowS - 300 + ++n;
 const say = (text) => {
   const id = `P${n + 1}`;
   wa.prepare(
-    "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('111@s.whatsapp.net', ?, '111@s.whatsapp.net', 0, ?, 'text', ?)",
+    "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('wa:111@s.whatsapp.net', ?, 'wa:111@s.whatsapp.net', 0, ?, 'text', ?)",
   ).run(id, at(), text);
   return id;
 };
@@ -108,7 +108,7 @@ const picture = (reading, { caption = null, ts = null } = {}) => {
   const id = `P${n + 1}`;
   const r = wa
     .prepare(
-      "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('111@s.whatsapp.net', ?, '111@s.whatsapp.net', 0, ?, 'image', ?)",
+      "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('wa:111@s.whatsapp.net', ?, 'wa:111@s.whatsapp.net', 0, ?, 'image', ?)",
     )
     .run(id, ts ?? at(), caption);
   if (ts) n++;
@@ -122,7 +122,7 @@ const watch = addWatch(db, {
   chatId: 42,
   name: 'From Maya',
   lookFor: 'plans',
-  sources: { chats: [{ ref: '111@s.whatsapp.net', name: 'Maya' }] },
+  sources: { chats: [{ ref: 'wa:111@s.whatsapp.net', name: 'Maya' }] },
   mode: 'briefing',
 });
 const look = () => collect(db, getWatch(db, watch.id));
@@ -361,7 +361,7 @@ test('a file that cannot be fetched just now (no network) is tried again later, 
   const id = `P${n + 1}`;
   const r = wa
     .prepare(
-      "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('111@s.whatsapp.net', ?, '111@s.whatsapp.net', 0, ?, 'image', NULL)",
+      "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('wa:111@s.whatsapp.net', ?, 'wa:111@s.whatsapp.net', 0, ?, 'image', NULL)",
     )
     .run(id, at());
   wa.prepare(

@@ -10,6 +10,7 @@ export default {
       run: async (ctx, i) => { i.what = (i.what ?? []).join(' ') || undefined; if (i.what === 'nothing') ctx.fail('There is no picture of nothing.'); const fs = await import('node:fs'); const path = await import('node:path'); const dir = path.join(process.env.BLACKCAT_HOME, 'data/demo-media'); fs.mkdirSync(dir, { recursive: true }); const file = path.join(dir, 'picture.txt'); fs.writeFileSync(file, 'a picture of ' + (i.what ?? 'the sky')); return { text: 'Saved ' + file, data: { path: file, caption: 'A picture of ' + (i.what ?? 'the sky') } }; } },
     change: { summary: 'changes something', access: 'ask', run: (ctx) => { ctx.config.set({ changed: true }); return 'changed it'; } },
     slow: { summary: 'takes a while', access: 'allow', long: true, usage: '<seconds>', run: async (ctx, i) => { await new Promise((r) => setTimeout(r, Number(i.seconds) * 1000)); return 'slow is done'; } },
+    ask: { summary: 'asks the owner, and says the answer', access: 'allow', run: async (ctx) => { const a = await ctx.askOwner({ text: 'Go on?', choices: ['Yes', 'No'], expiresIn: 30 }); return 'answer: ' + (a.answer ?? a.how); } },
     notify: { summary: 'tells the owner something', access: 'allow', run: async (ctx) => ((await ctx.notify('a note from the demo plugin')) ? 'told' : 'could not tell') },
     setup: {
       summary: 'set the demo up',

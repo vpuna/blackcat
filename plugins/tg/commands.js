@@ -15,10 +15,13 @@ import {
   openArchiveForWriting as openWrite,
   plural,
   prompts,
+  recordActivity,
   service,
   serviceCommands,
+  setArchiveMeta as setMeta,
   show,
   withDb,
+  asJson,
 } from '../../src/api.js';
 
 const { orExit, askDays } = await prompts();
@@ -42,14 +45,14 @@ async function pauseService() {
 }
 
 // Page through chats (most recent first), 50 at a time, keeping picks across pages.
-async function pickChats(rows, preselected) {
+async function pickChats(rows, preselected, what = 'to keep') {
   const chosen = new Set(preselected);
   let offset = 0;
   for (;;) {
     const page = rows.slice(offset, offset + PAGE);
     const picked = orExit(
       await p.multiselect({
-        message: `Pick chats to keep · ${offset + 1}–${offset + page.length} of ${rows.length}, most recent first`,
+        message: `Pick chats ${what} · ${offset + 1}–${offset + page.length} of ${rows.length}, most recent first`,
         options: page.map((r) => ({
           value: r.ref,
           label: r.name ?? r.ref,
@@ -91,7 +94,9 @@ async function chooseWhat(rows, cur) {
       ],
     }),
   );
-  if (mode === 'selected') return { mode, chats: await pickChats(rows, cur.mode === 'selected' ? (cur.chats ?? []) : []), include: {} };
+  // (Only the chats picked: none is left out of those.)
+  if (mode === 'selected')
+    return { mode, chats: await pickChats(rows, cur.mode === 'selected' ? (cur.chats ?? []) : []), include: {}, exclude: [] };
 
   // Plain yes/no questions: a tick-list is too easy to confirm without ticking anything.
   p.log.info('Three kinds of chat are normally left out because they are noisy. Include any?');
@@ -103,7 +108,16 @@ async function chooseWhat(rows, cur) {
   await ask('bots', `Other bots (${count('bot')})? blackcat's own bot is never collected`);
   await ask('channels', `Broadcast channels (${count('channel')})?`);
   await ask('big', `Large groups with over ${BIG_GROUP} members (${big})?`);
-  return { mode, chats: [], include };
+  // Single chats left out of all the rest (a bot used for testing, a chat nobody needs read).
+  const was = cur.mode === 'selected' ? [] : (cur.exclude ?? []);
+  const offered = rows.filter((r) => was.includes(r.ref) || wanted(r.ref, r.kind, r.members, { mode, include, exclude: [] }));
+  const leaveOut = orExit(
+    await p.confirm({
+      message: `Leave any of these ${offered.length} chats out?${was.length ? ` (${was.length} left out now)` : ''}`,
+      initialValue: was.length > 0,
+    }),
+  );
+  return { mode, chats: [], include, exclude: leaveOut ? await pickChats(offered, was, 'to leave out') : [] };
 }
 
 // ---------- pair ----------
@@ -127,6 +141,9 @@ export async function pair() {
       'This logs blackcat in to YOUR Telegram account, like a second device, so it can',
       'read your chats. It only reads: it never sends, never marks anything read.',
       "Your chat with blackcat's own bot is never collected.",
+      '',
+      'Telegram allows this through its official API, but may limit an account it',
+      'takes for automated. You use this at your own risk.',
       '',
       'You need API credentials first (once, 2 minutes):',
       `  1. Open ${pc.cyan('https://my.telegram.org')} and log in with your phone number`,
@@ -224,7 +241,14 @@ export async function pair() {
 
   const days = await askDays(cur.days ?? 30);
   const what = await chooseWhat(rows, cur);
-  const settings = saveTgaSettings({ days, ...what, exclude: cur.exclude ?? [] });
+  const settings = saveTgaSettings({ days, ...what });
+  withDb(openWrite, (wdb) => setMeta(wdb, { tg_history_tell: '1' })); // how the first fetch went is sent
+  recordActivity({
+    kind: 'event',
+    category: 'messages: tg',
+    summary: `Telegram linked: collecting ${describeTga(settings)}`,
+    data: { days },
+  });
   const n = rows.filter((r) => wanted(r.ref, r.kind, r.members, settings)).length;
   p.log.success(`Collecting ${plural(n, 'chat')}: ${describeTga(settings)}`);
 
@@ -262,30 +286,53 @@ export async function select() {
   const days = await askDays(cur.days ?? 30);
   const what = await chooseWhat(rows, cur);
   const next = { ...cur, days, ...what };
-  const keep = new Set(rows.filter((r) => wanted(r.ref, r.kind, r.members, next)).map((r) => r.ref));
-  const cutoff = Math.floor(Date.now() / 1000) - days * 86400;
-
-  const list = [...keep].map((_, i) => `@c${i}`).join(', ') || "''";
-  const params = Object.fromEntries([...keep].map((j, i) => [`c${i}`, j]));
-  // Only ever Telegram rows.
-  const where = `chat_ref >= 'tg:' AND chat_ref < 'tg;' AND (ts < @cutoff OR chat_ref NOT IN (${list}))`;
-  const doomed = withDb(openWrite, (wdb) => wdb.prepare(`SELECT COUNT(*) AS n FROM messages WHERE ${where}`).get({ ...params, cutoff }).n);
-  const ok = orExit(
-    await p.confirm({
-      message: `Keep ${keep.size} chats, ${describeTga(next)}?${doomed ? ` ${doomed} stored Telegram messages outside this will be deleted.` : ''}`,
-    }),
-  );
+  const collect = (s) => new Set(rows.filter((r) => wanted(r.ref, r.kind, r.members, s)).map((r) => r.ref));
+  const keep = collect(next);
+  const ok = orExit(await p.confirm({ message: `Collect ${keep.size} chats, ${describeTga(next)}? What is stored is kept.` }));
   if (!ok) {
     p.cancel('Nothing changed');
     return;
   }
+  // Chats collected before and not now: what they have is kept, unless the owner says otherwise.
+  // (Nothing is deleted for the days: they say how far back history is fetched.)
+  const dropped = [...collect(cur)].filter((r) => !keep.has(r));
+  const list = dropped.map((_, i) => `@c${i}`).join(', ');
+  const params = Object.fromEntries(dropped.map((j, i) => [`c${i}`, j]));
+  // Only ever Telegram rows.
+  const where = `chat_ref >= 'tg:' AND chat_ref < 'tg;' AND chat_ref IN (${list || "''"})`;
+  const left = dropped.length
+    ? withDb(openWrite, (wdb) =>
+        wdb.prepare(`SELECT COUNT(*) AS n, COUNT(DISTINCT chat_ref) AS chats FROM messages WHERE ${where}`).get(params),
+      )
+    : { n: 0, chats: 0 };
+  const wipe =
+    left.n > 0 &&
+    orExit(
+      await p.select({
+        message: `${plural(left.chats, 'chat')} you no longer collect ${left.chats === 1 ? 'has' : 'have'} ${plural(left.n, 'stored message')}.`,
+        initialValue: 'keep',
+        options: [
+          { value: 'keep', label: 'Keep them', hint: 'still searchable; nothing new is added' },
+          { value: 'delete', label: 'Delete them' },
+        ],
+      }),
+    ) === 'delete';
   saveTgaSettings({ days, ...what });
   withDb(openWrite, (wdb) => {
-    wdb.prepare(`DELETE FROM messages WHERE ${where}`).run({ ...params, cutoff });
-    // Chats that are newly included, or need older history, get fetched again.
+    if (wipe) wdb.prepare(`DELETE FROM messages WHERE ${where}`).run(params);
+    // Chats that are newly included, or need older history, get fetched again; how it went is sent.
     wdb.prepare(`UPDATE chat_info SET backfill_cutoff = NULL WHERE ref >= 'tg:' AND ref < 'tg;'`).run();
+    setMeta(wdb, { tg_history_tell: '1' });
   });
-  p.outro('Saved. The service applies it within a few seconds and fetches any missing history.');
+  recordActivity({
+    kind: 'event',
+    category: 'messages: tg',
+    summary: `Telegram: collecting ${keep.size} chats, ${describeTga(next)}${days !== (cur.days ?? 30) ? ` (history was ${cur.days ?? 30} days back)` : ''}${left.n ? `; ${plural(left.n, 'stored message')} of ${plural(left.chats, 'chat')} no longer collected ${wipe ? 'deleted, as the owner chose' : 'kept'}` : ''}`,
+    data: { days, before: cur.days ?? 30, chats: keep.size, deleted: wipe ? left.n : 0 },
+  });
+  p.outro(
+    `Saved${wipe ? `, and ${plural(left.n, 'message')} deleted` : ''}. The service fetches the history within a few seconds, in the background; you are sent how it went.`,
+  );
 }
 
 // ---------- run (the service) ----------
@@ -300,7 +347,6 @@ export async function run() {
   await client.connect();
   if (!(await client.checkAuthorization())) {
     console.error('Telegram no longer accepts this login (it was ended from another device?). Run `bc tg account pair` again.');
-    const { openArchiveForWriting: openWrite, setArchiveMeta: setMeta } = await import('../../src/api.js');
     withDb(openWrite, (mdb) => setMeta(mdb, { tg_state: 'logged_out' })); // so the agent service can tell the owner
     process.exit(3);
   }
@@ -346,8 +392,10 @@ export async function unpair() {
     await removeServices(['tg']);
   }
   const wipe = orExit(await p.confirm({ message: 'Also delete the stored Telegram messages?', initialValue: false }));
+  let deleted = 0;
   if (wipe && fs.existsSync(DB_PATH)) {
     withDb(openWrite, (db) => {
+      deleted = db.prepare("SELECT COUNT(*) FROM messages WHERE chat_ref >= 'tg:' AND chat_ref < 'tg;'").pluck().get();
       for (const [t, col] of [
         ['messages', 'chat_ref'],
         ['chats', 'ref'],
@@ -358,6 +406,12 @@ export async function unpair() {
       db.prepare("DELETE FROM meta WHERE key LIKE 'tg\\_%' ESCAPE '\\'").run();
     });
   }
+  recordActivity({
+    kind: 'event',
+    category: 'messages: tg',
+    summary: `Telegram logged out; ${wipe ? `${plural(deleted, 'stored message')} deleted, as the owner chose` : 'its stored messages kept'}`,
+    data: { deleted },
+  });
   p.outro(wipe ? 'Logged out and deleted.' : 'Logged out. Stored messages are kept and still searchable.');
   process.exit(0);
 }
@@ -377,17 +431,13 @@ export async function status(opts) {
 
   if (opts.json) {
     console.log(
-      JSON.stringify(
-        {
-          linked,
-          service: svc?.ActiveState ?? 'not installed',
-          selection: { ...s, apiHash: undefined, summary: describeTga(s) },
-          archive: st,
-          backfill: meta.tg_backfill ?? null,
-        },
-        null,
-        2,
-      ),
+      asJson({
+        linked,
+        service: svc?.ActiveState ?? 'not installed',
+        selection: { ...s, apiHash: undefined, summary: describeTga(s) },
+        archive: st,
+        backfill: meta.tg_backfill ?? null,
+      }),
     );
     return;
   }
@@ -407,7 +457,7 @@ export async function status(opts) {
       `${svc.ActiveState}${conn ? ` · Telegram ${conn}` : ''}${conn === 'connected' && meta.tg_connected_at ? ` for ${duration(nowS - Number(meta.tg_connected_at))}` : ''}`,
     );
   } else row('service', pc.dim('○'), pc.dim('not installed → bc service install tg'));
-  row('keeping', pc.green('●'), `${describeTga(s)} · never blackcat's own bot`);
+  row('collecting', pc.green('●'), `${describeTga(s)} · everything stored is kept · never blackcat's own bot`);
   if (st) {
     row('archive', pc.green('●'), `${st.messages} messages in ${plural(st.chats, 'chat')} · ${pendingChats} chats known`);
     if (st.messages) row('range', ' ', `${fmtTime(st.oldest)} → ${fmtTime(st.newest)}`);

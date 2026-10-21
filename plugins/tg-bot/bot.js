@@ -81,6 +81,10 @@ export async function start(ctx, host) {
   const { Bot, GrammyError } = await import('grammy');
   const token = ctx.secrets.get('token');
   const bot = new Bot(token, botOptions());
+  // What the owner sent is handed to blackcat and the bot goes on reading: Telegram's updates
+  // come one at a time, and one left waiting on work that takes minutes (a shortcut running a
+  // routine) would hold back the owner's next tap, even the tap that work is waiting for.
+  const handOff = (work) => void Promise.resolve(work).catch((e) => log(`error: ${errMsg(e)}`));
 
   // Only paired accounts in private chats get through; everyone else is silently ignored.
   // The list is re-read each time, so `bc tg bot unpair` applies without a restart.
@@ -107,27 +111,33 @@ export async function start(ctx, host) {
     if (!from) return next();
     c.forwardedFrom = from;
     if (m.text == null) return next();
-    return host.incoming({ chat: c.chat.id, who: c.from.first_name, ref: m.message_id, text: m.text, forwardedFrom: from, at: m.date });
+    return handOff(
+      host.incoming({ chat: c.chat.id, who: c.from.first_name, ref: m.message_id, text: m.text, forwardedFrom: from, at: m.date }),
+    );
   });
 
   // Plugins written for the Telegram bot itself (`telegram.install(bot)` in their manifest)
   // set their screens up here, before blackcat's own, as they always have.
 
   bot.on('callback_query:data', (c) =>
-    host.action({
-      chat: c.chat?.id ?? c.from.id,
-      who: c.from.first_name,
-      id: c.callbackQuery.data,
-      // (What the button said, for the record of what the owner did.)
-      label:
-        (c.callbackQuery.message?.reply_markup?.inline_keyboard ?? []).flat().find((b) => b.callback_data === c.callbackQuery.data)?.text ??
-        null,
-      ref: c.callbackQuery.message?.message_id ?? null,
-      token: c.callbackQuery.id,
-    }),
+    handOff(
+      host.action({
+        chat: c.chat?.id ?? c.from.id,
+        who: c.from.first_name,
+        id: c.callbackQuery.data,
+        // (What the button said, for the record of what the owner did.)
+        label:
+          (c.callbackQuery.message?.reply_markup?.inline_keyboard ?? []).flat().find((b) => b.callback_data === c.callbackQuery.data)
+            ?.text ?? null,
+        ref: c.callbackQuery.message?.message_id ?? null,
+        token: c.callbackQuery.id,
+      }),
+    ),
   );
   bot.on('message:text', (c) =>
-    host.incoming({ chat: c.chat.id, who: c.from.first_name, ref: c.message.message_id, text: c.message.text, at: c.message.date }),
+    handOff(
+      host.incoming({ chat: c.chat.id, who: c.from.first_name, ref: c.message.message_id, text: c.message.text, at: c.message.date }),
+    ),
   );
 
   // Photos, PDFs and other files: kept, and blackcat is told where they are. Several sent
@@ -142,7 +152,7 @@ export async function start(ctx, host) {
       at: c.message.date,
       ...(c.forwardedFrom ? { forwardedFrom: c.forwardedFrom } : {}),
     };
-    if (!attachmentOf(c.message)) return host.incoming({ ...ev, unsupported: true });
+    if (!attachmentOf(c.message)) return handOff(host.incoming({ ...ev, unsupported: true }));
     const got = await receive(c, token);
     const key = c.message.media_group_id ?? `single:${c.message.message_id}`;
     const g = albums.get(key) ?? { files: [], errors: [], text: '' };

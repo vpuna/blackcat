@@ -1,4 +1,4 @@
-// The check "blackcat itself" in Telegram: what it found arrives as an alert with buttons, and
+// The check "blackcat health" in Telegram: what it found arrives as an alert with buttons, and
 // "I fixed it" closes it, since what came before the fix no longer counts.
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
@@ -22,12 +22,12 @@ before(async () => {
 });
 after(() => bot?.stop());
 
-test('an alert from "blackcat itself" has buttons, and "I fixed it" closes what it found', async () => {
-  const alert = await tg.next((c) => c.method === 'sendMessage' && /blackcat itself/.test(c.text ?? ''), { ms: 90_000 });
-  assert.equal(alert.text, '⚠️ blackcat itself: mail/sync failed 3 times in the last day, the latest: could not reach the server.');
+test('an alert from "blackcat health" has buttons, and "I fixed it" closes what it found', async () => {
+  const alert = await tg.next((c) => c.method === 'sendMessage' && /blackcat health/.test(c.text ?? ''), { ms: 90_000 });
+  assert.equal(alert.text, '⚠️ blackcat health: mail/sync failed 3 times in the last day, the latest: could not reach the server.');
   assert.deepEqual(tg.buttons(alert), ['😴 Snooze', '🛠 I fixed it']);
   const mark = tg.mark();
   tg.tap(alert, 'I fixed it');
   const answer = await tg.next((c) => c.method === 'sendMessage' && /working/.test(c.text ?? ''), { after: mark, ms: 30_000 });
-  assert.match(answer.text, /^✅ blackcat itself: working again\./);
+  assert.match(answer.text, /^✅ blackcat health: working again\./);
 });

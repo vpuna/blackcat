@@ -76,8 +76,9 @@ const SHAPE = {
     agent: 'object',
     source: 'object',
     storage: 'object',
+    trials: 'any',
+    readerTrials: 'any',
     checks: 'any',
-    readerChecks: 'any',
     when: 'sync',
     status: 'fn',
     settings: 'fn',
@@ -293,15 +294,15 @@ export function problems(m, dirName) {
       /^[a-z][a-z0-9_]{0,31}$/.test(c.command ?? '') && typeof c.description === 'string',
       'chat.commands entries are { command, description }',
     );
-  if (m.readerChecks != null && typeof m.readerChecks !== 'function') {
-    need(Array.isArray(m.readerChecks), 'readerChecks must be a list, or a function of ctx returning one');
-    for (const c of Array.isArray(m.readerChecks) ? m.readerChecks : [])
+  if (m.readerTrials != null && typeof m.readerTrials !== 'function') {
+    need(Array.isArray(m.readerTrials), 'readerTrials must be a list, or a function of ctx returning one');
+    for (const c of Array.isArray(m.readerTrials) ? m.readerTrials : [])
       need(
         typeof c?.say === 'string' &&
           typeof (c.job ?? c.system) === 'string' &&
           typeof c.content === 'string' &&
           typeof c.ok === 'function',
-        'readerChecks[]: each needs `say`, `job`, `content` and `ok` (a function of the answer)',
+        'readerTrials[]: each needs `say`, `job`, `content` and `ok` (a function of the answer)',
       );
   }
   // What runs the model.
@@ -309,12 +310,21 @@ export function problems(m, dirName) {
     for (const k of ['choices', 'ready', 'converse', 'ask']) need(typeof m.engine[k] === 'function', `engine.${k} must be a function`);
   }
   // Requests for the engine check (bc engine check): what the owner might say, and the command it should lead to.
+  if (m.trials != null && typeof m.trials !== 'function') {
+    need(Array.isArray(m.trials), 'trials must be a list, or a function of ctx returning one');
+    for (const c of Array.isArray(m.trials) ? m.trials : [])
+      need(
+        typeof c?.say === 'string' && (c.expect instanceof RegExp || c.never instanceof RegExp),
+        'trials[]: each needs `say`, and `expect` or `never` (a pattern)',
+      );
+  }
+  // Checks it offers, ready to add (bc check offered): what each runs, and what it keeps.
   if (m.checks != null && typeof m.checks !== 'function') {
     need(Array.isArray(m.checks), 'checks must be a list, or a function of ctx returning one');
     for (const c of Array.isArray(m.checks) ? m.checks : [])
       need(
-        typeof c?.say === 'string' && (c.expect instanceof RegExp || c.never instanceof RegExp),
-        'checks[]: each needs `say`, and `expect` or `never` (a pattern)',
+        typeof c?.id === 'string' && typeof c.name === 'string' && typeof c.run === 'string',
+        "checks[]: each needs `id`, `name` and `run` (the engine check's requests are `trials` now)",
       );
   }
   // A way to talk to the owner.
@@ -341,7 +351,8 @@ export function problems(m, dirName) {
     if (c.working != null) need(typeof c.working === 'string', `commands.${n}.working must be a string`);
   if (m.agenda != null) need(typeof m.agenda === 'function', 'agenda must be a function');
   if (m.names != null) need(typeof m.names === 'function', 'names must be a function of ctx and an address');
-  if (m.briefing != null) need(typeof m.briefing === 'function', 'briefing must be a function of ctx that returns { problems, fine }');
+  if (m.briefing != null)
+    need(typeof m.briefing === 'function', 'briefing must be a function of ctx that returns { problems, fine, note }');
   // A place files can be kept (src/storage.js).
   if (m.storage != null)
     for (const k of ['places', 'list', 'mkdir', 'put', 'get', 'remove'])
@@ -820,16 +831,32 @@ export function makeCtx(plugin, { caller = 'owner', surface = 'terminal' } = {})
     // Run a program without a shell. Never throws: returns { code, stdout, stderr }.
     exec: (cmd, args = [], { timeoutMs = 60_000, input } = {}) => exec(cmd, args, { timeoutMs, input }),
     // Send the owner a message, through whichever channel is in use (for jobs and alerts). → true if it went.
-    async notify(text) {
+    // `picture`: a file to send with it, from a folder the plugin opens to the agent (agent.readDirs).
+    async notify(text, { picture } = {}) {
       const { notifyOwner } = await import('../channels/send.js');
       const t0 = Date.now();
-      const went = await notifyOwner(text);
-      (await import('../activity/log.js')).sentOwner(name, 'a notice', {
+      const went = await notifyOwner(text, { picture });
+      (await import('../activity/log.js')).sentOwner(name, picture ? 'a notice with a picture' : 'a notice', {
         ok: !!went,
         chars: String(text ?? '').length,
         ms: Date.now() - t0,
+        file: !!picture,
       });
       return went;
+    },
+    // A message to the owner that shows how work is going, changed as it goes:
+    // → { update(text), done(text) }, or null when there is nowhere to send it.
+    async progress(text) {
+      const { progressOwner } = await import('../channels/send.js');
+      const p = await progressOwner(text);
+      (await import('../activity/log.js')).sentOwner(name, 'how it is going', { ok: !!p });
+      return p;
+    },
+    // Ask the owner something and wait for the answer: { text, picture, choices, expiresIn }.
+    // On the channel in use (or in this terminal, when the owner ran the command here); only
+    // the owner's tap answers, once, and never for good. → { answer, how, why } (src/channels/asks.js)
+    async askOwner(question, opts) {
+      return (await import('../channels/asks.js')).askOwner(name, plugin.manifest?.title ?? name, question, opts);
     },
     // Ask a model one question with no tools at all: the safe way to have a model read
     // untrusted text (messages, web pages, logs). Whatever that text says, nothing can be

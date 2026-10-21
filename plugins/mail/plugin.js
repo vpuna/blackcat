@@ -17,8 +17,8 @@ import {
   fromEvery,
   mentioning,
   now,
-  parseTime,
   plural,
+  recordActivity,
   renameAccount,
   withDb,
 } from '../../src/api.js';
@@ -39,6 +39,8 @@ const accounts = (ctx) => ctx.config.get().accounts ?? {};
 const label = (ctx, key) => accountName(accounts(ctx), key);
 // How often new mail is fetched: the owner's choice (bc mail setup), every 5 minutes until then.
 const EVERY = { '5m': 'every 5 minutes', '15m': 'every 15 minutes', '30m': 'every 30 minutes', '1h': 'every hour' };
+// How far back mail is fetched, chosen for each account (what is stored is kept, however old).
+const DAYS = { 7: 'a week', 30: '30 days', 90: '90 days', 180: '6 months' };
 const every = (ctx) => (EVERY[ctx.config.get().every] ? ctx.config.get().every : '5m');
 const rules = (ctx) => ({ allow: ctx.config.get().allow ?? [], block: ctx.config.get().block ?? [] });
 const when = (ts) => new Date(ts * 1000).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
@@ -131,9 +133,7 @@ async function syncAccount(ctx, name, { full = false } = {}) {
               }),
             )();
           }
-          // The server answers "since" by whole days, so mail is dropped two days later than it stops
-          // being asked for; otherwise the boundary day would be fetched and dropped on every run.
-          forget(db, name, Math.floor(since / 1000) - 2 * 86400);
+          // (Mail older than the days fetched is kept: the days say how far back to ask.)
 
           // Judge everything again each time, so a rule you add or remove applies to mail already here.
           const known = new Set(db.prepare('SELECT addr FROM known WHERE account = ?').pluck().all(name));
@@ -161,7 +161,7 @@ async function syncAccount(ctx, name, { full = false } = {}) {
             batch.map((m) => m.uid),
           );
           // Oldest first, so the archive (and what watches read next) is in the order it arrived.
-          archive(name, batch.filter((m) => got.has(m.uid)).reverse(), (m) => got.get(m.uid), label(ctx, name));
+          archive(name, batch.filter((m) => got.has(m.uid)).reverse(), (m) => got.get(m.uid), label(ctx, name), acct.address);
           const mark = db.prepare('UPDATE mail SET stored = 1 WHERE account = ? AND uid = ?');
           db.transaction(() => batch.forEach((m) => got.has(m.uid) && mark.run(name, m.uid)))();
           // And what the owner sent, with whatever room is left in this run.
@@ -271,13 +271,9 @@ Read-only: nothing is sent, deleted, moved or marked as read.`,
         {
           id: 'days',
           type: 'select',
-          message: 'How far back to keep mail?',
+          message: 'How far back to fetch mail? (What is stored is kept.)',
           default: '30',
-          options: [
-            { value: '7', label: 'a week' },
-            { value: '30', label: '30 days' },
-            { value: '90', label: '90 days' },
-          ],
+          options: Object.entries(DAYS).map(([value, label]) => ({ value, label })),
         },
       ],
       run: async (ctx, a) => {
@@ -337,6 +333,43 @@ Read-only: nothing is sent, deleted, moved or marked as read.`,
       },
     },
 
+    history: {
+      changes: true,
+      summary: "how far back an account's mail is fetched: 7, 30, 90 or 180 days (what is stored is kept)",
+      access: () => ({ level: 'ask', describe: 'change how far back mail is fetched' }),
+      usage: '<name> <days>',
+      run: async (ctx, i) => {
+        const [key] = pickAccount(ctx, i.name);
+        if (!DAYS[i.days]) ctx.fail(`<days> is one of: ${Object.keys(DAYS).join(', ')}.`);
+        const was = accounts(ctx)[key].days ?? 30;
+        const days = Number(i.days);
+        ctx.config.set({ accounts: { ...accounts(ctx), [key]: { ...accounts(ctx)[key], days } } });
+        const head = `${label(ctx, key)}: mail is fetched ${DAYS[i.days]} back from now on; what is stored is kept.`;
+        const note = (more) =>
+          recordActivity({
+            kind: 'event',
+            category: 'messages: mail',
+            summary: `mail ${label(ctx, key)}: fetched ${days} days back (was ${was})${more}`,
+          });
+        if (days <= was) return (note(''), { text: head, data: { account: label(ctx, key), days, was } });
+        // Further back than before: fetched now, so that how it went is said.
+        try {
+          const r = await syncAccount(ctx, key, { full: true });
+          note(`: ${plural(r.fresh, 'older mail')} fetched, ${r.kept} kept`);
+          return {
+            text: `${head} The older mail: ${plural(r.fresh, 'mail')}, ${r.kept} kept and ${r.skipped} skipped${r.more ? ` (the text of ${r.more} more comes with the next fetches)` : ''}.`,
+            data: { account: label(ctx, key), days, was, ...r },
+          };
+        } catch (e) {
+          note(`; the older mail could not be fetched now (${e.message})`);
+          return {
+            text: `${head} The older mail could not be fetched now (${e.message}); the next fetch tries again.`,
+            data: { account: label(ctx, key), days, was },
+          };
+        }
+      },
+    },
+
     rename: {
       summary: 'give an account another name',
       access: 'owner',
@@ -389,7 +422,7 @@ Read-only: nothing is sent, deleted, moved or marked as read.`,
             ? rows
                 .map(
                   (r) =>
-                    `${r.name}: ${r.address} · last ${r.days} days · ${r.mails} mails, ${r.kept} kept · ${r.error ? `NOT UPDATING since ${ago(r.errorSince)}: ${r.error}` : r.syncedAt ? `fetched ${ago(r.syncedAt)}` : 'not fetched yet'}`,
+                    `${r.name}: ${r.address} · fetched ${r.days} days back · ${r.mails} mails, ${r.kept} kept · ${r.error ? `NOT UPDATING since ${ago(r.errorSince)}: ${r.error}` : r.syncedAt ? `fetched ${ago(r.syncedAt)}` : 'not fetched yet'}`,
                 )
                 .join('\n')
             : 'No mail account is connected yet. Connect one: bc mail add',
@@ -423,37 +456,18 @@ Read-only: nothing is sent, deleted, moved or marked as read.`,
 
     recover: {
       changes: true,
-      summary: 'go through the mail of the last days again, and keep what is missing',
+      summary: 'go through the mail of the days fetched again, and keep what is missing',
       access: 'allow',
       untrusted: false,
-      options: [
-        ['--since <time>', 'how far back, e.g. 14d (default, and at most: the days kept for the account)'],
-        ['--account <name>', 'only this account'],
-      ],
+      options: [['--account <name>', 'only this account']],
       run: async (ctx, i) => {
         need(ctx);
-        let days = null;
-        if (i.since != null) {
-          try {
-            days = Math.round((Date.now() / 1000 - parseTime(String(i.since))) / 86400);
-          } catch (e) {
-            ctx.fail(e.message);
-          }
-          if (!(days >= 1)) ctx.fail('--since is a time in the past: 14d, 2w, 2026-09-01.');
-        }
         const out = [];
         const data = {};
         for (const n of pickAccount(ctx, i.account)) {
           const kept = accounts(ctx)[n].days ?? 30;
-          // Mail older than the days kept is dropped again at the next fetch: fetching it would only be undone.
-          if (days != null && days > kept) {
-            out.push(
-              `${label(ctx, n)}: mail is kept for the last ${kept} days, and what is older is dropped at each fetch. To go further back, connect the account again with more days: bc mail add`,
-            );
-            continue;
-          }
           try {
-            // Every fetch asks for all the mail of the days kept and takes what is not here yet;
+            // Every fetch asks for all the mail of the days fetched and takes what is not here yet;
             // this is that, made now and in full, whether or not the mailbox says it changed.
             const r = await syncAccount(ctx, n, { full: true });
             data[label(ctx, n)] = r;
@@ -764,14 +778,14 @@ Read-only: nothing is sent, deleted, moved or marked as read.`,
   settings: (ctx) => ({
     'new mail is fetched': EVERY[every(ctx)],
     ...Object.fromEntries(
-      Object.entries(accounts(ctx)).map(([n, a]) => [label(ctx, n), `${a.address} via ${a.host}, the last ${a.days} days`]),
+      Object.entries(accounts(ctx)).map(([n, a]) => [label(ctx, n), `${a.address} via ${a.host}, fetched ${a.days} days back`]),
     ),
     'always keep': rules(ctx).allow.join(', ') || 'none',
     'never keep': rules(ctx).block.join(', ') || 'none',
   }),
 
   // For `bc engine check`: what the owner might say, and the command it should lead to.
-  checks: (ctx) =>
+  trials: (ctx) =>
     Object.keys(accounts(ctx)).length ? [{ say: 'any new mail from the school?', expect: /blackcat mail (recent|find|senders)\b/ }] : [],
   agent: {
     fill: (ctx) => ({

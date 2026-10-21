@@ -11,11 +11,19 @@ const FILES = dataPath('shortcut-files');
 const NAME = /^[a-z][a-z0-9_]{1,24}$/;
 const STEP_TIMEOUT_MS = 3 * 60_000;
 const MANY = { many: true };
+const PROGRESS_FROM = 3; // steps: a shortcut with this many says which it is on as it goes
 
 const all = (ctx) => ctx.config.get().shortcuts ?? {};
 const dirOf = (name) => path.join(FILES, name);
 const fill = (s, name) => expandHome(String(s).replaceAll('{dir}', dirOf(name)));
-const sh = (cmd) => shell(cmd, { timeoutMs: STEP_TIMEOUT_MS, keep: 3500 });
+// (`quiet`: the shortcut shows its steps itself, so what a step runs sends no list of its own.)
+// (`title`: what the shortcut is for, in the owner's words, for what a step runs to call itself by.)
+const sh = (cmd, quiet, title) =>
+  shell(cmd, {
+    timeoutMs: STEP_TIMEOUT_MS,
+    keep: 3500,
+    env: { ...(quiet ? { BLACKCAT_PROGRESS: 'off' } : {}), ...(title ? { BLACKCAT_TITLE: String(title).slice(0, 120) } : {}) },
+  });
 
 // A shortcut may have actions: words of its own after its name, each with steps of its own
 // (/music pause, /music stop). One with actions and no steps of its own is a menu: /music
@@ -55,21 +63,60 @@ async function taken() {
   return new Set([...chatCommands({ own: false }), ...directCommands()].map((c) => c.command).concat(['start', 'cancel', 'bc']));
 }
 
-// Carry a shortcut out. → { ok, text, files: [paths], failed? }
-export async function runShortcut(name, sc) {
+// What a step is called while it runs: its own name, given as a comment at its end (`blackcat
+// webos on # Turning on the TV`, which the shell leaves alone), else the command, short.
+export function stepName(step) {
+  const s = String(step);
+  let quote = null;
+  for (let k = 0; k < s.length; k++) {
+    const ch = s[k];
+    if (quote) {
+      if (ch === quote) quote = null;
+    } else if (ch === "'" || ch === '"') quote = ch;
+    else if (ch === '#' && /\s/.test(s[k - 1] ?? '') && /\s/.test(s[k + 1] ?? '')) {
+      const own = s.slice(k + 1).trim();
+      if (own) return own;
+      break;
+    }
+  }
+  const cmd = s
+    .replace(/^\s*blackcat\s+/, '')
+    .replace(/\s+#\s*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cmd.length > 60 ? `${cmd.slice(0, 59)}…` : cmd;
+}
+
+// Carry a shortcut out, one step after another; a step that fails (a check that does not
+// pass) stops it there. `onStep({ n, of, name })` as each one starts.
+// → { ok, text, files: [paths], step? }
+export async function runShortcut(name, sc, { onStep, title = sc.description } = {}) {
   fs.mkdirSync(dirOf(name), { recursive: true, mode: 0o700 });
   let last = '';
-  for (const step of sc.run ?? []) {
-    const r = await sh(fill(step, name).replaceAll(dirOf(name), `'${dirOf(name)}'`));
-    if (r.code !== 0)
+  const handed = [];
+  const steps = sc.run ?? [];
+  for (const [k, step] of steps.entries()) {
+    await onStep?.({ n: k + 1, of: steps.length, name: stepName(step) });
+    const r = await sh(fill(step, name).replaceAll(dirOf(name), `'${dirOf(name)}'`), !!onStep, title);
+    if (r.code !== 0) {
+      const why = r.timedOut
+        ? 'it took too long'
+        : r.out?.trim()
+          ? r.out.trim().split('\n').slice(-6).join('\n')
+          : `it failed (exit ${r.code})`;
       return {
         ok: false,
         files: [],
-        text: `"${step}" ${r.timedOut ? 'took too long' : `failed (exit ${r.code})`}${r.out ? `:\n${r.out.split('\n').slice(-6).join('\n')}` : ''}`,
+        step: k + 1,
+        text: `${steps.length > 1 ? `Stopped at step ${k + 1} of ${steps.length} (${stepName(step)})` : `"${stepName(step)}" did not work`}: ${why}`,
       };
-    last = r.out;
+    }
+    // A picture a step hands on (`[[send: <path>]]`, a routine's screen at the end): sent with
+    // the shortcut's own files, after its last step. Only one blackcat took itself.
+    for (const [, f] of r.out.matchAll(HANDED)) if (isTaken(f.trim())) handed.push(f.trim());
+    last = r.out.replace(HANDED, '').trim();
   }
-  const files = [];
+  const files = [...handed];
   for (const f of sc.send ?? []) {
     const file = fill(f, name);
     if (!fs.existsSync(file)) return { ok: false, files, text: `There is no file at ${f}.` };
@@ -78,6 +125,14 @@ export async function runShortcut(name, sc) {
   const text = sc.reply === 'none' || (files.length && !sc.reply) ? '' : last;
   return { ok: true, files, text, caption: sc.caption ?? null };
 }
+
+const HANDED = /\[\[send: ([^\]\n]+)\]\]\n?/g;
+// (A file blackcat itself made: in one of its own folders of pictures and media.)
+const isTaken = (f) => {
+  const real = path.resolve(f);
+  const data = path.dirname(dataPath('shortcut-media'));
+  return path.dirname(path.dirname(real)) === data && /-media$/.test(path.basename(path.dirname(real))) && fs.existsSync(real);
+};
 
 const LATE_S = 3 * 3600; // a time missed by more than this (blackcat was off) is skipped, not sent late
 
@@ -277,7 +332,12 @@ first that fails. In the bot, a shortcut is /<its name>.`,
             text: `/${i.name}: ${sc.description}\nIt has: ${has.join(', ')}`,
             data: { output: '', files: [], caption: null, actions: Object.keys(actionsOf(sc)) },
           };
-        const r = await runShortcut(i.name, what.run);
+        const steps = (what.run.run ?? []).length;
+        const r = await runShortcut(i.name, what.run, {
+          title: what.run.description ?? sc.description,
+          onStep:
+            !i.json && ctx.surface === 'terminal' && steps > 1 ? ({ n, of, name }) => console.error(`  ${n}/${of} ${name}`) : undefined,
+        });
         if (!r.ok) ctx.fail(r.text);
         return {
           text: [r.text, ...r.files.map((f) => `file: ${f}`)].filter(Boolean).join('\n') || 'Done.',
@@ -521,19 +581,43 @@ first that fails. In the bot, a shortcut is /<its name>.`,
     install: (ui, { ctx }) => {
       // Shortcuts can be added while the agent runs, so they are looked up on every message.
       // What a shortcut, or one of its actions, did: said in the chat.
+      // One with several steps shows them in one message changed as it goes, as a routine does:
+      // each in its own words, ticked when done, and then how it ended.
       const carryOut = async (c, name, sc, part, label) => {
         ctx.log(`/${label} (shortcut)`);
         c.working(part.send?.length ? 'photo' : 'typing');
-        const r = await runShortcut(name, part);
-        if (!r.ok) return c.reply(`😿 ${r.text}`);
-        if (r.text) await c.reply(r.text.slice(0, 4000));
+        const t0 = Date.now();
+        let shown = null;
+        const lines = [];
+        const list = (...end) => [`▶ /${label}`, ...lines.slice(-10), ...end].join('\n');
+        const tick = (mark) => lines.length && (lines[lines.length - 1] = lines.at(-1).replace(/^⏳/, mark));
+        const onStep =
+          (part.run ?? []).length >= PROGRESS_FROM
+            ? async ({ n, name: what }) => {
+                tick('✓');
+                lines.push(`⏳ ${n}. ${what}`);
+                if (shown) await ui.edit(c.chat, shown, list()).catch(() => {});
+                else shown = await c.reply(list());
+              }
+            : undefined;
+        const r = await runShortcut(name, part, { onStep, title: part.description ?? sc.description });
+        const say = (text) => (shown ? ui.edit(c.chat, shown, text).catch(() => c.reply(text)) : c.reply(text));
+        if (!r.ok) {
+          tick('✖');
+          return say(shown ? list('', `😿 ${r.text}`) : `😿 /${label}: ${r.text}`);
+        }
+        tick('✓');
+        const secs = shown ? ` · ${Math.round((Date.now() - t0) / 1000)}s` : '';
+        if (shown) await say(list(`✓ Done${secs}`, ...(r.text ? ['', r.text] : [])).slice(0, 4000));
+        else if (r.text) await say(r.text.slice(0, 4000));
         for (const f of r.files)
           await c.sendFile(
             f,
             r.caption ??
               `${part.description ?? sc.description} · ${fs.statSync(f).mtime.toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`,
           );
-        if (!r.text && !r.files.length) await c.reply(`Done: /${label}.`);
+        // (`--reply none`: nothing at all when it went well; what it ran has said what it did.)
+        if (!shown && !r.text && !r.files.length && part.reply !== 'none') await say(`✅ /${label}: ${part.description ?? sc.description}`);
         return undefined;
       };
       // Its actions, as buttons to tap.
@@ -599,7 +683,7 @@ first that fails. In the bot, a shortcut is /<its name>.`,
     ),
 
   // For `bc engine check`: what the owner might say, and the command it should lead to.
-  checks: (ctx) => {
+  trials: (ctx) => {
     const name = Object.keys(all(ctx))[0];
     return [
       {

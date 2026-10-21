@@ -10,6 +10,10 @@
 //   checks.quiet      "03:00-03:30": a time of day when it tells nothing (it still looks and fixes)
 //   checks.remind     "1h": tell again this often while something is wrong and not snoozed
 //   checks.builtin    'itself' for the check that is always there (ITSELF)
+//   checks.measure    JSON: the figures kept from each look's output, ["temp", "load"]
+//   checks.limits     JSON: [{ field, op: '>' | '<', value }]: past one, it is not working
+//   checks.context    a command run when it goes wrong, whose output is kept (check-history.db)
+//   checks.keep       "30d": how long its history is kept
 //   check_findings    what is wrong, one row an outage, see below
 import { adopt, openAgentDb, ownerChat } from '../internal.js';
 import { upgrade } from '../db.js';
@@ -116,7 +120,7 @@ function fromIncidents(db) {
 // to look at something else.
 export const ITSELF = {
   builtin: 'itself',
-  name: 'blackcat itself',
+  name: 'blackcat health',
   command: 'blackcat activity problems --json',
   every: ['5 * * * *'],
 };
@@ -132,7 +136,16 @@ export const DEFAULT_EVERY = ['*/30 * * * *'];
 // when the check does (and one the owner gave separately does not).
 export const viaOf = (id) => `check ${id}`;
 
-const STEPS = [(db) => db.exec(SCHEMA), fromIncidents, itself];
+// What a check records (src/checks/history.js keeps it).
+const recording = (db) => {
+  for (const col of ['measure', 'limits', 'context', 'keep']) db.exec(`ALTER TABLE checks ADD COLUMN ${col} TEXT`);
+};
+
+// It was called "blackcat itself" at first, which said whose it is, not what it looks at.
+// (A name the owner gave it stays.)
+const renamed = (db) => db.prepare("UPDATE checks SET name = ? WHERE builtin = 'itself' AND name = 'blackcat itself'").run(ITSELF.name);
+
+const STEPS = [(db) => db.exec(SCHEMA), fromIncidents, itself, recording, renamed];
 
 export function openChecksDb() {
   const db = openAgentDb();
@@ -161,6 +174,10 @@ const hydrate = (r) =>
     alert: r.alert ? JSON.parse(r.alert) : null,
     quiet: r.quiet ?? null,
     remind: r.remind ?? null,
+    measure: r.measure ? JSON.parse(r.measure) : null,
+    limits: r.limits ? JSON.parse(r.limits) : null,
+    context: r.context ?? null,
+    keep: r.keep ?? null,
     last_run: r.last_run,
     created_ts: r.created_ts,
     // What is wrong now, in short: null when nothing is.
@@ -205,13 +222,15 @@ const COLS = {
   last_run: 'last_run',
   quiet: 'quiet',
   remind: 'remind',
+  context: 'context',
+  keep: 'keep',
 };
 export function addCheck(db, c) {
   const id = Number(
     db
       .prepare(
-        `INSERT INTO checks (chat_id, name, look_for, command, file, max_age, fix, tries, wait, every, alert, quiet, remind, active, created_ts)
-    VALUES (@chatId, @name, @look_for, @command, @file, @maxAge, @fix, @tries, @wait, @every, @alert, @quiet, @remind, 1, @now)`,
+        `INSERT INTO checks (chat_id, name, look_for, command, file, max_age, fix, tries, wait, every, alert, quiet, remind, measure, limits, context, keep, active, created_ts)
+    VALUES (@chatId, @name, @look_for, @command, @file, @maxAge, @fix, @tries, @wait, @every, @alert, @quiet, @remind, @measure, @limits, @context, @keep, 1, @now)`,
       )
       .run({
         chatId: c.chatId ?? null,
@@ -227,6 +246,10 @@ export function addCheck(db, c) {
         alert: c.alert ? JSON.stringify(c.alert) : null,
         quiet: c.quiet ?? null,
         remind: c.remind ?? null,
+        measure: c.measure?.length ? JSON.stringify(c.measure) : null,
+        limits: c.limits?.length ? JSON.stringify(c.limits) : null,
+        context: c.context ?? null,
+        keep: c.keep ?? null,
         now: Math.floor(Date.now() / 1000),
       }).lastInsertRowid,
   );
@@ -236,7 +259,8 @@ export function updateCheck(db, id, patch) {
   const sets = [];
   const vals = { id };
   for (const [k, v] of Object.entries(patch)) {
-    if (k === 'every' || k === 'state' || k === 'alert') (sets.push(`${k} = @${k}`), (vals[k] = v == null ? null : JSON.stringify(v)));
+    if (['every', 'state', 'alert', 'measure', 'limits'].includes(k))
+      (sets.push(`${k} = @${k}`), (vals[k] = v == null || (Array.isArray(v) && !v.length) ? null : JSON.stringify(v)));
     else if (COLS[k]) (sets.push(`${COLS[k]} = @${k}`), (vals[k] = k === 'active' ? (v ? 1 : 0) : (v ?? null)));
   }
   if (sets.length) db.prepare(`UPDATE checks SET ${sets.join(', ')} WHERE id = @id`).run(vals);

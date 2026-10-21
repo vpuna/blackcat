@@ -56,9 +56,9 @@ const withFile = q.msg.run(
 q.media.run(
   mediaRow({ rowid: withFile.lastInsertRowid, dlType: 'sms', mimetype: 'image/png', size: 10, fileName: 'pic.png', directPath: 'part-7' }),
 );
-q.chat.run({ ref: '15551234@s.whatsapp.net', name: 'Maya', isGroup: 0, ts: now });
+q.chat.run({ ref: 'wa:15551234@s.whatsapp.net', name: 'Maya', isGroup: 0, ts: now });
 q.msg.run(
-  messageRow({ chat: '15551234@s.whatsapp.net', id: 'WA1', sender: '15551234@s.whatsapp.net', ts: now - 10, text: 'see you Friday' }),
+  messageRow({ chat: 'wa:15551234@s.whatsapp.net', id: 'WA1', sender: 'wa:15551234@s.whatsapp.net', ts: now - 10, text: 'see you Friday' }),
 );
 wa.close();
 

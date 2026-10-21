@@ -68,16 +68,16 @@ const { openWatchDb, getWatch, getItem, listItems, listWatches, TODO } = await i
 const { collect } = await import('../src/watch/collect.js');
 // Voice notes are written down as they arrive, by a job of the archive's: here, when the test says.
 const { readNow, setReading } = await import('../src/archive/reading.js');
-const { ANSWERED, TODO_KINDS } = await import('../src/watch/shape.js');
+const { ANSWERED, DEALT, TODO_KINDS } = await import('../src/watch/shape.js');
 const { printBriefing } = await import('../src/watch/briefing.js');
 const { listReminders } = await import('../src/reminders/db.js');
 
 const wa = openWrite();
-wa.prepare("INSERT INTO chats (ref, name, is_group) VALUES ('111@s.whatsapp.net', 'Maya', 0)").run();
+wa.prepare("INSERT INTO chats (ref, name, is_group) VALUES ('wa:111@s.whatsapp.net', 'Maya', 0)").run();
 let n = 0;
 const say = (text, fromMe = 0) => {
   wa.prepare(
-    "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('111@s.whatsapp.net', ?, '111@s.whatsapp.net', ?, ?, 'text', ?)",
+    "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('wa:111@s.whatsapp.net', ?, 'wa:111@s.whatsapp.net', ?, ?, 'text', ?)",
   ).run(`W${++n}`, fromMe, Math.floor(Date.now() / 1000) - 600 + n, text);
   return `W${n}`;
 };
@@ -86,7 +86,7 @@ const voice = (content, fromMe = 0) => {
   const id = `W${n + 1}`;
   const r = wa
     .prepare(
-      "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('111@s.whatsapp.net', ?, '111@s.whatsapp.net', ?, ?, 'voice', NULL)",
+      "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('wa:111@s.whatsapp.net', ?, 'wa:111@s.whatsapp.net', ?, ?, 'voice', NULL)",
     )
     .run(id, fromMe, Math.floor(Date.now() / 1000) - 600 + ++n);
   wa.prepare("INSERT INTO media (msg_rowid, dl_type, mimetype, seconds) VALUES (?, 'ptt', 'audio/ogg', 6)").run(r.lastInsertRowid);
@@ -113,7 +113,11 @@ const nudges = () => listReminders(db, {}).filter((r) => r.item_id);
 const itsTime = (itemId) => db.prepare('UPDATE watch_items SET remind_ts = ? WHERE id = ?').run(Math.floor(Date.now() / 1000) - 30, itemId);
 // (Entries left open by an earlier test are in the same chat, and would be judged with each new message: put them aside.)
 const clearOthers = () =>
-  db.prepare("UPDATE watch_items SET status = 'dropped' WHERE category = 'waiting' AND status IN ('new', 'kept')").run();
+  db
+    .prepare(
+      "UPDATE watch_items SET status = 'dropped' WHERE category IN ('waiting', 'reply', 'commitment', 'deadline') AND status IN ('new', 'kept')",
+    )
+    .run();
 const briefing = async () => (await printBriefing(todo().chat_id, { peek: true })).text;
 
 test('something asked of somebody is noted as waiting: with no nudge, and in the briefing with when an answer is expected', async () => {
@@ -207,6 +211,8 @@ test('everything else on the list is nudged as before, when it is filed', async 
   await collect(db, todo());
   const it = listItems(db, todo().id, { status: 'new,kept' }).find((x) => x.title === 'Send Maya the photos');
   assert.ok(nudges().some((r) => r.item_id === it.id && r.status === 'pending' && r.text === 'Send Maya the photos'));
+  // (Put aside: what the owner owes is judged when they write, which later tests here do.)
+  db.prepare("UPDATE watch_items SET status = 'dropped' WHERE id = ?").run(it.id);
 });
 
 test('they answered with a voice note: it is judged by what was said', async () => {
@@ -559,7 +565,7 @@ test('the text in a picture is read like a written message too, at the look afte
   const id = `W${n + 1}`;
   const r = wa
     .prepare(
-      "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('111@s.whatsapp.net', ?, '111@s.whatsapp.net', 0, ?, 'image', NULL)",
+      "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('wa:111@s.whatsapp.net', ?, 'wa:111@s.whatsapp.net', 0, ?, 'image', NULL)",
     )
     .run(id, Math.floor(Date.now() / 1000) + ++n);
   wa.prepare("INSERT INTO media (msg_rowid, dl_type, mimetype) VALUES (?, 'image', 'image/jpeg')").run(r.lastInsertRowid);
@@ -659,7 +665,7 @@ test('a message with a long id is shown to a reader under a short label, and wha
   const put = (id, text, fromMe, back) =>
     wa
       .prepare(
-        "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('111@s.whatsapp.net', ?, '111@s.whatsapp.net', ?, ?, 'text', ?)",
+        "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('wa:111@s.whatsapp.net', ?, 'wa:111@s.whatsapp.net', ?, ?, 'text', ?)",
       )
       .run(id, fromMe, Math.floor(Date.now() / 1000) - back, text);
   const earlier = 'AC7DA3ABBBF033AF9DC9EF21E3B09E35';
@@ -688,4 +694,176 @@ test('a message with a long id is shown to a reader under a short label, and wha
   assert.ok(listItems(db, todo().id, { status: 'new,kept' }).some((i) => i.msg_id === earlier && i.category === 'commitment'));
   const it = listItems(db, todo().id, { status: 'new,kept' }).find((i) => i.title.includes('which recipe'));
   assert.equal(it.msg_id, question);
+});
+
+// ---- what the owner owes, and has done ----
+// (In a chat of their own: the tests above leave messages in Maya's that would count as said since.)
+wa.prepare("INSERT INTO chats (ref, name, is_group) VALUES ('wa:222@s.whatsapp.net', 'Lena', 0)").run();
+const lena = (text, fromMe = 0, file = null) => {
+  const id = `L${++n}`;
+  const r = wa
+    .prepare(
+      "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('wa:222@s.whatsapp.net', ?, 'wa:222@s.whatsapp.net', ?, ?, ?, ?)",
+    )
+    .run(id, fromMe, Math.floor(Date.now() / 1000) + n, file ? 'document' : 'text', text);
+  if (file)
+    wa.prepare("INSERT INTO media (msg_rowid, dl_type, mimetype, file_name) VALUES (?, 'document', 'application/zip', ?)").run(
+      r.lastInsertRowid,
+      file,
+    );
+  return id;
+};
+const owes = async (text, title) => {
+  db.prepare("UPDATE watch_items SET status = 'dropped' WHERE status IN ('new', 'kept')").run();
+  const m = lena(text);
+  queue({ data: { items: [{ message_id: m, title, category: 'reply', nudge_at: `${tomorrow} 18:00`, confidence: 0.9 }] } });
+  await collect(db, todo());
+  return listItems(db, todo().id, { status: 'new,kept' }).find((x) => x.title === title);
+};
+const dealtCalls = () => calls().filter((c) => c.schema && JSON.stringify(JSON.parse(c.schema)) === JSON.stringify(DEALT));
+
+test('what the owner owes and then did: ticked off, said once in the briefing with a way back, and its nudge goes', async () => {
+  const it = await owes('could you send me the photos from Saturday?', 'Send Lena the photos from Saturday');
+  assert.ok(nudges().some((r) => r.item_id === it.id && r.status === 'pending'));
+  const before = dealtCalls().length;
+  lena("lovely evening wasn't it");
+  await collect(db, todo());
+  assert.equal(dealtCalls().length, before, "only she wrote since: nothing of the owner's to judge");
+  lena(null, 1, 'saturday-photos.zip');
+  queue({ data: { state: 'done', by: null, why: 'you sent saturday-photos.zip today', confidence: 0.95 } });
+  await collect(db, todo());
+  assert.equal(getItem(db, it.id).status, 'done');
+  const judged = dealtCalls().at(-1);
+  assert.match(judged.input, /The entry \(reply\): Send Lena the photos from Saturday/);
+  assert.match(judged.input, /- .* Me: \(a document: saturday-photos\.zip\)/);
+  assert.match(judged.system, /Be strict\. An entry ticked off that was not done is worse than one left open/);
+  assert.ok(!nudges().some((r) => r.item_id === it.id && r.status === 'pending'), 'its nudge is not sent');
+  assert.match(
+    await briefing(),
+    /Done, by the look of it\n✓ Send Lena the photos from Saturday · done: you sent saturday-photos\.zip today \[item \d+\]\nNot done after all\? bc watch item <id> keep/,
+  );
+  const { composeBriefing } = await import('../src/watch/briefing.js');
+  const b = await composeBriefing(db, todo().chat_id);
+  assert.ok(JSON.stringify(b.keyboard).includes(`wi:${it.id}:k`), 'a button puts it back on the list');
+});
+
+test('not sure, or only promised: it stays open; a later time named moves its nudge there', async () => {
+  const it = await owes('can you transfer your share for the dinner?', 'Pay Lena your share for the dinner');
+  lena('yes, on it', 1);
+  queue({ data: { state: 'done', by: null, why: 'you said you are on it', confidence: 0.5 } });
+  await collect(db, todo());
+  assert.equal(getItem(db, it.id).status, 'new', 'not sure enough to tick it off');
+  const day = new Date(Date.now() + 3 * 86400000);
+  const ymd = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+  lena('I will do it on payday', 1);
+  queue({ data: { state: 'later', by: `${ymd} 10:00`, why: 'put off to payday', confidence: 0.9 } });
+  await collect(db, todo());
+  const now = getItem(db, it.id);
+  assert.deepEqual([now.status, now.summary], ['new', 'Since then: put off to payday']);
+  const nudge = nudges().find((r) => r.item_id === it.id && r.status === 'pending');
+  assert.equal(new Date(nudge.due_ts * 1000).getDate(), day.getDate(), 'its nudge moved to the day named');
+});
+
+// ---- what is still to come: bookings, and things on their way ----
+wa.prepare("INSERT INTO chats (ref, name, is_group) VALUES ('wa:333@s.whatsapp.net', 'Swift Couriers', 0)").run();
+const courier = (text) => {
+  const id = `C${++n}`;
+  wa.prepare(
+    "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('wa:333@s.whatsapp.net', ?, 'wa:333@s.whatsapp.net', 0, ?, 'text', ?)",
+  ).run(id, Math.floor(Date.now() / 1000) + n, text);
+  return id;
+};
+const ARRIVED_SCHEMA = async () => JSON.stringify((await import('../src/watch/shape.js')).ARRIVED);
+const arrivedCalls = async () => {
+  const want = await ARRIVED_SCHEMA();
+  return calls().filter((c) => c.schema && JSON.stringify(JSON.parse(c.schema)) === want);
+};
+const inDays = (d) => {
+  const t = new Date(Date.now() + d * 86400000);
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+};
+
+test('a parcel on its way: filed with its number, under "Coming up", and ticked off when a message with that number says it came', async () => {
+  db.prepare("UPDATE watch_items SET status = 'dropped' WHERE status IN ('new', 'kept')").run();
+  const m = courier('Your order AB-77812 has shipped and will arrive by Thursday.');
+  queue({
+    data: {
+      items: [
+        {
+          message_id: m,
+          title: 'The new kettle, order AB-77812',
+          category: 'expected',
+          summary: 'the shop said it ships this week',
+          nudge_at: `${inDays(3)} 09:00`,
+          reference: 'AB-77812',
+          confidence: 0.9,
+        },
+      ],
+    },
+  });
+  await collect(db, todo());
+  const it = listItems(db, todo().id, { status: 'new,kept' }).find((x) => x.category === 'expected');
+  assert.equal(it.reference, 'AB-77812');
+  assert.ok(nudges().some((r) => r.item_id === it.id && r.text === 'Not here yet? · The new kettle, order AB-77812'));
+  assert.match(await briefing(), /Coming up\n\d+\. The new kettle, order AB-77812 · due .+ \[item \d+\]/);
+  assert.doesNotMatch(await briefing(), /(Today|Tomorrow|This week)\n[^\n]*kettle/, 'not under a day');
+
+  // something from the courier without the number: no reader asked
+  const before = (await arrivedCalls()).length;
+  courier('We have updated our privacy policy.');
+  await collect(db, todo());
+  assert.equal((await arrivedCalls()).length, before);
+  // still on its way: stays open
+  courier('Out for delivery today: AB-77812.');
+  queue({ data: { state: 'nothing', date: null, why: 'out for delivery today' } }, { data: { items: [] } });
+  await collect(db, todo());
+  assert.equal(getItem(db, it.id).status, 'new');
+  const asked = (await arrivedCalls()).at(-1);
+  assert.match(asked.input, /The entry \(something on its way\): The new kettle, order AB-77812 · reference AB-77812/);
+  assert.match(asked.input, /\+333: Out for delivery today: AB-77812\./);
+  // delivered
+  courier('Delivered: AB-77812, left with reception.');
+  queue({ data: { state: 'come', date: null, why: 'delivered today, left with reception' } }, { data: { items: [] } });
+  await collect(db, todo());
+  assert.equal(getItem(db, it.id).status, 'done');
+  assert.ok(!nudges().some((r) => r.item_id === it.id && r.status === 'pending'), 'not asked whether it came');
+  assert.match(await briefing(), /✓ The new kettle, order AB-77812 · arrived: delivered today, left with reception/);
+});
+
+test('a booking: under "Coming up" with its day; moved, its day and nudge move; cancelled, it is ticked off', async () => {
+  db.prepare("UPDATE watch_items SET status = 'dropped' WHERE status IN ('new', 'kept')").run();
+  const m = courier('Booking confirmed: Harbour Hotel, 2 nights from ' + inDays(10) + '. Reference HX93021.');
+  queue({
+    data: {
+      items: [
+        {
+          message_id: m,
+          title: 'Harbour Hotel, two nights',
+          category: 'booking',
+          summary: 'booked',
+          nudge_at: `${inDays(9)} 18:00`,
+          event_date: inDays(10),
+          place: 'Harbour Hotel',
+          reference: 'HX93021',
+          confidence: 0.95,
+        },
+      ],
+    },
+  });
+  await collect(db, todo());
+  const it = listItems(db, todo().id, { status: 'new,kept' }).find((x) => x.category === 'booking');
+  assert.deepEqual([it.event_date, it.place, it.reference], [inDays(10), 'Harbour Hotel', 'HX93021']);
+  assert.match(await briefing(), /Coming up\n\d+\. Harbour Hotel, two nights · Harbour Hotel · /);
+  courier(`Your stay HX93021 has been moved to ${inDays(12)}.`);
+  queue({ data: { state: 'moved', date: inDays(12), why: `moved to ${inDays(12)}` } }, { data: { items: [] } });
+  await collect(db, todo());
+  const moved = getItem(db, it.id);
+  assert.deepEqual([moved.status, moved.event_date, moved.summary], ['new', inDays(12), `Moved: moved to ${inDays(12)}`]);
+  const nudge = nudges().find((r) => r.item_id === it.id && r.status === 'pending');
+  assert.equal(new Date(nudge.due_ts * 1000).getDate(), new Date(Date.now() + 11 * 86400000).getDate(), 'the evening before its new day');
+  courier('HX93021: your booking has been cancelled.');
+  queue({ data: { state: 'cancelled', date: null, why: 'cancelled by the hotel' } }, { data: { items: [] } });
+  await collect(db, todo());
+  assert.equal(getItem(db, it.id).status, 'done');
+  assert.match(await briefing(), /✓ Harbour Hotel, two nights · cancelled: cancelled by the hotel/);
 });

@@ -11,10 +11,13 @@ import {
   duration,
   isInstalled,
   isoLocal as fmtTime,
+  leaveWork,
   log,
+  recordActivity,
   MEDIA_DIR,
   now,
   openArchive as open,
+  openArchiveForWriting as openWrite,
   plural,
   prompts,
   QueryError,
@@ -23,12 +26,16 @@ import {
   serviceCommands,
   show,
   sleep,
+  sourceSql,
+  withDb,
+  asJson,
 } from '../../src/api.js';
 
 const { orExit } = await prompts();
 
 const SERVICES = { wa: service('wa') };
 import { AUTH_DIR, isPaired } from './paired.js';
+import { openRequestsDb } from './requests.js';
 import { askDays, select as selectChats } from './select.js';
 import { describeSelection, saveWaSettings, waSettings } from './settings.js';
 
@@ -52,9 +59,10 @@ async function serviceActive() {
 }
 
 // Only one connection per linked device: the service has to pause while we pair or unpair.
-async function pauseService() {
+// `ask: false`: the owner has already said to go ahead.
+async function pauseService({ ask = true } = {}) {
   if (!(await serviceActive())) return false;
-  const ok = orExit(await p.confirm({ message: 'The WhatsApp service is running. Stop it for now?' }));
+  const ok = !ask || orExit(await p.confirm({ message: 'The WhatsApp service is running. Stop it for now?' }));
   if (!ok) {
     p.cancel('It has to be stopped first.');
     process.exit(1);
@@ -63,11 +71,45 @@ async function pauseService() {
   return true;
 }
 
+// Unlink this device from WhatsApp, so that it goes from the phone's linked devices too (with
+// the service stopped). → whether WhatsApp could be reached to say so
+async function unlinkHere() {
+  let opened;
+  const openedP = new Promise((r) => (opened = r));
+  const { startService } = await import('./service.js');
+  const c = startService({ logLevel: 'silent', onOpen: () => opened() });
+  const connected = await Promise.race([openedP.then(() => true), sleep(30_000).then(() => false)]);
+  if (connected) await c.logout();
+  else await c.stop();
+  fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+  return connected;
+}
+
 // ---------- pair ----------
 
-export async function pair() {
-  p.intro(pc.bgGreen(pc.black(' blackcat · WhatsApp pairing ')));
-  const wasRunning = await pauseService();
+// `again`: the days of history, when linking again to fetch more of it (from bc wa select):
+// the chats chosen stay as they are.
+export async function pair({ again = null } = {}) {
+  p.intro(pc.bgGreen(pc.black(again ? ' blackcat · WhatsApp, linking again ' : ' blackcat · WhatsApp pairing ')));
+  // Asked at each link, No unless said otherwise. (Linking again from `select` was asked already.)
+  if (again == null) {
+    p.note(
+      [
+        'blackcat links as a WhatsApp Web-style device and only reads: it never sends',
+        'a message, never marks one as read and never shows you as online.',
+        '',
+        'WhatsApp does not allow other apps to connect this way, and may restrict or',
+        'ban an account linked like this. Bans usually follow bulk or automated',
+        'sending, which blackcat does not do, but the risk is not zero.',
+      ].join('\n'),
+      'Before you link',
+    );
+    if (!orExit(await p.confirm({ message: 'You use this at your own risk. Link anyway?', initialValue: false }))) {
+      p.outro('Nothing linked.');
+      return;
+    }
+  }
+  const wasRunning = await pauseService({ ask: !again });
   // If the wizard is abandoned part-way (Ctrl+C, an error), don't leave the service stopped.
   let resume = wasRunning;
   process.on('exit', () => {
@@ -75,33 +117,38 @@ export async function pair() {
   });
 
   if (isPaired()) {
-    const again = orExit(await p.confirm({ message: 'Already linked. Unlink and link again from scratch?', initialValue: false }));
-    if (!again) {
+    const ok =
+      again != null ||
+      orExit(await p.confirm({ message: 'Already linked. Unlink and link again? (Stored messages are kept.)', initialValue: false }));
+    if (!ok) {
       if (wasRunning) await controlService('start', 'wa');
-      p.outro(`Nothing changed. To change which chats are kept: ${pc.cyan('bc wa select')}`);
+      p.outro(`Nothing changed. To change which chats are collected: ${pc.cyan('bc wa select')}`);
       return;
     }
-    p.log.info('Old link removed. Also remove the old blackcat (Mac OS) entry under Linked devices on your phone.');
+    const s = p.spinner();
+    s.start('Unlinking the old link');
+    const reached = await unlinkHere();
+    s.stop(
+      reached
+        ? 'Old link removed'
+        : 'Old link removed here. Also remove the old blackcat (Mac OS) entry under Linked devices on your phone.',
+    );
   }
   // Start clean: a half-finished attempt (e.g. an unused pairing code) would make WhatsApp
   // try to log in instead of offering a new link.
   fs.rmSync(AUTH_DIR, { recursive: true, force: true });
 
-  p.note(
-    [
-      'blackcat links as a WhatsApp Web-style device and only ever reads.',
-      'It never sends messages or read receipts and never shows you as online.',
-      '',
-      'First choose how much history to keep. After linking you pick',
-      'all chats, or only the ones you want.',
-    ].join('\n'),
-    'How this works',
-  );
-
   const w = waSettings();
-  const days = await askDays(w.days ?? 30);
-  // Until chats are picked, keep everything in range so there's something to pick from.
-  saveWaSettings({ days, mode: null, lastMode: w.mode ?? w.lastMode ?? null });
+  let days = again;
+  if (days == null) {
+    p.note(
+      ['First choose how far back to fetch history. After linking you pick', 'all chats, or only the ones you want.'].join('\n'),
+      'How this works',
+    );
+    days = await askDays(w.days ?? 30);
+    // Until chats are picked, keep everything in range so there's something to pick from.
+    saveWaSettings({ days, mode: null, lastMode: w.mode ?? w.lastMode ?? null });
+  }
 
   const phone = orExit(
     await p.text({
@@ -178,7 +225,7 @@ export async function pair() {
       kept += h.stored;
       filled += h.filled;
       s.message(
-        `Receiving history · ${received} messages seen · ${kept} new${filled ? ` · ${filled} older messages completed` : ''} (last ${days} days)${h.progress != null ? ` · ${Math.round(h.progress)}%` : ''}`,
+        `Receiving history · ${received} messages seen · ${kept} new${filled ? ` · ${filled} older messages completed` : ''} (${days} days back)${h.progress != null ? ` · ${Math.round(h.progress)}%` : ''}`,
       );
     },
   });
@@ -216,14 +263,26 @@ export async function pair() {
   );
   await c.stop();
 
-  await selectChats({ standalone: false, days });
+  if (again == null) await selectChats({ standalone: false, days });
+  // What the phone sent may not reach back far enough in every chat: each is topped up by the
+  // service, which asks the phone for what is older, and sends the owner how it went.
+  withDb(openRequestsDb, (db) => leaveWork(db, 'wa_requests', { days, chats: null }));
 
-  const start = orExit(await p.confirm({ message: 'Run the service in the background now, and at every boot?' }));
+  const start = again != null || orExit(await p.confirm({ message: 'Run the service in the background now, and at every boot?' }));
   resume = false; // from here, the answer below decides
   if (start) {
     const { installServices } = await serviceCommands();
     await installServices(['wa'], { quiet: true });
   }
+  p.log.info(
+    pc.dim(`Chats that do not reach ${days} days back are topped up from your phone in the background; you are sent how it went.`),
+  );
+  recordActivity({
+    kind: 'event',
+    category: 'messages: wa',
+    summary: `WhatsApp ${again != null ? 'linked again, to fetch history' : 'linked'}: ${kept} messages from the phone's history, ${days} days back; the chats short of that are topped up from the phone`,
+    data: { again: again != null, days, kept },
+  });
   p.outro(`Done. Try ${pc.cyan('bc wa status')} and ${pc.cyan('bc wa search <words>')}`);
   // Baileys leaves timers and caches behind after the socket closes, which would keep
   // the process alive after "Done". Everything is saved, so exit explicitly.
@@ -231,7 +290,7 @@ export async function pair() {
 }
 
 export async function select() {
-  await selectChats();
+  await selectChats({ relink: (days) => pair({ again: days }) });
 }
 
 // ---------- run (the service) ----------
@@ -278,13 +337,7 @@ export async function unpair() {
   if (isPaired()) {
     const s = p.spinner();
     s.start('Unlinking');
-    let opened;
-    const openedP = new Promise((r) => (opened = r));
-    const { startService } = await import('./service.js');
-    const c = startService({ logLevel: 'silent', onOpen: () => opened() });
-    const connected = await Promise.race([openedP.then(() => true), sleep(30_000).then(() => false)]);
-    if (connected) await c.logout();
-    else await c.stop();
+    const connected = await unlinkHere();
     s.stop(connected ? 'Unlinked' : 'Could not reach WhatsApp. Remove "Mac OS" under Linked devices on your phone.');
   }
   fs.rmSync(AUTH_DIR, { recursive: true, force: true });
@@ -293,8 +346,27 @@ export async function unpair() {
     const { removeServices } = await serviceCommands();
     await removeServices(['wa']);
   }
-  const wipe = orExit(await p.confirm({ message: 'Also delete the stored messages?', initialValue: false }));
-  if (wipe) for (const f of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) fs.rmSync(f, { force: true });
+  const wipe = orExit(await p.confirm({ message: 'Also delete the stored WhatsApp messages?', initialValue: false }));
+  // Only WhatsApp's: the archive holds every source's messages.
+  let deleted = 0;
+  if (wipe && fs.existsSync(DB_PATH))
+    withDb(openWrite, (db) => {
+      for (const [t, col] of [
+        ['messages', 'chat_ref'],
+        ['chats', 'ref'],
+        ['contacts', 'ref'],
+      ]) {
+        const r = db.prepare(`DELETE FROM ${t} WHERE ${sourceSql(col, 'wa')}`).run();
+        if (t === 'messages') deleted = r.changes;
+      }
+      db.prepare('DELETE FROM lid_map').run();
+    });
+  recordActivity({
+    kind: 'event',
+    category: 'messages: wa',
+    summary: `WhatsApp unlinked; ${wipe ? `${plural(deleted, 'stored message')} deleted, as the owner chose` : 'its stored messages kept'}`,
+    data: { deleted },
+  });
   p.outro(wipe ? 'Unlinked and deleted.' : 'Unlinked. Stored messages are kept and still searchable.');
   process.exit(0); // see pair()
 }
@@ -309,11 +381,7 @@ export const status = query(async (opts) => {
 
   if (opts.json) {
     console.log(
-      JSON.stringify(
-        { paired, service: svc?.ActiveState ?? 'not installed', selection: { ...w, summary: describeSelection(w) }, archive: st },
-        null,
-        2,
-      ),
+      asJson({ paired, service: svc?.ActiveState ?? 'not installed', selection: { ...w, summary: describeSelection(w) }, archive: st }),
     );
     return;
   }
@@ -337,7 +405,7 @@ export const status = query(async (opts) => {
     row('service', pc.dim('○'), pc.dim('not installed → bc service install wa'));
   }
   if (st?.meta.last_error && conn !== 'connected') row('last error', connDot, st.meta.last_error);
-  row('keeping', pc.green('●'), describeSelection(w));
+  row('collecting', pc.green('●'), `${describeSelection(w)} · everything stored is kept`);
   if (st) {
     const mb = (st.bytes / 1024 ** 2).toFixed(1);
     row('archive', pc.green('●'), `${st.messages} messages in ${plural(st.chats, 'chat')} · ${mb} MB`);

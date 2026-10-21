@@ -427,8 +427,8 @@ messages you send to yourself. Your own messages in the watched chats are read t
   // For `bc engine check`: what the owner might say, and the command it should lead to.
   // For its notes: is this a terminal, and is there a chat to push anything to.
   agent: { fill: (ctx) => ({ terminal: ctx.surface === 'terminal', unreached: !hasBot() }) },
-  readerChecks: () => readerCases(),
-  checks: [
+  readerTrials: () => readerCases(),
+  trials: [
     { say: 'what watches do i have', expect: /blackcat watch list\b/ },
     {
       say: 'send my briefing at 7 and 6 on weekdays, and 10 at weekends',
@@ -438,5 +438,6 @@ messages you send to yourself. Your own messages in the watched chats are read t
       say: 'keep a tab on what the school parents group says about uniform and dress up days',
       expect: /blackcat (watch (add|list|show|edit)|msg chats)\b/,
     },
+    { say: 'has my parcel arrived yet?', expect: /blackcat watch (show\b.*--list (expected|booking)|find)\b/ },
   ],
 };

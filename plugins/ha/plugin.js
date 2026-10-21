@@ -719,7 +719,7 @@ Examples:
   },
 
   // For `bc engine check`: what the owner might say, and the command it should lead to.
-  checks: (ctx) =>
+  trials: (ctx) =>
     configured(ctx) && readCatalogue(ctx)
       ? [
           { say: 'is anything left switched on at home right now?', expect: /blackcat ha \w+/ },

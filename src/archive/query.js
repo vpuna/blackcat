@@ -1,7 +1,7 @@
 import { size } from '../util/format.js';
 import { agoShort, isoLocal } from '../util/time.js';
 import fs from 'node:fs';
-import { CHAT_NAME, DB_PATH, getMeta, openRead, SENDER_LABEL, SENDER_NAME, sourceOf, sourceSql } from './db.js';
+import { ACCOUNT_NAME, CHAT_NAME, DB_PATH, getMeta, openRead, SENDER_LABEL, SENDER_NAME, sourceOf, sourceSql, visible } from './db.js';
 import { howToConnect } from './sources.js';
 import { sinceTs } from '../util/when.js';
 import { withDb } from '../db.js';
@@ -31,11 +31,13 @@ export const fmtTime = isoLocal;
 
 export const ago = agoShort;
 
+// (A chat or message on an account the owner has hidden is in none of what is read here.)
 const CHAT_ROWS = `
-  SELECT ch.ref, ${CHAT_NAME} AS name, ch.is_group AS isGroup,
+  SELECT ch.ref, ${CHAT_NAME} AS name, ch.is_group AS isGroup, ${ACCOUNT_NAME('ch.account')} AS account,
          MAX(COALESCE(ch.last_ts, 0), COALESCE(mx.ts, 0)) AS last, COALESCE(mx.n, 0) AS stored
   FROM chats ch
-  LEFT JOIN (SELECT chat_ref, COUNT(*) AS n, MAX(ts) AS ts FROM messages GROUP BY chat_ref) mx ON mx.chat_ref = ch.ref`;
+  LEFT JOIN (SELECT chat_ref, COUNT(*) AS n, MAX(ts) AS ts FROM messages m WHERE ${visible('m.account')} GROUP BY chat_ref) mx ON mx.chat_ref = ch.ref
+  WHERE ${visible('ch.account')}`;
 
 // Every row that names a chat or message also says which service it came from.
 const withSource = (rows) => rows.map((r) => ({ ...r, source: sourceOf(r.chatRef ?? r.ref) }));
@@ -46,7 +48,7 @@ export function listChats(db, { since = 0, limit = 50, offset = 0, match, source
   // column (empty for 1:1 chats) instead of the resolved display name.
   const where = ['last >= @since', sourceSql('ref', source)];
   if (stored) where.push('stored > 0'); // leave out chats that are known but not collected
-  if (match) where.push('(name LIKE @like OR ref = @match)');
+  if (match) where.push("(name LIKE @like OR ref = @match OR ref = 'wa:' || @match)"); // (a WhatsApp id as WhatsApp gives it, too)
   return withSource(
     db
       .prepare(`SELECT * FROM (${CHAT_ROWS}) WHERE ${where.join(' AND ')} ORDER BY last DESC LIMIT @limit OFFSET @offset`)
@@ -69,7 +71,7 @@ export function resolveChats(db, pattern, source) {
   return rows;
 }
 
-const MSG_COLS = `m.rowid AS rowid, m.chat_ref AS chatRef, ${CHAT_NAME} AS chat, m.id, m.ts,
+const MSG_COLS = `m.rowid AS rowid, m.chat_ref AS chatRef, ${CHAT_NAME} AS chat, ${ACCOUNT_NAME('m.account')} AS account, m.id, m.ts,
   ${SENDER_LABEL} AS sender,
   m.from_me AS fromMe, m.type, m.text, m.heard, m.quoted_id AS quotedId, m.edited, m.deleted,
   m.link_url AS linkUrl, m.link_title AS linkTitle, m.link_desc AS linkDesc,
@@ -98,7 +100,7 @@ function ftsQuery(text, any) {
 
 export function search(db, text, { chat, from, since, until, limit = 20, any = false, sort = 'relevance', source } = {}) {
   const params = { q: ftsQuery(text, any), limit };
-  const where = ['messages_fts MATCH @q', sourceSql('m.chat_ref', source)];
+  const where = ['messages_fts MATCH @q', sourceSql('m.chat_ref', source), visible('m.account')];
   if (chat) {
     const refs = resolveChats(db, chat, source).map((r) => r.ref);
     where.push(`m.chat_ref IN (${refs.map((_, i) => `@c${i}`).join(', ')})`);
@@ -144,10 +146,10 @@ export function thread(db, chat, { around, context = 10, last = 30, since, until
     );
   }
   const ref = (chats.find((c) => c.ref === chat) ?? chats[0]).ref;
-  const base = `SELECT ${MSG_COLS} FROM messages m LEFT JOIN chats ch ON ch.ref = m.chat_ref ${MEDIA_JOIN} WHERE m.chat_ref = @ref`;
+  const base = `SELECT ${MSG_COLS} FROM messages m LEFT JOIN chats ch ON ch.ref = m.chat_ref ${MEDIA_JOIN} WHERE m.chat_ref = @ref AND ${visible('m.account')}`;
 
   if (around) {
-    const pivot = db.prepare('SELECT ts, rowid FROM messages WHERE chat_ref = ? AND id = ?').get(ref, around);
+    const pivot = db.prepare(`SELECT ts, rowid FROM messages m WHERE chat_ref = ? AND id = ? AND ${visible('m.account')}`).get(ref, around);
     if (!pivot) throw new QueryError(`No message ${around} in that chat.`);
     const p = { ref, ts: pivot.ts, rowid: pivot.rowid, n: context };
     const before = db
@@ -163,13 +165,16 @@ export function thread(db, chat, { around, context = 10, last = 30, since, until
 }
 
 // Totals for the whole archive, or for one source.
+// (Of what is not hidden: a hidden account is out of the totals too.)
 export function stats(db, source) {
   const totals = db
     .prepare(
-      `SELECT COUNT(*) AS messages, COUNT(DISTINCT chat_ref) AS chats, MIN(ts) AS oldest, MAX(ts) AS newest FROM messages WHERE ${sourceSql('chat_ref', source)}`,
+      `SELECT COUNT(*) AS messages, COUNT(DISTINCT chat_ref) AS chats, MIN(ts) AS oldest, MAX(ts) AS newest FROM messages m WHERE ${sourceSql('chat_ref', source)} AND ${visible('m.account')}`,
     )
     .get();
-  const knownChats = db.prepare(`SELECT COUNT(*) AS n FROM chats WHERE ${sourceSql('ref', source)}`).get().n;
+  const knownChats = db
+    .prepare(`SELECT COUNT(*) AS n FROM chats ch WHERE ${sourceSql('ref', source)} AND ${visible('ch.account')}`)
+    .get().n;
   const size = ['', '-wal'].reduce((a, s) => a + (fs.statSync(DB_PATH + s, { throwIfNoEntry: false })?.size ?? 0), 0);
   const hasMedia = db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'media'").get();
   const media = hasMedia
@@ -177,7 +182,7 @@ export function stats(db, source) {
         .prepare(
           `SELECT COUNT(*) AS files, COALESCE(SUM(md.thumb IS NOT NULL), 0) AS thumbs,
         COALESCE(SUM(md.media_key IS NOT NULL AND (md.direct_path IS NOT NULL OR md.url IS NOT NULL)), 0) AS fetchable
-        FROM media md JOIN messages m ON m.rowid = md.msg_rowid WHERE ${sourceSql('m.chat_ref', source)}`,
+        FROM media md JOIN messages m ON m.rowid = md.msg_rowid WHERE ${sourceSql('m.chat_ref', source)} AND ${visible('m.account')}`,
         )
         .get()
     : { files: 0, thumbs: 0, fetchable: 0 };
@@ -213,8 +218,9 @@ export const messageById = (id) =>
     (db) =>
       db
         .prepare(
-          `SELECT m.id, m.ts, m.text, m.type, m.link_url, m.link_title, ${CHAT_NAME} AS chat, ${SENDER_LABEL} AS sender
-        FROM messages m LEFT JOIN chats ch ON ch.ref = m.chat_ref WHERE m.id = ?`,
+          `SELECT m.id, m.ts, m.text, m.type, m.link_url, m.link_title, ${CHAT_NAME} AS chat, ${SENDER_LABEL} AS sender,
+          ${ACCOUNT_NAME('m.account')} AS account
+        FROM messages m LEFT JOIN chats ch ON ch.ref = m.chat_ref WHERE m.id = ? AND ${visible('m.account')}`,
         )
         .get(id) ?? null,
   );

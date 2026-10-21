@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { OlderData, hasTable, madeReady, openSqlite, withDb } from '../db.js';
+import { OlderData, hasColumn, hasTable, madeReady, noteUpgrade, openSqlite, withDb } from '../db.js';
 import { ARCHIVE_DB } from './files.js';
 
 export const DB_PATH = ARCHIVE_DB;
@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS chats (
 );
 
 CREATE TABLE IF NOT EXISTS contacts (
-  ref    TEXT PRIMARY KEY,    -- phone-number JID (…@s.whatsapp.net) or hidden ID (…@lid)
+  ref    TEXT PRIMARY KEY,    -- wa:<phone-number JID> (…@s.whatsapp.net) or wa:<hidden ID> (…@lid), tg:…, mail:…
   name   TEXT,                -- name saved in your phone
   notify TEXT,                -- name they set themselves
   phone  TEXT
@@ -53,8 +53,8 @@ export function openWrite() {
   return madeReady(openSqlite(DB_PATH, { relaxed: true }), make);
 }
 
-// (A chat, and whoever sent a message, is known here by a "ref": tg:…, mail:…, or the id
-// WhatsApp gives.)
+// (A chat, and whoever sent a message, is known here by a "ref": wa:<the id WhatsApp gives>,
+// tg:…, mail:…)
 
 // The rest of the archive's shape, made after the tables above: the keyword index, and
 // what was added to the tables. A new archive gets all of it at once and is marked with
@@ -213,6 +213,32 @@ const PARTS = [
         VALUES (new.rowid, new.text, new.link_title, new.link_desc, new.heard);
     END;
     INSERT INTO messages_fts (messages_fts) VALUES ('rebuild');`),
+
+  // 8: which of the owner's accounts each message and chat came in on (one of their WhatsApp
+  // numbers, Telegram accounts, mail accounts), so that one can be told apart, or left out of
+  // what is read; and WhatsApp's ids marked as WhatsApp's, as every other source's are
+  // ("wa:…"; they were the first, from before ids were marked, and the only ones that begin
+  // with a digit and hold an "@"). Who a message is from in a conversation is its sender, as
+  // before. Each source's collector claims its rows for its account when it next starts.
+  (db) => {
+    // (Made so that it can be met again: by an archive whose mark was set back by hand.)
+    for (const t of ['messages', 'chats']) if (!hasColumn(db, t, 'account')) db.exec(`ALTER TABLE ${t} ADD COLUMN account INTEGER`);
+    db.exec(`
+    CREATE TABLE IF NOT EXISTS accounts (
+      key      INTEGER PRIMARY KEY,
+      source   TEXT NOT NULL,            -- wa, tg, mail…
+      identity TEXT NOT NULL,            -- the phone number, the Telegram user, the address
+      name     TEXT,                     -- what the owner calls it
+      hidden   INTEGER NOT NULL DEFAULT 0,
+      added_ts INTEGER NOT NULL,
+      UNIQUE (source, identity)
+    );
+    UPDATE messages SET chat_ref = 'wa:' || chat_ref WHERE chat_ref GLOB '[0-9]*@*';
+    UPDATE messages SET sender_ref = 'wa:' || sender_ref WHERE sender_ref GLOB '[0-9]*@*';
+    UPDATE chats SET ref = 'wa:' || ref WHERE ref GLOB '[0-9]*@*';
+    UPDATE contacts SET ref = 'wa:' || ref WHERE ref GLOB '[0-9]*@*';
+    UPDATE lid_map SET lid = 'wa:' || lid, pn = 'wa:' || pn WHERE lid GLOB '[0-9]*@*';`);
+  },
 ];
 
 // The number the first published version started at: an archive marked lower than this, or
@@ -227,9 +253,11 @@ function make(db) {
     let v = db.pragma('user_version', { simple: true });
     if (v >= PARTS.length) return;
     if (v > 0 ? v < BASE : hasTable(db, 'messages')) throw new OlderData('archive', v, BASE);
+    const from = v;
     if (v === 0) db.exec(SCHEMA);
     for (; v < PARTS.length; v++) PARTS[v](db);
     db.pragma(`user_version = ${PARTS.length}`);
+    if (from > 0) noteUpgrade('message archive', PARTS.length - from, PARTS.length);
   }).immediate();
 }
 
@@ -283,7 +311,46 @@ export { SOURCES, msgSource, sourceOf, sourceSql } from './sources.js';
 // Hidden WhatsApp ids (@lid) are mapped to phone-number ids first.
 const real = (col) => `COALESCE((SELECT pn FROM lid_map WHERE lid = ${col}), ${col})`;
 const fallback = (col) =>
-  `CASE WHEN instr(${real(col)}, '@') = 0 THEN ${real(col)} ELSE '+' || substr(${real(col)}, 1, instr(${real(col)}, '@') - 1) END`;
+  `CASE WHEN ${real(col)} LIKE 'wa:%@%' THEN '+' || substr(${real(col)}, 4, instr(${real(col)}, '@') - 4) ELSE ${real(col)} END`;
+
+// ---------- accounts ----------
+// The owner's account a source collects through: its key, made the first time it is seen.
+// `identity`: what tells it from another of the same source (the phone number, the address).
+export function accountFor(db, { source, identity, name = null }) {
+  const had = db.prepare('SELECT key FROM accounts WHERE source = ? AND identity = ?').pluck().get(source, String(identity));
+  db.prepare(
+    `INSERT INTO accounts (source, identity, name, added_ts) VALUES (?, ?, ?, ?)
+     ON CONFLICT (source, identity) DO UPDATE SET name = COALESCE(excluded.name, accounts.name)`,
+  ).run(source, String(identity), name, Math.floor(Date.now() / 1000));
+  const key = db.prepare('SELECT key FROM accounts WHERE source = ? AND identity = ?').pluck().get(source, String(identity));
+  // (On the record by its key and name: what tells it apart, a number or an address, is left out.)
+  if (had == null)
+    import('../activity/log.js')
+      .then(({ record }) =>
+        record({
+          kind: 'event',
+          category: `messages: ${source}`,
+          summary: `an account of the owner's seen for the first time: ${source} account ${key}${name ? ` (${name})` : ''}`,
+          data: { account: key },
+        }),
+      )
+      .catch(() => {});
+  return key;
+}
+
+// Rows of the chats `where` names (an SQL condition on a chat's ref) that no account has
+// claimed yet are this one's: what was stored before accounts were noted, or before the
+// collector knew which account it was.
+export function claimRows(db, key, where) {
+  db.prepare(`UPDATE messages SET account = ? WHERE account IS NULL AND ${where('chat_ref')}`).run(key);
+  db.prepare(`UPDATE chats SET account = ? WHERE account IS NULL AND ${where('ref')}`).run(key);
+}
+
+// SQL condition: a message (alias `m`) or chat (alias `ch`) on an account that is not hidden.
+// Every read of messages goes through it, so a hidden account's messages are read nowhere.
+export const visible = (col) => `(${col} IS NULL OR ${col} NOT IN (SELECT key FROM accounts WHERE hidden = 1))`;
+// The account's name, for a person (what the owner calls it, else its identity).
+export const ACCOUNT_NAME = (col) => `(SELECT COALESCE(a.name, a.identity) FROM accounts a WHERE a.key = ${col})`;
 
 export const SENDER_NAME = `COALESCE(
   (SELECT COALESCE(c.name, c.notify) FROM contacts c WHERE c.ref = ${real('m.sender_ref')}),

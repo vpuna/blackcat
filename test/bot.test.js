@@ -32,7 +32,15 @@ before(async () => {
         // (The demo plugin is what turns a voice note into words here. What comes with blackcat is asked first, so its own is switched off, as someone who brought their own would.)
         disabled: ['voice'],
         settings: {
-          shortcut: { shortcuts: { hi: { description: 'says hi', run: ['echo hi from a shortcut'] } } },
+          shortcut: {
+            shortcuts: {
+              hi: { description: 'says hi', run: ['echo hi from a shortcut'] },
+              asker: {
+                description: 'asks the owner',
+                run: [`${process.execPath} ${new URL('../bin/bc.js', import.meta.url).pathname} demo ask`],
+              },
+            },
+          },
           host: { alerts: false },
         },
       },
@@ -130,7 +138,7 @@ test('a blackcat command typed in the chat runs as it would in a terminal', asyn
   // a plugin's name alone: what it offers, with a button for each that needs no arguments
   const menu = await tg.ask('/demo');
   assert.match(menu.text, /^<b>\/demo<\/b>\n\n\/demo hello\n {4}says hello\n/);
-  assert.deepEqual(tg.buttons(menu), ['hello', 'picture', 'change', 'notify', 'setup', 'settings', 'status']);
+  assert.deepEqual(tg.buttons(menu), ['hello', 'picture', 'change', 'ask', 'notify', 'setup', 'settings', 'status']);
   assert.equal(texts(await then(() => tg.tap(menu, 'hello'))).at(-1), '<pre>hello from demo</pre>');
   // "help" after any of them: everything it does, as in a terminal; and one command's options
   const help = (await tg.ask('/demo help')).text;
@@ -140,7 +148,7 @@ test('a blackcat command typed in the chat runs as it would in a terminal', asyn
   assert.match((await tg.ask('/demo help hello')).text, /^<pre>Usage: bc demo hello /);
   assert.match((await tg.ask('/demo hello --help')).text, /^<pre>Usage: bc demo hello /);
   assert.match(menu.text, /\/demo help says more, with examples; add --help to any one of them for its options\.$/);
-  // the parts of blackcat itself answer the same way
+  // the parts of blackcat health answer the same way
   assert.match((await tg.ask('/memory help')).text, /^<pre>Usage: bc memory \[options\] \[command\]/);
   assert.match((await tg.ask('/watch help add')).text, /^<pre>Usage: bc watch add /);
   // one that changes something asks first
@@ -265,8 +273,9 @@ test('an approval: asked with buttons, and the answer is kept in the chat', asyn
   const waiting = await tg.ask('please delete the folder');
   await then(() => tg.say('/new'));
   // (The request's message is changed a moment after the reply to /new: wait for that, not for a quarter of a second.)
-  for (let i = 0; i < 40 && !/Cancelled/.test(tg.shows(waiting).text); i++) await new Promise((r) => setTimeout(r, 100));
-  assert.match(tg.shows(waiting).text, /<b>🚫 Cancelled, nothing was done<\/b>$/);
+  // (Anything written while it waits closes it, /new among them.)
+  for (let i = 0; i < 40 && !/Cancelled|wrote instead/.test(tg.shows(waiting).text); i++) await new Promise((r) => setTimeout(r, 100));
+  assert.match(tg.shows(waiting).text, /<b>(🚫 Cancelled, nothing was done|✖ Not now: you wrote instead)<\/b>$/);
 });
 
 test('a command that fetches a picture, typed in the chat: the picture is sent, with its caption', async () => {
@@ -410,7 +419,7 @@ test('checks: how each is doing, looking now, and pausing one', async () => {
   // (the one that is always there, paused for these tests: alone, it is shown straight away as its card)
   assert.match(
     (await tg.ask('/check')).text,
-    /^🩺 <b>blackcat itself<\/b> · ⏸ paused\n<b>Looks at:<\/b> runs `blackcat activity problems --json`/,
+    /^🩺 <b>blackcat health<\/b> · ⏸ paused\n<b>Looks at:<\/b> runs `blackcat activity problems --json`/,
   );
   // (setting one up puts a command on a schedule: typed in the chat, it is confirmed first)
   const run = async (cmd) => {
@@ -420,8 +429,8 @@ test('checks: how each is doing, looking now, and pausing one', async () => {
   assert.match(await run('/check add Disk --run true --every 10m'), /Check 2 "Disk" created\./);
   // several: a list, with a button for each
   const all = await tg.ask('/check');
-  assert.match(all.text, /^🩺 <b>Your checks<\/b>\n\n1\. ⏸ <b>blackcat itself<\/b> · [^\n]*\n2\. ✅ <b>Disk<\/b> · fine/);
-  assert.deepEqual(tg.buttons(all), ['1. blackcat itself', '2. Disk']);
+  assert.match(all.text, /^🩺 <b>Your checks<\/b>\n\n1\. ⏸ <b>blackcat health<\/b> · [^\n]*\n2\. ✅ <b>Disk<\/b> · fine/);
+  assert.deepEqual(tg.buttons(all), ['1. blackcat health', '2. Disk']);
   const card = (await then(() => tg.tap(all, '2. Disk'))).find((c) => c.method === 'sendMessage');
   assert.match(
     card.text,
@@ -549,4 +558,24 @@ test('bc notify: a script or another program sends the owner a message through t
   assert.match(agent.out, /for you and your own programs/);
   await new Promise((r) => setTimeout(r, 300));
   assert.deepEqual(texts(tg.calls.slice(mark)), []);
+});
+
+test('a tap is taken while a shortcut waits for it: the bot goes on reading while a message is handled', async () => {
+  // The shortcut runs a command that asks the owner and waits; the bot must still read the tap.
+  const t0 = Date.now();
+  tg.say('/asker');
+  let q;
+  for (let i = 0; i < 100 && !q; i++) {
+    q = tg.calls.find((m) => m.method === 'sendMessage' && /Go on\?/.test(m.text ?? ''));
+    if (!q) await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(q, 'the question was asked');
+  await tg.tap(q, 'No');
+  let done;
+  for (let i = 0; i < 150 && !done; i++) {
+    done = tg.calls.find((m) => m.method === 'sendMessage' && /answer: /.test(m.text ?? ''));
+    if (!done) await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.match(done?.text ?? '', /answer: No/);
+  assert.ok(Date.now() - t0 < 25_000, 'answered by the tap, not by the question running out');
 });

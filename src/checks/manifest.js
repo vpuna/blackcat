@@ -29,6 +29,16 @@ const WHAT = [
   ],
   ['--quiet <from-to>', 'a time of day when it tells you nothing, e.g. 03:00-03:30 (it still looks and fixes)'],
   ['--remind <duration>', 'tell you again this often while it is not working and not snoozed, e.g. 1h'],
+  [
+    '--measure <figures>',
+    'figures to keep from what --run prints, e.g. "temp,load": JSON with those fields, one number alone, or lines of name=value',
+  ],
+  ['--limit <limits>', 'past one of these it is not working, e.g. "temp>75" or "temp>75,free<10" (the figures are kept too)'],
+  [
+    '--context <command>',
+    'when it is not working, what this prints is kept with the time (and its picture, with --file): bc check history',
+  ],
+  ['--keep <duration>', 'how long what it saw is kept (default 30d)'],
 ];
 // Which of what is wrong: the number in `bc check show` (all of it, if left out).
 const WHICH = ['-n, --n <number>', 'which of the things wrong with it (bc check show): all of them if left out'];
@@ -47,6 +57,9 @@ export default {
   bc check snooze camera --for 4h             not working, and you know: quiet until then (or --until-fixed)
   bc check fixed camera                       you fixed it: look now, and again over a few minutes
   bc check fix camera                         run its fix again now, and look
+  bc check add "Disk" --run "df --output=pcent / | tail -1 | tr -d ' %'" --limit "used>90"
+  bc check history disk --since 7d            its figures, and each time it was not working with what was going on
+  bc check offered                            checks the plugins you use have ready: bc check add --from <ref>
 
 What is wrong is kept one row an outage, from when it was first found until it works again:
 found again meanwhile, that row is brought up to date. You are told when it starts (or as
@@ -59,9 +72,10 @@ tell whether its system is well (bc ha check, bc unifi check, and so on).`,
     add: {
       summary: 'set up a check',
       access: () => ASK,
-      usage: '<name...>',
+      usage: '[name...]',
       options: [
         ...WHAT,
+        ['--from <ref>', 'one a plugin offers (bc check offered), e.g. ssh:nas-heat; what you give besides replaces what it says'],
         [
           '--every <when>',
           'when it looks: "30m" (default), "1h", times like "08:00,20:00", or cron. Never more often than every 5 minutes',
@@ -90,12 +104,30 @@ tell whether its system is well (bc ha check, bc unifi check, and so on).`,
         ['--no-look-for', 'drop the description, so only the plain rules decide'],
         ['--no-quiet', 'no quiet time'],
         ['--no-remind', 'no reminders'],
+        ['--no-measure', 'keep no figures'],
+        ['--no-limit', 'no limits'],
+        ['--no-context', 'keep nothing of what was going on'],
         ['--every <when>', 'when it looks'],
         ['--name <name>', 'a new name'],
         ['--pause', 'stop looking'],
         ['--resume', 'start looking again'],
       ],
       run: async (ctx, i) => (await cmd()).edit(i, ctx.fail),
+    },
+    history: {
+      summary: 'what it saw: its figures over a while, and each time it was not working, with what was going on then',
+      access: 'allow',
+      usage: '<check>',
+      options: [
+        ['--since <when>', 'how far back: 6h, 24h, 7d (default 24h)'],
+        ['--pictures', 'save the pictures it kept, where they can be sent'],
+      ],
+      run: async (ctx, i) => (await cmd()).history(i, ctx.fail),
+    },
+    offered: {
+      summary: 'the checks the plugins you use offer, ready to add',
+      access: 'allow',
+      run: async (ctx, i) => (await cmd()).offered(i, ctx.fail),
     },
     remove: {
       summary: 'delete a check',
@@ -230,5 +262,9 @@ tell whether its system is well (bc ha check, bc unifi check, and so on).`,
 
   // For `bc engine check`: what the owner might say, and the command it should lead to.
   // (Not "set one up": asked that, it rightly looks at the system first and shows a plan before creating anything.)
-  checks: [{ say: 'how are my checks doing, is anything not working?', expect: /blackcat check (list|show|run)\b/ }],
+  trials: [
+    { say: 'how are my checks doing, is anything not working?', expect: /blackcat check (list|show|run)\b/ },
+    { say: 'what ready-made checks could i add?', expect: /blackcat check offered\b/ },
+    { say: 'why did my disk check go off last night, what was going on then?', expect: /blackcat check (history|list|show)\b/ },
+  ],
 };

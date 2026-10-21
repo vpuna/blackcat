@@ -37,7 +37,7 @@ export default {
           const ev = JSON.parse(line);
           // Only the owner gets through: that is the channel's job.
           if (ev.from !== ctx.config.get().owner.chat) continue;
-          await host.incoming({ chat: ev.from, who: 'Ana', ref: read, text: ev.text }).catch((e) => host.log('error: ' + e.message));
+          await host.incoming({ chat: ev.from, who: 'Ana', ref: read, text: ev.text, at: ev.at }).catch((e) => host.log('error: ' + e.message));
         }
       };
       return { ...c,

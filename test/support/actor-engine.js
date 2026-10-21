@@ -13,12 +13,12 @@ const usage = (model) => ({ ok: true, model: 'actor-' + model, tokensIn: 100, to
 export default {
   api: 1, name: 'actor', title: 'Actor', description: 'a test engine',
   commands: { hello: { summary: 'says hello', access: 'allow', run: () => 'hello' } },
-  checks: [
+  trials: [
     { say: 'say hello with your own command', expect: /blackcat actor hello/ },
     // It tries the condition first, as the agent is told to, and goes on only when that was really run.
   ],
   // (A reader of this plugin's own, asked in the check with its own instructions.)
-  readerChecks: () => [{
+  readerTrials: () => [{
     say: 'the question is tied to the message that asked it', system: 'You pick out what the owner waits for.', content: '[CHK2] Me: sure\\n[CHK4] Me: which one was it?',
     schema: { type: 'object', required: ['items'], properties: { items: { type: 'array' } } },
     ok: (a) => (a?.items?.[0]?.message_id === 'CHK4' ? true : 'it tied the question to another message'),

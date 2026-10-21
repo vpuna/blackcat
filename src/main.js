@@ -38,7 +38,7 @@ export async function build() {
     .description(
       'blackcat: an agent of your own that is always on. You talk to it through a chat or in a terminal, and it runs on the model you choose.',
     )
-    .version('0.1.0')
+    .version('0.2.0')
     .addHelpText(
       'after',
       `

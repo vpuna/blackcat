@@ -65,11 +65,11 @@ const { LIST, TIDY, TODO_KINDS, todoShape } = await import('../src/watch/shape.j
 const { misfit } = await import('../src/readers.js');
 
 const wa = openWrite();
-wa.prepare("INSERT INTO chats (ref, name, is_group) VALUES ('111@s.whatsapp.net', 'Maya', 0)").run();
+wa.prepare("INSERT INTO chats (ref, name, is_group) VALUES ('wa:111@s.whatsapp.net', 'Maya', 0)").run();
 let n = 0;
 const say = (text, fromMe = 0) => {
   wa.prepare(
-    "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('111@s.whatsapp.net', ?, '111@s.whatsapp.net', ?, ?, 'text', ?)",
+    "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('wa:111@s.whatsapp.net', ?, 'wa:111@s.whatsapp.net', ?, ?, 'text', ?)",
   ).run(`M${++n}`, fromMe, Math.floor(Date.now() / 1000) - 60 + n, text);
   return `M${n}`;
 };
@@ -92,7 +92,17 @@ test("one shape for an entry: each reader asks for the fields it needs, under th
     'summary',
     'title',
   ]);
-  assert.deepEqual(fields(todoShape(5)), ['category', 'confidence', 'event_date', 'message_id', 'nudge_at', 'place', 'summary', 'title']);
+  assert.deepEqual(fields(todoShape(5)), [
+    'category',
+    'confidence',
+    'event_date',
+    'message_id',
+    'nudge_at',
+    'place',
+    'reference',
+    'summary',
+    'title',
+  ]);
   assert.deepEqual(todoShape(5).properties.items.items.properties.category.enum, TODO_KINDS);
   assert.equal(todoShape(5).properties.items.maxItems, 5);
   // every field says what it is, where the model sees it with the shape
@@ -264,7 +274,7 @@ test("what it picks up can be added to, or kept from, in the owner's words; the 
     chatId: 42,
     name: 'Ideas',
     lookFor: 'ideas',
-    sources: { chats: [{ ref: '111@s.whatsapp.net', name: 'Maya' }] },
+    sources: { chats: [{ ref: 'wa:111@s.whatsapp.net', name: 'Maya' }] },
     mode: 'briefing',
   });
   assert.match(bc('watch', 'edit', String(other.id), '--also', 'x').said, /--also and --never are for "Things I need to do"/);
@@ -411,13 +421,15 @@ test("a watch that was already there starts reading the owner's own messages fro
   raw.pragma('wal_checkpoint(TRUNCATE)');
   // as it was before: at step 4, one watch that never asked for the owner's messages, one that did, and the built-in one
   raw.prepare("UPDATE shapes SET step = 4 WHERE part = 'watch'").run();
-  raw.exec('ALTER TABLE watch_items DROP COLUMN checked_ts; ALTER TABLE watch_items DROP COLUMN same_as'); // (which came after)
+  raw.exec(
+    'ALTER TABLE watch_items DROP COLUMN checked_ts; ALTER TABLE watch_items DROP COLUMN same_as; ALTER TABLE watch_items DROP COLUMN reference',
+  ); // (which came after)
   raw
     .prepare("UPDATE watches SET sources = ? WHERE name = 'Ideas'")
-    .run(JSON.stringify({ chats: [{ ref: '111@s.whatsapp.net', name: 'Maya' }], mine: false }));
+    .run(JSON.stringify({ chats: [{ ref: 'wa:111@s.whatsapp.net', name: 'Maya' }], mine: false }));
   raw
     .prepare("UPDATE watches SET sources = ? WHERE name = 'Plans'")
-    .run(JSON.stringify({ chats: [{ ref: '111@s.whatsapp.net', name: 'Maya' }], mine: true }));
+    .run(JSON.stringify({ chats: [{ ref: '111@s.whatsapp.net', name: 'Maya' }], mine: true })); // (named as before WhatsApp's ids were marked)
   const todoBefore = raw.prepare('SELECT sources FROM watches WHERE builtin IS NOT NULL').pluck().get();
   raw.close();
   const r = spawnSync(process.execPath, [`${root}bin/bc.js`, 'watch', 'list', '--json'], {
@@ -429,18 +441,18 @@ test("a watch that was already there starts reading the owner's own messages fro
   const src = (name) => JSON.parse(after.prepare('SELECT sources FROM watches WHERE name = ?').pluck().get(name));
   assert.equal(src('Ideas').mine, true);
   assert.ok(src('Ideas').mineSince >= Math.floor(Date.now() / 1000) - 10, 'from now on');
-  assert.deepEqual(src('Ideas').chats, [{ ref: '111@s.whatsapp.net', name: 'Maya' }], 'and nothing else about it changed');
+  assert.deepEqual(src('Ideas').chats, [{ ref: 'wa:111@s.whatsapp.net', name: 'Maya' }], 'and nothing else about it changed');
   assert.deepEqual(
     src('Plans'),
-    { chats: [{ ref: '111@s.whatsapp.net', name: 'Maya' }], mine: true },
-    'one that already read them is left as it was',
+    { chats: [{ ref: 'wa:111@s.whatsapp.net', name: 'Maya' }], mine: true },
+    'one that already read them is left as it was, its chat named as the archive names it now',
   );
   assert.equal(
     after.prepare('SELECT sources FROM watches WHERE builtin IS NOT NULL').pluck().get(),
     todoBefore,
     'and so is the built-in one',
   );
-  assert.equal(after.prepare("SELECT step FROM shapes WHERE part = 'watch'").pluck().get(), 7);
+  assert.equal(after.prepare("SELECT step FROM shapes WHERE part = 'watch'").pluck().get(), 9);
   after.close();
 });
 
@@ -568,7 +580,7 @@ test("each reader is shown what the owner's other lists are keeping, and told no
   const tell = (text, fromMe = 0) =>
     w2
       .prepare(
-        "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('111@s.whatsapp.net', ?, '111@s.whatsapp.net', ?, ?, 'text', ?)",
+        "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('wa:111@s.whatsapp.net', ?, 'wa:111@s.whatsapp.net', ?, ?, 'text', ?)",
       )
       .run(`X${++n}`, fromMe, Math.floor(Date.now() / 1000) - 60 + n, text);
   addItem(db, {

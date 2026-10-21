@@ -60,7 +60,7 @@ test('an account whose password is not saved is said so at once, and the mail se
   assert.ok(Date.now() - t0 < 8000, `it took ${Date.now() - t0} ms`);
   assert.match(r.out, /no app password is saved for "home" \(connect it again: bc mail add\)/);
 
-  // Going through the mail again: the same fetch, made in full; and no further back than mail is kept.
+  // Going through the mail again: the same fetch, made in full, for the days the account fetches.
   const { spawnSync } = await import('node:child_process');
   const bc = (...args) =>
     spawnSync(process.execPath, [`${root}bin/bc.js`, 'mail', ...args], { encoding: 'utf8', env: { ...process.env, BLACKCAT_HOME: dir } });
@@ -69,12 +69,25 @@ test('an account whose password is not saved is said so at once, and the mail se
     /home: could not be fetched: no app password is saved for "home"/,
     'it reaches for the account as a fetch does',
   );
-  assert.match(
-    bc('recover', '--since', '90d').stdout,
-    /home: mail is kept for the last 30 days, and what is older is dropped at each fetch\. To go further back, connect the account again with more days: bc mail add/,
+  // How far back mail is fetched is changed for one account, with nothing else of it; only the
+  // lengths on offer. Further back is fetched at once (here it cannot be: no password).
+  const kept = bc('history', 'home', '180', '--json');
+  const { account, days, was } = JSON.parse(kept.stdout);
+  assert.deepEqual({ account, days, was }, { account: 'home', days: 180, was: 30 }, kept.stderr);
+  assert.match(bc('history', 'home', '180').stdout, /home: mail is fetched 6 months back from now on; what is stored is kept\.$/m);
+  assert.match(bc('list').stdout, /home: me@example\.com · fetched 180 days back/);
+  assert.notEqual(bc('history', 'home', '45').status, 0);
+  assert.doesNotMatch(bc('history', 'home', '30').stdout, /forgotten|deleted/, 'fewer days delete nothing');
+  const { recent } = await import('../src/activity/log.js');
+  assert.ok(
+    recent({ category: 'messages: mail' }).some((e) => e.summary === 'mail home: fetched 30 days back (was 180)'),
+    'each change on the record',
   );
-  assert.notEqual(bc('recover', '--since', 'x').status, 0);
-  assert.match(bc('recover', '--help').stdout, /go through the mail of the last days again/);
+  await (await import('../src/plugins/registry.js')).loadPlugins();
+  const { decide } = await import('../src/agent/policy.js');
+  assert.equal(decide('Bash', { command: 'blackcat mail history home 180 --json' }).action, 'ask');
+  assert.notEqual(bc('recover', '--since', '90d').status, 0, "how far back is the account's, not asked for");
+  assert.match(bc('recover', '--help').stdout, /go through the mail of the days fetched again/);
 });
 
 test('how often new mail is fetched is a setting: every 5 minutes until chosen, and the job, the notes and the settings follow it', async () => {

@@ -30,8 +30,8 @@ const rows = (sql, ...a) => {
 };
 
 test('sources are told apart by the start of an id', () => {
-  assert.equal(db.sourceOf('15550001234@s.whatsapp.net'), 'wa');
-  assert.equal(db.sourceOf('120363000000000000@g.us'), 'wa');
+  assert.equal(db.sourceOf('wa:15550001234@s.whatsapp.net'), 'wa');
+  assert.equal(db.sourceOf('wa:120363000000000000@g.us'), 'wa');
   assert.equal(db.sourceOf('tg:12345'), 'tg');
   assert.equal(db.sourceOf('tg:-100123'), 'tg');
   assert.equal(db.sourceOf('mail:personal'), 'mail');
@@ -148,13 +148,21 @@ test('WhatsApp: a new message is stored with its chat and sender; the same one a
   });
   await wait(100);
   assert.deepEqual(
-    rows("SELECT id, sender_ref, from_me, type, text FROM messages WHERE chat_ref = '15550001234@s.whatsapp.net' ORDER BY id"),
+    rows("SELECT id, sender_ref, from_me, type, text FROM messages WHERE chat_ref = 'wa:15550001234@s.whatsapp.net' ORDER BY id"),
     [
-      { id: 'AAA1', sender_ref: '15550001234@s.whatsapp.net', from_me: 0, type: 'text', text: 'are we still on for Friday?' },
+      { id: 'AAA1', sender_ref: 'wa:15550001234@s.whatsapp.net', from_me: 0, type: 'text', text: 'are we still on for Friday?' },
       { id: 'AAA2', sender_ref: null, from_me: 1, type: 'text', text: 'yes!' },
     ],
   );
-  assert.equal(rows("SELECT name FROM contacts WHERE ref = '15550001234@s.whatsapp.net'")[0].name, 'Maya Lopez');
+  assert.equal(rows("SELECT name FROM contacts WHERE ref = 'wa:15550001234@s.whatsapp.net'")[0].name, 'Maya Lopez');
+  // On the owner's account it is linked as, by its number; the chat too.
+  const [acct] = rows("SELECT key, identity FROM accounts WHERE source = 'wa'");
+  assert.equal(acct.identity, '+15550000000');
+  assert.deepEqual(
+    rows("SELECT DISTINCT account FROM messages WHERE chat_ref = 'wa:15550001234@s.whatsapp.net'").map((r) => r.account),
+    [acct.key],
+  );
+  assert.equal(rows("SELECT account FROM chats WHERE ref = 'wa:15550001234@s.whatsapp.net'")[0].account, acct.key);
   // What a business sends, with buttons under it, is a message like any other; a kind nothing reads is named in the log, once.
   const biz = (id, message) => ({
     key: { remoteJid: '15550009999@s.whatsapp.net', id, fromMe: false },
@@ -177,7 +185,7 @@ test('WhatsApp: a new message is stored with its chat and sender; the same one a
     type: 'notify',
   });
   await wait(100);
-  assert.deepEqual(rows("SELECT id, type, text FROM messages WHERE chat_ref = '15550009999@s.whatsapp.net'"), [
+  assert.deepEqual(rows("SELECT id, type, text FROM messages WHERE chat_ref = 'wa:15550009999@s.whatsapp.net'"), [
     { id: 'BBB1', type: 'text', text: 'Your appointment is on Saturday at 08:00\n[Confirm]' },
   ]);
   assert.deepEqual(

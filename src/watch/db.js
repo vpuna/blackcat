@@ -77,6 +77,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS watch_items_msg_title ON watch_items (watch_id
 //   watches.lists      JSON: { quiet: [list names] } (lists kept out of reports; see lists.js)
 //   watch_items.file   a picture or document that belongs with the item
 //   watch_items.remind_ts  when to nudge, for watches where the reader suggests a time
+//   watch_items.reference  a booking's or an order's number, to find what comes about it later
 // and watches.mode gained 'briefing': new items go in the daily briefing rather than a report of their own.
 export const DEFAULT_NUDGE = { mode: 'before', days: 2, at: '18:00' };
 export const DEFAULT_SCAN = { cron: ['*/15 * * * *'] };
@@ -117,6 +118,25 @@ const STEPS = [
   // 7: what an entry a watch added looks like, among what was kept already (a list entry, a
   //    reminder): JSON [{ kind, id, title, where }]. Said with it, so the owner can drop one.
   (db) => db.exec('ALTER TABLE watch_items ADD COLUMN same_as TEXT'),
+  // 8: a WhatsApp chat a watch reads, named as the archive has named it since WhatsApp's ids
+  //    were marked "wa:" (src/archive/db.js, step 8).
+  (db) => {
+    const put = db.prepare('UPDATE watches SET sources = ? WHERE id = ?');
+    const unmarked = (ref) => /^[0-9][^:]*@/.test(ref ?? '');
+    for (const w of db.prepare('SELECT id, sources FROM watches').all()) {
+      let src;
+      try {
+        src = JSON.parse(w.sources);
+      } catch {
+        continue;
+      }
+      if (!src?.chats?.some((c) => unmarked(c.ref))) continue;
+      put.run(JSON.stringify({ ...src, chats: src.chats.map((c) => (unmarked(c.ref) ? { ...c, ref: `wa:${c.ref}` } : c)) }), w.id);
+    }
+  },
+  // 9: a booking's or an order's reference (its booking number, order number, tracking
+  //    number), by which later messages about it are found, whoever sends them.
+  (db) => db.exec('ALTER TABLE watch_items ADD COLUMN reference TEXT'),
 ];
 
 // What an entry looks like the same as, kept already: [{ kind, id, title, where }].
@@ -276,8 +296,8 @@ export function removeWatch(db, id) {
 export function addItem(db, it) {
   const info = db
     .prepare(
-      `INSERT INTO watch_items (watch_id, title, category, place, area, event_date, summary, url, created_ts, msg_id, msg_chat, msg_sender, msg_ts, remind_ts, file)
-    VALUES (@watchId, @title, @category, @place, @area, @eventDate, @summary, @url, @createdTs, @msgId, @msgChat, @msgSender, @msgTs, @remindTs, @file)
+      `INSERT INTO watch_items (watch_id, title, category, place, area, event_date, summary, url, created_ts, msg_id, msg_chat, msg_sender, msg_ts, remind_ts, file, reference)
+    VALUES (@watchId, @title, @category, @place, @area, @eventDate, @summary, @url, @createdTs, @msgId, @msgChat, @msgSender, @msgTs, @remindTs, @file, @reference)
     ON CONFLICT DO NOTHING`,
     )
     .run({
@@ -293,6 +313,7 @@ export function addItem(db, it) {
       msgTs: null,
       remindTs: null,
       file: null,
+      reference: null,
       createdTs: now(),
       ...it,
     });

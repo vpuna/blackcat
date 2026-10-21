@@ -108,15 +108,14 @@ test('the command: leaves the work for the service, waits, and says what was fou
   const r = await recover(ctx, { chat: 'Club' });
   assert.match(
     r.text,
-    /^Went through the last 30 days of 1 chat on Telegram again: \d messages? that w(as|ere) missing (is|are) now kept\.\n {2}Club: \d$/,
+    /^Went through 30 days of history of 1 chat on Telegram again: \d messages? that w(as|ere) missing (is|are) now kept\.\n {2}Club: \d$/,
   );
   assert.equal(r.data.done, true);
   assert.deepEqual(texts('tg:-1005'), ['welcome to the club', 'the meeting moved to Friday', 'see you there']);
-  assert.match((await recover(ctx, { since: '1w' })).text, /last 7 days of 2 chats on Telegram again: nothing was missing\./);
-  await assert.rejects(recover(ctx, { since: '20y' }), /Can't read "20y" as how far back/);
+  assert.match((await recover(ctx, {})).text, /30 days of history of 2 chats on Telegram again: nothing was missing\./, 'the days chosen');
   await assert.rejects(recover(ctx, { chat: 'nobody of that name' }), /No Telegram chat matches/);
   assert.equal(
     words({ chats: 1, recovered: 1, per: [{ chat: 'Sam', recovered: 1 }] }, { days: 30 }),
-    'Went through the last 30 days of 1 chat on Telegram again: 1 message that was missing is now kept.\n  Sam: 1',
+    'Went through 30 days of history of 1 chat on Telegram again: 1 message that was missing is now kept.\n  Sam: 1',
   );
 });

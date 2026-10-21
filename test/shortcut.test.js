@@ -49,10 +49,10 @@ test('steps stop at the first that fails, which is said; nothing after it runs',
     `echo never >> ${mark}`,
   );
   assert.equal(r.status, 0, 'it is saved all the same: the owner is told it does not work');
-  assert.match(r.stdout, /Tested now: it did NOT work|did not work|failed \(exit 3\)/i);
+  assert.match(r.stdout, /Tested now: it FAILED\. Stopped at step 2 of 3/);
   const run = bc('shortcut', 'run', 'brittle');
   assert.notEqual(run.status, 0);
-  assert.match(run.stderr, /failed \(exit 3\)/);
+  assert.match(run.stderr, /Stopped at step 2 of 3 \(sh -c "echo it broke >&2; exit 3"\): it broke/);
   assert.doesNotMatch(fs.readFileSync(mark, 'utf8'), /never/);
 });
 
@@ -474,6 +474,106 @@ test('in the chat: /music shows its actions as buttons, /music pause runs it, a 
     p.manifest.chat.commands(makeCtx(p)).find((c) => c.command === 'music'),
     { command: 'music', description: 'A playlist in the living room (play, pause, stop)' },
   );
+});
+
+test('steps are named by their own comment, else by the command; a long shortcut says in the chat which step it is on', async () => {
+  const { stepName } = await import('../plugins/shortcut/plugin.js');
+  assert.equal(stepName('blackcat webos on # Turning on the TV'), 'Turning on the TV');
+  assert.equal(stepName('blackcat webos input shield'), 'webos input shield');
+  assert.equal(stepName("blackcat android adb shield shell 'input text # 1' # Typing"), 'Typing', 'a # inside quotes is not a name');
+  assert.equal(stepName("echo 'a # b'"), "echo 'a # b'");
+  assert.equal(stepName('a'.repeat(80)).length, 60);
+  const add = (...a) => assert.equal(bc('shortcut', 'add', ...a, '--no-test').status, 0);
+  add(
+    'evening',
+    '--description',
+    'The evening news',
+    '--run',
+    'echo on # Turning on',
+    '--run',
+    'true # Checking it',
+    '--run',
+    'echo done${BLACKCAT_PROGRESS:+ quietly}',
+  );
+  add(
+    'blocked',
+    '--description',
+    'Never all the way',
+    '--run',
+    'true',
+    '--run',
+    'sh -c "echo the TV is off >&2; exit 1" # Checking the TV is on',
+    '--run',
+    `echo never >> ${mark}`,
+  );
+  const { loadPlugins, findLoaded, makeCtx } = await import('../src/plugins/registry.js');
+  await loadPlugins();
+  const p = findLoaded('shortcut');
+  const texts = [];
+  const edits = [];
+  await p.manifest.chat.install(
+    { text: (fn) => texts.push(fn), action: () => {}, edit: async (chat, ref, t) => void edits.push([ref, t]) },
+    { ctx: makeCtx(p, { caller: 'owner', surface: 'chat' }) },
+  );
+  const say = async (text) => {
+    const replies = [];
+    const order = [];
+    edits.length = 0;
+    await texts[0](
+      {
+        text,
+        chat: 'me',
+        reply: async (t) => (replies.push(t), replies.length),
+        working() {},
+        sendFile: async (f) => (order.push(`file ${path.basename(f)}`), true),
+      },
+      () => {},
+    );
+    return { replies, edits: edits.map(([ref, t]) => `${ref}: ${t}`), order };
+  };
+  const ok = await say('/evening');
+  // As a routine shows its steps: each in its own words, ticked when done, in one message.
+  assert.deepEqual(ok.replies, ['▶ /evening\n⏳ 1. Turning on'], 'one message');
+  assert.deepEqual(ok.edits.slice(0, 2), [
+    '1: ▶ /evening\n✓ 1. Turning on\n⏳ 2. Checking it',
+    '1: ▶ /evening\n✓ 1. Turning on\n✓ 2. Checking it\n⏳ 3. echo done${BLACKCAT_PROGRESS:+ quietly}',
+  ]);
+  assert.match(
+    ok.edits.at(-1),
+    /^1: ▶ \/evening\n✓ 1\. Turning on\n✓ 2\. Checking it\n✓ 3\. echo done\$\{BLACKCAT_PROGRESS:\+ quietly\}\n✓ Done · \d+s\n\ndone quietly$/,
+    'which then says how it ended, with what the last step printed (each step run quietly: one list is enough)',
+  );
+  const no = await say('/blocked');
+  assert.match(
+    no.edits.at(-1),
+    /^1: ▶ \/blocked\n✓ 1\. .+\n✖ 2\. Checking the TV is on\n\n😿 Stopped at step 2 of 3 \(Checking the TV is on\): the TV is off$/,
+  );
+  assert.doesNotMatch(fs.readFileSync(mark, 'utf8'), /never/, 'nothing after the step that failed ran');
+  // A picture a step hands on (a routine's screen at the end) goes after the last step, with
+  // the list done; only one blackcat took itself, in its own media folder.
+  const media = path.join(dir, 'data', 'android-media');
+  fs.mkdirSync(media, { recursive: true });
+  fs.writeFileSync(path.join(media, 'end.jpg'), 'picture');
+  fs.writeFileSync(path.join(dir, 'elsewhere.jpg'), 'not ours');
+  add(
+    'pictured',
+    '--description',
+    'With a picture',
+    '--run',
+    `echo '[[send: ${path.join(media, 'end.jpg')}]]' # The routine`,
+    '--run',
+    `echo '[[send: ${path.join(dir, 'elsewhere.jpg')}]]' # Something else`,
+    '--run',
+    'true # Checking',
+    '--reply',
+    'none',
+  );
+  // What a step runs is told what the shortcut is for, to call itself by (a routine's title).
+  add('titled', '--description', 'Fox News (US), channel 19', '--run', 'echo "$BLACKCAT_TITLE"', '--reply', 'output');
+  assert.equal(JSON.parse(bc('shortcut', 'run', 'titled', '--json').stdout).output, 'Fox News (US), channel 19');
+  const shot = await say('/pictured');
+  assert.match(shot.edits.at(-1), /✓ 3\. Checking\n✓ Done · \d+s$/, 'the list says nothing of the marker');
+  assert.deepEqual(shot.order, ['file end.jpg'], "the routine's picture, and not a file of anywhere else");
 });
 
 test('selftest looks over each action as well, and still runs nothing', () => {

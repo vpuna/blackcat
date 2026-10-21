@@ -8,6 +8,7 @@
 // 2. A command the agent runs is handed to a process the agent service keeps loaded and
 //    waiting (src/agent/warm.js), when one is ready. This file then only passes the output
 //    along. Anything else, or any doubt, and the command starts here the ordinary way.
+import fs from 'node:fs';
 import module from 'node:module';
 import net from 'node:net';
 import path from 'node:path';
@@ -79,6 +80,8 @@ const ran = eligible ? await handOver() : null;
 if (ran !== null) process.exitCode = ran;
 else {
   try {
+    // (data/ is made first, private to this account: the cache would otherwise make it open to all.)
+    fs.mkdirSync(path.join(home, 'data'), { recursive: true, mode: 0o700 });
     module.enableCompileCache?.(path.join(home, 'data', 'compile-cache'));
   } catch {
     // Without the cache everything still works, a little slower.

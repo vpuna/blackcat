@@ -1,7 +1,24 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import pc from 'picocolors';
-import { came, ownerDid, work } from '../activity/log.js';
+import { came, ownerDid, recent, work } from '../activity/log.js';
 import { FIXED } from '../activity/problems.js';
-import { alertText, checkText, lasted, evaluate, fixAllowed, parseAlert, parseQuiet, runCheck, stateText } from './check.js';
+import {
+  alertText,
+  checkText,
+  evaluate,
+  fixAllowed,
+  keepS,
+  lasted,
+  measured,
+  parseAlert,
+  parseLimit,
+  parseQuiet,
+  runCheck,
+  stateText,
+} from './check.js';
+import { addReading, contexts, forget, keepOnly, readings } from './history.js';
+import { plural } from '../util/format.js';
 import {
   DEFAULT_EVERY,
   addCheck,
@@ -19,11 +36,14 @@ import {
   wakeFinding,
 } from './db.js';
 import {
+  HOME,
   ScheduleError,
   TimeError,
   addRule,
   describeSchedule,
   fmtWhen,
+  loaded,
+  makeCtx,
   nextRun,
   ownerChat,
   parseDuration,
@@ -69,6 +89,10 @@ function build(opts, cur = {}) {
     fix: cur.fix ?? undefined,
     tries: cur.tries ?? undefined,
     wait: cur.wait ?? undefined,
+    measure: cur.measure ?? undefined,
+    limits: cur.limits ?? undefined,
+    context: cur.context ?? undefined,
+    keep: cur.keep ?? undefined,
   };
   const text = (v) => String(v).trim() || undefined;
   if (opts.run !== undefined) c.command = text(opts.run);
@@ -78,12 +102,31 @@ function build(opts, cur = {}) {
   else if (opts.fix !== undefined) c.fix = text(opts.fix);
   if (opts.tries !== undefined) c.tries = Number(opts.tries);
   if (opts.wait !== undefined) c.wait = text(opts.wait);
+  const listOf = (v) =>
+    String(v)
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean);
+  if (opts.measure === false) c.measure = undefined;
+  else if (opts.measure !== undefined) c.measure = listOf(opts.measure);
+  if (opts.limit === false) c.limits = undefined;
+  else if (opts.limit !== undefined)
+    try {
+      c.limits = listOf(opts.limit).map(parseLimit);
+    } catch (e) {
+      throw new Mistake(e.message);
+    }
+  if (opts.context === false) c.context = undefined;
+  else if (opts.context !== undefined) c.context = text(opts.context);
+  if (opts.keep !== undefined) c.keep = text(opts.keep);
   if (!c.command && !c.file) throw new Mistake('A check needs something to look at: --run "<command>", --file <path>, or both.');
   if (c.maxAge && !c.file) throw new Mistake('--max-age needs --file.');
   if (c.maxAge) parseDuration(c.maxAge);
   if (c.wait && parseDuration(c.wait) > 600) throw new Mistake('--wait can be at most 10m.');
   if (c.tries != null && !(Number.isInteger(c.tries) && c.tries >= 1 && c.tries <= 5))
     throw new Mistake('--tries is a number from 1 to 5.');
+  if (measured(c).length && !c.command) throw new Mistake('--measure and --limit need --run: the figures come from what it prints.');
+  if (c.keep && !(parseDuration(c.keep) >= 86400 && parseDuration(c.keep) <= 366 * 86400)) throw new Mistake('--keep is from 1d to 365d.');
   return c;
 }
 
@@ -142,6 +185,10 @@ export function view(c) {
     tries: c.fix ? (c.tries ?? 2) : null,
     wait: c.fix ? (c.wait ?? '90s') : null,
     lookFor: c.look_for || null,
+    measure: c.measure ?? null,
+    limits: c.limits?.map((l) => `${l.field}${l.op}${l.value}`) ?? null,
+    context: c.context ?? null,
+    keep: c.keep ?? null,
     what: checkText(c),
     looks: describeSchedule(c.every).replace(/^./, (x) => x.toLowerCase()),
     every: { cron: c.every, next: nextRun(c.every) },
@@ -153,8 +200,8 @@ export function view(c) {
   };
 }
 
-const lines = (c) => [
-  `   looks at: ${checkText(c)}`,
+const lines = (c, opts) => [
+  `   looks at: ${checkText(c, opts)}`,
   ...(c.look_for ? [`   working means: ${c.look_for}`] : []),
   `   looks:    ${view(c).looks}`,
   `   state:    ${c.wrong?.open ? pc.red(stateText(c)) : stateText(c)}`,
@@ -167,6 +214,8 @@ async function test(db, c) {
   const known = currentFindings(db, c.id);
   const r = await evaluate(c, known);
   const now = Math.floor(Date.now() / 1000);
+  // (What it read is its first reading.)
+  if (r.numbers) addReading(c.id, r.numbers, keepS(c));
   if (r.ok === true) {
     updateCheck(db, c.id, { state: { ok: true, checked: now, reason: r.reason }, last_run: now });
     known.forEach((f) => resolveFinding(db, f.id));
@@ -187,8 +236,71 @@ function dropFixRule(c, fix = c.fix) {
   if (rule?.via === viaOf(c.id)) removeRule(rule.id);
 }
 
+// ---- checks that plugins offer ----
+// A plugin may offer checks ready to switch on, in its manifest (`checks`). None runs until
+// the owner adds it; then it is a check like any other. → [{ ref: 'ssh:nas-heat', plugin, … }]
+export function offers() {
+  const out = [];
+  for (const p of loaded()) {
+    let list = p.manifest.checks;
+    if (!list) continue;
+    try {
+      if (typeof list === 'function') list = list(makeCtx(p, { caller: 'owner', surface: 'job' }));
+    } catch {
+      continue;
+    }
+    for (const o of list ?? []) if (o?.id && o.name && o.run) out.push({ ...o, plugin: p.name, ref: `${p.name}:${o.id}` });
+  }
+  return out;
+}
+// `--from ssh:nas-heat`: what the offer says, under what the owner typed. Its name unless they gave one.
+async function fromOffer(i) {
+  const o = offers().find((x) => x.ref === String(i.from).trim());
+  if (!o) throw new Mistake(`Nothing is offered as "${i.from}". See: bc check offered`);
+  const pick = (k, v) => (i[k] !== undefined ? i[k] : v);
+  return {
+    ...i,
+    name: i.name?.length ? i.name : [o.name],
+    run: pick('run', o.run),
+    file: pick('file', o.file),
+    maxAge: pick('maxAge', o.maxAge),
+    measure: pick('measure', o.measure?.join(',')),
+    limit: pick('limit', o.limit?.join(',')),
+    context: pick('context', o.context),
+    every: pick('every', o.every),
+  };
+}
+
+export const offered = guard(() => {
+  const all = offers();
+  if (!all.length) return { text: 'No plugin that is switched on offers a check.', data: { offered: [] } };
+  return {
+    text: [
+      ...all.map(
+        (o) => `${pc.bold(o.ref)}  ${o.name}\n   ${o.summary ?? ''}${o.limit?.length ? pc.dim(` · limit ${o.limit.join(', ')}`) : ''}`,
+      ),
+      '',
+      pc.dim('Add one, with limits of your own if you like: bc check add --from <ref> [--limit "temp>70"]'),
+    ].join('\n'),
+    data: {
+      offered: all.map(({ ref, plugin, name, summary, run, measure, limit, context, every }) => ({
+        ref,
+        plugin,
+        name,
+        summary,
+        run,
+        measure,
+        limit,
+        context,
+        every,
+      })),
+    },
+  };
+});
+
 export const add = guard((i) =>
   withDb(async (db) => {
+    if (i.from) i = await fromOffer(i);
     const name = (i.name ?? []).join(' ').trim();
     if (!name) throw new Mistake('Give the check a name: bc check add "Camera" --run "<command>"');
     if (listChecks(db).some((c) => c.name.toLowerCase() === name.toLowerCase()))
@@ -214,7 +326,7 @@ export const add = guard((i) =>
     return {
       text: [
         `${pc.green('✓')} Check ${c.id} "${c.name}" created${paused ? pc.yellow(' (paused)') : ''}.`,
-        ...lines(c),
+        ...lines(c, { short: true }),
         `   ${testLine(tested)}`,
         ...(paused ? [pc.yellow(`   ${advice}`)] : []),
         ...(c.fix ? [pc.dim('   The fix may now run without asking. Take that back any time: bc permissions')] : []),
@@ -238,7 +350,7 @@ export const list = guard(() =>
         .map((c) =>
           [
             `${pc.bold(String(c.id).padStart(3))}  ${pc.bold(c.name)}${c.active ? '' : pc.yellow(' (paused)')}`,
-            ...lines(c).map((l) => `  ${l}`),
+            ...lines(c, { short: true }).map((l) => `  ${l}`),
           ].join('\n'),
         )
         .join('\n'),
@@ -281,7 +393,11 @@ export const show = guard((i) =>
 export const edit = guard((i) =>
   withDb(async (db) => {
     const c = must(db, i.check);
-    if (c.builtin && (['run', 'file', 'maxAge', 'fix', 'tries', 'wait'].some((k) => i[k] !== undefined) || i.lookFor !== undefined))
+    if (
+      c.builtin &&
+      (['run', 'file', 'maxAge', 'fix', 'tries', 'wait', 'measure', 'limit', 'context'].some((k) => i[k] !== undefined) ||
+        i.lookFor !== undefined)
+    )
       throw new Mistake(
         `"${c.name}" is part of blackcat: what it looks at stays as it is. You can change when it looks (--every), when you are told (--alert, --quiet, --remind), its name, or pause it.`,
       );
@@ -293,11 +409,13 @@ export const edit = guard((i) =>
     if (i.pause) patch.active = false;
     if (i.resume) patch.active = true;
     Object.assign(patch, telling(i));
-    const changes = ['run', 'file', 'maxAge', 'fix', 'tries', 'wait'].some((k) => i[k] !== undefined);
+    const changes = ['run', 'file', 'maxAge', 'fix', 'tries', 'wait', 'measure', 'limit', 'context', 'keep'].some(
+      (k) => i[k] !== undefined,
+    );
     if (changes) Object.assign(patch, Object.fromEntries(Object.entries(build(i, c)).map(([k, v]) => [k, v ?? null])));
     if (!Object.keys(patch).length)
       throw new Mistake(
-        'Say what to change: --run, --file, --max-age, --fix, --no-fix, --tries, --wait, --every, --look-for, --alert, --quiet, --remind, --name, --pause or --resume.',
+        'Say what to change: --run, --file, --max-age, --fix, --no-fix, --tries, --wait, --measure, --limit, --context, --keep, --every, --look-for, --alert, --quiet, --remind, --name, --pause or --resume.',
       );
     if (changes && (patch.fix ?? null) !== (c.fix ?? null)) {
       dropFixRule(c);
@@ -324,8 +442,97 @@ export const remove = guard((i) =>
     if (c.builtin)
       throw new Mistake(`"${c.name}" is part of blackcat and can't be removed. Pause it instead: bc check edit ${c.id} --pause`);
     dropFixRule(c);
+    forget(c.id);
     removeCheck(db, c.id);
     return { text: `Check "${c.name}" removed${c.fix ? ', and its fix may no longer run by itself' : ''}.`, data: { removed: c.name } };
+  }),
+);
+
+// ---- history ----
+const span = (vs) => {
+  const lo = Math.min(...vs);
+  const hi = Math.max(...vs);
+  const r = (n) => String(Math.round(n * 100) / 100);
+  return lo === hi ? r(lo) : `${r(lo)} to ${r(hi)}`;
+};
+// What a check saw over a while: its figures in brief, and each time it was not working with
+// what was going on then, and what blackcat itself did in the half hour before.
+export const history = guard((i) =>
+  withDb((db) => {
+    const c = must(db, i.check);
+    const now = Math.floor(Date.now() / 1000);
+    const since = now - parseDuration(String(i.since ?? '24h'));
+    const rs = readings(c.id, since, now);
+    const fields = [...new Set(rs.flatMap((r) => Object.keys(r.numbers)))];
+    const figuresNow = fields.map((f) => {
+      const vs = rs.map((r) => r.numbers[f]).filter((v) => v != null);
+      return { field: f, range: span(vs), now: vs.at(-1), readings: vs.length };
+    });
+    const wrong = pastFindings(db, c.id, 100).filter((f) => (f.resolved_ts ?? now) >= since);
+    const pics = [];
+    // (Where the agent works, so that it can send them.)
+    const folder = path.join(HOME, 'agent', 'check-pictures');
+    const incidents = wrong.reverse().map((f) => {
+      const end = f.resolved_ts ?? now;
+      const kept = contexts(c.id, f.first_seen - 60, end, { files: !!i.pictures });
+      for (const k of kept)
+        if (k.file) {
+          fs.mkdirSync(folder, { recursive: true });
+          const file = path.join(folder, `${c.id}-${k.ts}.jpg`);
+          fs.writeFileSync(file, k.file);
+          pics.push(file);
+          k.picture = file;
+        }
+      const before = recent({ sinceTs: f.first_seen - 1800, limit: 500 })
+        .filter((e) => e.ts <= f.first_seen && e.kind !== 'model' && e.category !== `check: ${c.name}`)
+        .slice(0, 15)
+        .reverse()
+        .map((e) => `${fmtWhen(e.ts)} ${e.category}${e.summary ? `: ${e.summary}` : ''}${e.ok === false ? ' (failed)' : ''}`);
+      return {
+        title: f.title,
+        from: fmtWhen(f.first_seen),
+        to: f.resolved_ts ? fmtWhen(f.resolved_ts) : null,
+        lasted: lasted(end - f.first_seen),
+        ...(f.fix_note ? { fix: f.fix_note } : {}),
+        context: kept.map((k) => ({ at: fmtWhen(k.ts), output: k.output, picture: k.picture ?? (k.file_type ? 'kept' : null) })),
+        blackcatBefore: before,
+      };
+    });
+    const text = [
+      `${pc.bold(c.name)} · since ${fmtWhen(since)}`,
+      ...(figuresNow.length
+        ? figuresNow.map((f) => `   ${f.field}: ${f.range}, now ${f.now} (${plural(f.readings, 'reading')})`)
+        : [pc.dim('   No figures kept (bc check edit … --measure or --limit).')]),
+      '',
+      incidents.length ? 'Not working:' : 'Working all that time.',
+      ...incidents.flatMap((n) => [
+        `   ${n.from}${n.to ? ` to ${n.to}` : ', still'} (${n.lasted}): ${n.title}${n.fix ? pc.dim(` · ${n.fix}`) : ''}`,
+        ...n.context.flatMap((k) => [
+          `      What was going on, ${k.at}:`,
+          ...(k.output ?? '')
+            .split('\n')
+            .slice(0, 40)
+            .map((l) => `        ${l}`),
+          ...(k.picture ? [`        picture: ${k.picture === 'kept' ? 'kept (--pictures to save it)' : k.picture}`] : []),
+        ]),
+        ...(n.blackcatBefore.length
+          ? ['      What blackcat did in the half hour before:', ...n.blackcatBefore.map((l) => `        ${l}`)]
+          : []),
+      ]),
+    ].join('\n');
+    // (For the agent: the readings themselves too, at most a hundred, evenly spread.)
+    const step = Math.max(1, Math.ceil(rs.length / 100));
+    return {
+      text,
+      data: {
+        check: c.name,
+        since: fmtWhen(since),
+        figures: figuresNow,
+        readings: rs.filter((_, n) => n % step === 0).map((r) => ({ at: fmtWhen(r.ts), ...r.numbers })),
+        incidents,
+        ...(pics.length ? { pictures: pics } : {}),
+      },
+    };
   }),
 );
 
@@ -337,6 +544,8 @@ export const dueChecks = (db, nowMs = Date.now()) =>
 export const run = guard((i) =>
   withDb(async (db) => {
     const targets = i.check ? [must(db, i.check)] : i.due ? dueChecks(db) : listChecks(db, { activeOnly: true });
+    // (What is left of a check removed while blackcat was stopping goes now.)
+    if (i.due && targets.length) keepOnly(listChecks(db).map((c) => c.id));
     const out = [];
     const text = [];
     for (const c of targets) {

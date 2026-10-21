@@ -175,7 +175,7 @@ export function openActivityDb() {
   upgrade(db, 'activity', STEPS, { base: 2, owns: ['activity'] });
   return db;
 }
-const dayOf = (ts) => {
+export const dayOf = (ts) => {
   const d = new Date(ts * 1000);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
@@ -436,11 +436,13 @@ export function ofTurn(turnId) {
 }
 
 // Totals over the last `days` days (today included), grouped by category, model, day or kind.
-export function totals({ days = 7, by = 'category', kind = 'model', dev = false } = {}) {
+// `until`: only days before this one (YYYY-MM-DD), for whole days that are over.
+export function totals({ days = 7, by = 'category', kind = 'model', dev = false, until } = {}) {
   const col = { category: 'category', model: 'model', day: 'day', kind: 'kind', who: 'who' }[by] ?? 'category';
   return withDb(openActivityDb, (db) => {
     const from = dayOf(Math.floor(Date.now() / 1000) - (Math.max(1, Number(days) || 7) - 1) * 86400);
     const where = ['day >= @from'];
+    if (until) where.push('day < @until');
     if (kind && by !== 'kind') where.push('kind = @kind');
     shown(by === 'who' ? 'all' : dev, where);
     const rows = db
@@ -450,7 +452,7 @@ export function totals({ days = 7, by = 'category', kind = 'model', dev = false 
       FROM activity_daily WHERE ${where.join(' AND ')} GROUP BY ${col}
       ORDER BY ${by === 'day' ? 'name DESC' : 'cost DESC, n DESC'}`,
       )
-      .all({ from, ...(kind && by !== 'kind' ? { kind } : {}) });
+      .all({ from, ...(until ? { until } : {}), ...(kind && by !== 'kind' ? { kind } : {}) });
     return { from, days: Math.max(1, Number(days) || 7), by, rows };
   });
 }

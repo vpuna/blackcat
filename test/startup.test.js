@@ -88,3 +88,14 @@ test('every bundled plugin loads, and answers `status` and `settings` on an empt
     }
   }
 });
+
+test('a new installation keeps its data folder to this account, from the first command', () => {
+  const fresh = fs.mkdtempSync(`${process.env.BLACKCAT_HOME}/fresh-`);
+  const r = spawnSync(process.execPath, [`${root}bin/bc.js`, '--version'], {
+    encoding: 'utf8',
+    env: { ...process.env, BLACKCAT_HOME: fresh },
+    timeout: 60_000,
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(fs.statSync(`${fresh}/data`).mode & 0o777, 0o700);
+});

@@ -200,19 +200,25 @@ test('an archive from an earlier blackcat is refused, not upgraded; a new one is
   const { openWrite } = await import('../src/archive/db.js');
   const { ARCHIVE_DB } = await import('../src/archive/files.js');
   let a = openWrite();
-  assert.equal(a.pragma('user_version', { simple: true }), 7);
+  assert.equal(a.pragma('user_version', { simple: true }), 8);
   // and one from the first published version (marked 6) is given what has been added since, by whoever opens it
   a.exec(AT_6);
   a.close();
   const { openRead } = await import('../src/archive/db.js');
   const r = openRead();
-  assert.equal(r.pragma('user_version', { simple: true }), 7, 'a reader brings it up to date before reading');
+  assert.equal(r.pragma('user_version', { simple: true }), 8, 'a reader brings it up to date before reading');
   assert.equal(
     r.prepare("SELECT COUNT(*) AS n FROM messages_fts WHERE messages_fts MATCH 'dinner'").get().n,
     1,
     'and what was there is still found',
   );
   assert.equal(r.prepare("SELECT heard FROM messages WHERE id = 'OLD1'").get().heard, null);
+  assert.deepEqual(
+    r.prepare("SELECT chat_ref, sender_ref, account FROM messages WHERE id = 'OLD1'").get(),
+    { chat_ref: 'wa:1@s.whatsapp.net', sender_ref: 'wa:1@s.whatsapp.net', account: null },
+    "WhatsApp's ids are marked as WhatsApp's; the account is the collector's to claim",
+  );
+  assert.equal(r.prepare('SELECT ref FROM chats').pluck().get(), 'wa:1@s.whatsapp.net');
   r.close();
   a = openWrite();
   assert.ok(hasTable(a, 'messages') && hasTable(a, 'chat_info') && hasColumn(a, 'messages', 'link_url'));
@@ -255,7 +261,8 @@ test('an archive from the first published version, opened by several processes a
   );
   assert.deepEqual(codes, Array(12).fill(0), 'none of them failed');
   const db = openSqlite(ARCHIVE_DB, { readonly: true });
-  assert.equal(db.pragma('user_version', { simple: true }), 7);
-  assert.ok(hasColumn(db, 'messages', 'heard'));
+  assert.equal(db.pragma('user_version', { simple: true }), 8);
+  assert.ok(hasColumn(db, 'messages', 'heard') && hasColumn(db, 'messages', 'account'));
+  assert.equal(db.prepare('SELECT chat_ref FROM messages').pluck().get(), 'wa:1@s.whatsapp.net', 'marked once, not twice');
   db.close();
 });

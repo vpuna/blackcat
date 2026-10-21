@@ -319,7 +319,20 @@ In the bot the same commands send the picture: /allsky now, /allsky startrails.`
   },
 
   // For `bc engine check`: what the owner might say, and the command it should lead to.
+  // A check offered (bc check offered): the camera reachable and its pictures recent.
   checks: (ctx) =>
+    configured(ctx)
+      ? [
+          {
+            id: 'camera',
+            name: 'Sky camera',
+            summary: 'the camera reachable and its latest picture recent, every 15 minutes',
+            run: 'blackcat allsky check',
+            every: '15m',
+          },
+        ]
+      : [],
+  trials: (ctx) =>
     configured(ctx)
       ? [
           { say: "show me last night's star trails", expect: /blackcat allsky startrails\b/ },

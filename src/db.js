@@ -116,7 +116,7 @@ export function upgrade(db, part, steps, { base = 1, owns = [] } = {}) {
   }
 }
 // On the activity record, once it is done. (Not for tables that were only just made.)
-function noteUpgrade(part, ran, last) {
+export function noteUpgrade(part, ran, last) {
   import('./activity/log.js')
     .then(({ record }) =>
       record({

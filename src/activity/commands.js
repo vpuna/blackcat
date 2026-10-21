@@ -1,8 +1,8 @@
 // `bc activity …`: reading the activity record.
 import pc from 'picocolors';
-import { KINDS, clear as wipe, ofWork, recent as read, settings, slowest, split, timings as timed, totals } from './log.js';
+import { KINDS, clear as wipe, dayOf, ofWork, recent as read, settings, slowest, split, timings as timed, totals } from './log.js';
 import { sinceTs as since } from '../util/when.js';
-import { count, plural, took, usd } from '../util/format.js';
+import { count, esc, plural, took, usd } from '../util/format.js';
 
 const at = (ts) =>
   new Date(ts * 1000).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -304,6 +304,52 @@ export function usage(opts) {
     ].join('\n'),
     data,
   };
+}
+
+// For the daily briefing: what the calls to the model used yesterday, in a few groups,
+// and the week before it. (A day far above a usual one is also found by `bc activity
+// problems`, which the check "blackcat health" runs.) A developer session's are left out.
+const GROUPS = [
+  [/^(chat|conversation summary)$/, 'talking to you'],
+  [/^attachments$/, 'reading files'],
+  [/^check: /, 'checks'],
+  [/^engine check$/, 'engine check'],
+];
+const FEW_WATCHES = 3; // each on a line of its own; more than that, together
+
+export function forBriefing() {
+  const s = settings();
+  if (!s.on) return null;
+  const today = dayOf(Math.floor(Date.now() / 1000));
+  const day = totals({ days: 2, until: today }).rows;
+  const week = totals({ days: 8, by: 'day', until: today }).rows;
+  if (!week.length) return null;
+  const sum = (rows) => rows.reduce((a, r) => ({ n: a.n + r.n, cost: a.cost + r.cost }), { n: 0, cost: 0 });
+  const watches = day.filter((r) => /^watch: /.test(r.name ?? '')).length;
+  const groups = new Map();
+  for (const r of day) {
+    const name = r.name ?? '';
+    const g = /^watch: /.test(name)
+      ? watches <= FEW_WATCHES
+        ? name.replace(/^watch: /, 'watch ')
+        : 'watching chats'
+      : (GROUPS.find(([re]) => re.test(name))?.[1] ?? 'other');
+    groups.set(g, sum([groups.get(g) ?? { n: 0, cost: 0 }, r]));
+  }
+  const used = (x) => (s.cost ? `${usd(x.cost)} (${plural(x.n, 'call')})` : plural(x.n, 'call'));
+  const all = sum(day);
+  // The days of the week that were recorded: a record begun on Tuesday has fewer than seven.
+  const span = Math.max(1, Math.min(7, Math.round((Date.parse(today) - Date.parse(week.at(-1).name)) / 86400000)));
+  const wk = sum(week);
+  const lines = [
+    '<b>What the model used yesterday</b>',
+    all.n ? `${used(all)}${s.cost ? ', at list price' : ''}` : 'Nothing.',
+    ...[...groups].sort(([, a], [, b]) => b.cost - a.cost || b.n - a.n).map(([g, x]) => `· ${esc(g)}: ${used(x)}`),
+    ...(span > 1
+      ? [`Last ${span} days: ${used(wk)}, about ${s.cost ? usd(wk.cost / span) : plural(Math.round(wk.n / span), 'call')} a day`]
+      : []),
+  ];
+  return { note: lines.join('\n') };
 }
 
 export function clear({ dev = false } = {}) {
