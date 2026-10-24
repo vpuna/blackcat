@@ -1,6 +1,7 @@
 import pc from 'picocolors';
 import {
   addReminder,
+  answerReminder as answer,
   fmtWhen,
   getReminder,
   isoLocal,
@@ -15,8 +16,8 @@ import {
   repeatText,
   rescheduleReminder as reschedule,
   schedule,
-  setReminderStatus as setStatus,
   shortestGap,
+  stopSeries,
   TimeError,
   withDb,
 } from '../internal.js';
@@ -49,6 +50,7 @@ export function view(r) {
     source: r.source,
     repeat: r.repeat,
     repeats: repeatText(r.repeat),
+    ...(r.series != null ? { series: r.series } : {}),
     note: r.note,
     ...(r.file ? { file: r.file } : {}),
     ...(r.msg_id
@@ -74,7 +76,9 @@ function line(r) {
         ? pc.green(' ✓')
         : r.status === 'cancelled'
           ? pc.dim(' cancelled')
-          : '';
+          : r.status === 'missed'
+            ? pc.dim(' missed')
+            : '';
   const tags = [
     r.source === 'auto' ? 'auto' : null,
     r.repeat ? `repeats ${repeatText(r.repeat)}` : null,
@@ -156,17 +160,33 @@ function find(db, id) {
   return r;
 }
 
+// (Of a reminder that repeats, this time only: the series goes on.)
 const finish = (status, word) =>
   command(async (id) => {
     return withDb(openAgentDb, (db) => {
       const r = find(db, id);
-      setStatus(db, r.id, status);
-      return { raw: true, data: view(getReminder(db, r.id)), text: `Reminder ${r.id} ${word}: ${r.text}` };
+      answer(db, r, status);
+      const again = r.repeat ? `. It comes again ${repeatText(r.repeat)} (to stop it: bc remind stop ${r.id})` : '';
+      return { raw: true, data: view(getReminder(db, r.id)), text: `Reminder ${r.id} ${word}: ${r.text}${again}` };
     });
   });
 
 export const done = finish('done', 'marked done');
 export const cancel = finish('cancelled', 'cancelled');
+
+// A reminder that repeats: no more of it.
+export const stop = command(async (id) => {
+  return withDb(openAgentDb, (db) => {
+    const r = find(db, id);
+    if (!r.repeat) throw new PluginError(`Reminder ${r.id} does not repeat. To cancel it: bc remind cancel ${r.id}`);
+    const n = stopSeries(db, r);
+    return {
+      raw: true,
+      data: { ...view(getReminder(db, r.id)), stopped: n },
+      text: `Stopped: "${r.text}" will not come again${n ? ` (${n} cancelled)` : ''}.`,
+    };
+  });
+});
 
 export const snooze = command(async (id, opts) => {
   return withDb(openAgentDb, (db) => {

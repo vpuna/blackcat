@@ -1,5 +1,6 @@
 import {
   actions,
+  answerReminder as answer,
   dueReminders,
   markReminderSent,
   errMsg,
@@ -10,14 +11,15 @@ import {
   listReminders,
   log,
   msgSource,
+  oneOfEachSeries,
   openRemindersDb as openAgentDb,
   repeatText,
   rescheduleReminder as reschedule,
-  setReminderStatus as setStatus,
   SOURCES,
+  stopSeries,
 } from '../internal.js';
 import { withDb } from '../db.js';
-import { addNextRepeat } from './db.js';
+import { addNextRepeat, closeMissed, nextOf } from './db.js';
 
 const hhmm = () => new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
 
@@ -44,15 +46,23 @@ export function renderReminder(r, { late = false } = {}) {
   return lines.join('\n\n');
 }
 
-const buttons = (id) => actions().add('✅ Done', `rm:${id}:d`).add('⏰ 1 hour', `rm:${id}:h`).add('🌅 Tomorrow 9:00', `rm:${id}:t`);
-// Opened from the briefing, before it is due: it can also simply be cancelled.
-const openButtons = (id) =>
-  actions()
-    .add('✅ Done', `rm:${id}:d`)
-    .add('🗑 Cancel it', `rm:${id}:x`)
-    .row()
-    .add('⏰ In 1 hour', `rm:${id}:h`)
-    .add('🌅 Tomorrow 9:00', `rm:${id}:t`);
+// What can be done with a reminder: as it arrives, or opened from the briefing (where one not
+// yet gone can also be cancelled). Moving it to later is for one that has gone; of a series,
+// only to before its next time ("Tomorrow 9:00" would be a second walk on the day). One that
+// repeats can be skipped this time, or stopped: no more of it.
+function buttons(db, r, { opened = false } = {}) {
+  const kb = actions().add('✅ Done', `rm:${r.id}:d`);
+  if (r.repeat) kb.add('⏭ Skip this time', `rm:${r.id}:x`).add('🛑 Stop repeating', `rm:${r.id}:s`);
+  else if (opened) kb.add('🗑 Cancel it', `rm:${r.id}:x`);
+  if (r.status === 'pending' && r.due_ts > Date.now() / 1000) return kb;
+  const next = r.repeat ? nextOf(db, r) : null;
+  const before = (ts) => !next || ts < next.due_ts;
+  if (r.repeat || opened) kb.row();
+  if (before(hourOn())) kb.add('⏰ 1 hour', `rm:${r.id}:h`);
+  if (!r.repeat) kb.add('🌅 Tomorrow 9:00', `rm:${r.id}:t`);
+  return kb;
+}
+const hourOn = () => Math.floor(Date.now() / 1000) + 3600;
 
 // Quiet hours hold back automatic reminders only. One you set yourself fires when you said.
 
@@ -63,10 +73,12 @@ export async function fireDue(ui) {
     for (const r of dueReminders(db)) {
       if (quiet && r.source === 'auto') continue;
       const late = Date.now() / 1000 - r.due_ts > 15 * 60;
+      // (Its next time first: the buttons are for the time before it.)
+      addNextRepeat(db, r);
       try {
         await ui.send(r.chat_id, renderReminder(r, { late }), {
           html: true,
-          actions: buttons(r.id),
+          actions: buttons(db, r),
           what: `${r.item_id ? 'a nudge' : 'reminder'} ${r.id}`,
           dueTs: r.due_ts,
         });
@@ -82,13 +94,13 @@ export async function fireDue(ui) {
       // (Unless the owner has answered it in the moment it took to send: then that stands.)
       const marked = markReminderSent(db, r);
       log(`reminder ${r.id} sent${marked ? '' : ', and already answered'}`);
-      addNextRepeat(db, r);
+      closeMissed(db, r);
     }
   });
 }
 
 export function upcomingText(chatId) {
-  const rows = withDb(openAgentDb, (db) => listReminders(db, { chatId }));
+  const rows = withDb(openAgentDb, (db) => oneOfEachSeries(listReminders(db, { chatId })));
   if (!rows.length) return 'No upcoming reminders. Ask me to set one, e.g. "remind me in 2 days to call the bank".';
   return [
     '⏰ Reminders',
@@ -104,7 +116,7 @@ export function upcomingText(chatId) {
 
 export function installReminders(ui) {
   // (The channel has already made sure this is the owner.)
-  ui.action(/^rm:(\d+):([dhtxo])$/, async (c) => {
+  ui.action(/^rm:(\d+):([dhtxos])$/, async (c) => {
     const [, id, what] = c.match;
     return withDb(openAgentDb, async (db) => {
       const r = getReminder(db, Number(id));
@@ -114,19 +126,25 @@ export function installReminders(ui) {
         // From a numbered line in the briefing: show the reminder with its buttons.
         await c.toast();
         if (!['pending', 'sent'].includes(r.status)) return c.reply(`That reminder is already ${r.status}: ${r.text}`);
-        await c.reply(`${renderReminder(r)}\n\n<i>Due ${esc(fmtWhen(r.due_ts))}</i>`, { html: true, actions: openButtons(r.id) });
+        await c.reply(`${renderReminder(r)}\n\n<i>Due ${esc(fmtWhen(r.due_ts))}</i>`, {
+          html: true,
+          actions: buttons(db, r, { opened: true }),
+        });
         if (r.file) await ui.sendFile(r.chat_id, r.file).catch(() => {});
         return undefined;
       }
       if (what === 'd') {
-        setStatus(db, r.id, 'done');
+        answer(db, r, 'done');
         label = `✅ Done at ${hhmm()}`;
       } else if (what === 'x') {
-        setStatus(db, r.id, 'cancelled');
-        label = '🗑 Cancelled';
+        answer(db, r, 'cancelled');
+        label = r.repeat ? '⏭ Skipped this time' : '🗑 Cancelled';
+      } else if (what === 's') {
+        stopSeries(db, r);
+        label = '🛑 Stopped: it will not come again';
       } else {
         let due;
-        if (what === 'h') due = Math.floor(Date.now() / 1000) + 3600;
+        if (what === 'h') due = hourOn();
         else {
           const d = new Date();
           d.setDate(d.getDate() + 1);

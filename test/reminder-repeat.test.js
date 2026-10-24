@@ -33,6 +33,10 @@ test('a repeating reminder that went comes round again; one that does not repeat
   const [n] = left;
   assert.equal(n.text, 'Water the plants');
   assert.equal(n.repeat, '0 9 * * *');
-  assert.ok(n.due_ts >= now() + 59, 'never in the past');
+  // the next 09:00 from now, not the one after the day it was due
+  const next = new Date();
+  next.setHours(9, 0, 0, 0);
+  if (next.getTime() <= Date.now()) next.setDate(next.getDate() + 1);
+  assert.equal(n.due_ts, next.getTime() / 1000, 'never in the past');
   assert.deepEqual([n.msg_id, n.msg_chat, n.msg_sender, n.msg_quote, n.msg_ts], ['M1', 'Home', 'Me', 'water them', 1700000000]);
 });

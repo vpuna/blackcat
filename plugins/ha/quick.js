@@ -89,7 +89,9 @@ function correct(word, vocab) {
 export function plan(text, cat, cfg = {}) {
   const p = parse(text);
   if (!p) return null;
-  const pool = cat.entities.filter((e) => main(e) && e.available !== false);
+  // Everything with the name counts, reachable or not: "the TV" with the living room one in
+  // standby is still two TVs, never the one that happens to answer.
+  const pool = cat.entities.filter(main);
   const vocab = new Set(pool.flatMap((e) => words(`${areaName(cat, e.area) ?? ''} ${e.name}`).map(stem)));
   const said = p.name.join(' ');
   p.name = p.name.map((w) => correct(w, vocab));
@@ -126,6 +128,8 @@ export function plan(text, cat, cfg = {}) {
     via = 'script';
   }
   if (!hits.length) return null;
+  // One that cannot be reached now is left to the agent, which can say so or reach it another way.
+  if (hits.some((e) => e.available === false)) return null;
   // Two things with the same name can't be told apart here.
   if (
     hits.length > 1 &&

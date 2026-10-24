@@ -56,13 +56,11 @@ function prune(db, checkId, keepS) {
   if (gone) db.pragma('incremental_vacuum');
 }
 
-export function addReading(checkId, numbers, keepS) {
+// `ts`: when the look began, which is what the rest of that look goes by (its alert asks
+// which way it is going up to then; a slow command must not leave its own reading out).
+export function addReading(checkId, numbers, keepS, ts = Math.floor(Date.now() / 1000)) {
   using((db) => {
-    db.prepare("INSERT INTO history (check_id, ts, kind, numbers) VALUES (?, ?, 'reading', ?)").run(
-      checkId,
-      Math.floor(Date.now() / 1000),
-      JSON.stringify(numbers),
-    );
+    db.prepare("INSERT INTO history (check_id, ts, kind, numbers) VALUES (?, ?, 'reading', ?)").run(checkId, ts, JSON.stringify(numbers));
     prune(db, checkId, keepS);
   });
 }
@@ -84,11 +82,11 @@ export function addContext(checkId, { output = null, file = null, fileType = nul
 export const lastContextTs = (checkId) =>
   using((db) => db.prepare("SELECT MAX(ts) FROM history WHERE check_id = ? AND kind = 'context'").pluck().get(checkId) ?? 0);
 
-// The readings between two times, oldest first. → [{ ts, numbers }]
+// The readings between two times, oldest first (two in one second: in the order taken). → [{ ts, numbers }]
 export const readings = (checkId, fromTs, toTs = Math.floor(Date.now() / 1000)) =>
   using((db) =>
     db
-      .prepare("SELECT ts, numbers FROM history WHERE check_id = ? AND kind = 'reading' AND ts >= ? AND ts <= ? ORDER BY ts")
+      .prepare("SELECT ts, numbers FROM history WHERE check_id = ? AND kind = 'reading' AND ts >= ? AND ts <= ? ORDER BY ts, id")
       .all(checkId, fromTs, toTs)
       .map((r) => ({ ts: r.ts, numbers: JSON.parse(r.numbers) })),
   );

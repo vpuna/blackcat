@@ -94,22 +94,53 @@ export function alone(root, e, t, values = {}) {
 }
 
 // A label that will be the same next time: words with a number in them ("Arrive by 21:02",
-// "Delivery in 2 days") are this moment's, so only the words before the number are kept.
+// "Delivery in 2 days", "2 seats left") are this moment's, so the longest run of words without
+// a number (or part of a label made of several) is kept, the first of two as long, when it has
+// three letters or more; else none.
+// (One screen cannot tell "Terminal 3" from "3 nearby": both keep only their words.)
 export function steady(t) {
   const words = t?.text ?? t?.textContains;
   if (!words || !/\d/.test(words)) return t;
-  const before = words.split(/\d/)[0].trim();
-  return before.length >= 3 ? { textContains: before } : null;
+  // Words, broken at a number, at a short word right after one (its unit: "12 min", "3 km"),
+  // and between the parts of a label made of several ("12 min · Comfort").
+  const runs = [[]];
+  let afterNumber = false;
+  for (const w of words.split(/\s+/)) {
+    const unit = afterNumber && /^\p{L}{1,4}\.?$/u.test(w);
+    afterNumber = /\d/.test(w);
+    if (afterNumber || unit || /^[·|]$/.test(w)) runs.push([]);
+    else runs.at(-1).push(w);
+  }
+  const best = runs
+    .map((r) =>
+      r
+        .join(' ')
+        .replace(/^[·,:;–-]+|[·,:;–-]+$/g, '')
+        .trim(),
+    )
+    .filter((x) => (x.match(/\p{L}/gu) ?? []).length >= 3)
+    .reduce((a, b) => (b.length > a.length ? b : a), '');
+  return best ? { textContains: best } : null;
 }
 
 // What to read on a screen, from the model's answer (`read`: a name, the number of a fixed label
-// beside the value, how it sits, its kind) → { name: { after | row_of, pattern? } }.
-export function readSpec(items, els) {
+// beside the value, how it sits, its kind) → { name: { after | row_of, pattern? } }. What
+// cannot be kept is said to `note` (why), not left out without a word.
+export function readSpec(items, els, note = () => {}) {
   const read = {};
   for (const r of items ?? []) {
     const anchor = els[r.anchor];
     const t = anchor && steady(targetOf(anchor));
-    if (!t || !/^[A-Za-z][\w ]{0,29}$/.test(r.name)) continue;
+    if (!/^[A-Za-z][\w ]{0,29}$/.test(r.name ?? '')) {
+      note(`not kept to read: "${String(r.name).slice(0, 40)}" is not a name (letters, digits and spaces, up to 30)`);
+      continue;
+    }
+    if (!t) {
+      note(
+        `not kept to read: ${r.name}: ${anchor ? `its label "${words(anchor)[0] ?? ''}" has no words that stay the same (only numbers, or fewer than three letters)` : `there is no element ${r.anchor}`}; name a label with words`,
+      );
+      continue;
+    }
     read[r.name] = { [r.how === 'row' ? 'row_of' : 'after']: t, ...(PATTERNS[r.kind] ? { pattern: PATTERNS[r.kind] } : {}) };
   }
   return read;
@@ -322,14 +353,20 @@ export class Learner {
             );
             continue;
           }
-          // (Only what holds the owner's values: other words on it, a branch's name say,
-          // belong to this one time.)
+          // What tells it is the right screen next time: what holds the owner's values, by
+          // them; anything else the model named, by its id alone (a part of the app's own
+          // screen, whatever it says this time). Other words on it, a branch's name say,
+          // belong to this one time, and one with no id is not kept.
           const mustShow = (a.must_show ?? [])
             .map((i) => els[i])
             .filter(Boolean)
-            .map((x) => targetFor(x, this.values))
-            .filter((t) => t && JSON.stringify(t).includes('{{'));
-          const read = readSpec(a.read, els);
+            .map((x) => {
+              const t = targetFor(x, this.values);
+              if (t && JSON.stringify(t).includes('{{')) return t;
+              return x.id && !x.field ? { resourceId: x.id } : null;
+            })
+            .filter((t, k, all) => t && all.findIndex((o) => JSON.stringify(o) === JSON.stringify(t)) === k);
+          const read = readSpec(a.read, els, (n) => this.note(n));
           return {
             ended: 'confirm',
             label: words(button)[0],

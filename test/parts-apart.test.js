@@ -6,14 +6,11 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
-import { home } from './helpers.js';
+import { codeFiles, home } from './helpers.js';
 
 const dir = home();
 const root = new URL('..', import.meta.url).pathname;
-const src = (...where) =>
-  spawnSync('git', ['ls-files', ...where], { cwd: root, encoding: 'utf8' })
-    .stdout.split('\n')
-    .filter((f) => f.endsWith('.js'));
+const src = (...where) => codeFiles(...where).filter((f) => f.endsWith('.js'));
 const code = (f) => fs.readFileSync(path.join(root, f), 'utf8').replace(/^\s*\/\/.*$/gm, '');
 const { save, load } = await import('../src/config.js');
 save({ plugins: { settings: { 'tg-bot': { owner: { chat: 42, name: 'Ana' }, allow: [42] } } } });

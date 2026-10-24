@@ -132,8 +132,15 @@ const ROUTINE = {
 };
 const media = path.join(dir, 'media');
 fs.mkdirSync(media);
-const runWith = (ph, answer, routine = withParams(ROUTINE, { to: 'Central Station' })) =>
-  new Runner(ph, routine, APP, { answer: async (a) => (typeof answer === 'function' ? answer(a) : answer), media }).run();
+// (`startMs`: how long an app's first screen must stay the same before the first step; short
+// here, where a screen only changes when a test says.)
+const runWith = (ph, answer, routine = withParams(ROUTINE, { to: 'Central Station' }), opts = {}) =>
+  new Runner(ph, routine, APP, {
+    answer: async (a) => (typeof answer === 'function' ? answer(a) : answer),
+    media,
+    startMs: 200,
+    ...opts,
+  }).run();
 
 // ---------- reading a screen ----------
 
@@ -457,6 +464,23 @@ test('a number on a TV is pressed digit by digit, from a value; anything but dig
   assert.match(validate({ ...r, steps: [{ do: 'digits', number: 'DPAD_UP' }] }, APP).join('\n'), /"number"/);
   const pictured = await runWith(new FakeDevice('home', TV), 'cancel', withParams({ ...r, picture: true }, { channel: '7' }));
   assert.match(pictured.shot, /channel-end-\d+\.jpg$/, 'the screen as the routine left it');
+  // taken once the screen has stopped changing (a banner going), not at a fixed moment
+  const banner = new FakeDevice('home', structuredClone(TV));
+  let looks = 0;
+  const dump = banner.dump.bind(banner);
+  banner.dump = async () =>
+    ++looks < 8 ? (await dump()).replace('</hierarchy>', `<node text="banner ${looks}" bounds="[0,0][10,10]" /></hierarchy>`) : dump();
+  let takenAt = null;
+  banner.screenshot = async (file) => ((takenAt = looks), FakeDevice.prototype.screenshot.call(banner, file));
+  await runWith(banner, 'cancel', withParams({ ...r, picture: true }, { channel: '7' }));
+  assert.ok(takenAt >= 8, `taken after the screen settled (look ${takenAt})`);
+  // one that cannot be taken says why
+  const blind = new FakeDevice('home', TV);
+  blind.screenshot = async () => {
+    throw new Error('the device would not give a picture');
+  };
+  const noPicture = await runWith(blind, 'cancel', withParams({ ...r, picture: true }, { channel: '7' }));
+  assert.deepEqual([noPicture.outcome, noPicture.shot, noPicture.noShot], ['finished', undefined, 'the device would not give a picture']);
   assert.match(validate({ ...r, picture: 'yes' }, APP).join('\n'), /"picture"/);
 });
 
@@ -624,19 +648,131 @@ test('a tap that did nothing, on an app still starting, is made again; one marke
   const out = await runWith(slow, 'cancel', { ...r, steps: [r.steps[0], { ...r.steps[1], wait: 15 }] });
   assert.equal(out.outcome, 'finished');
   assert.deepEqual(slow.taps, ['Rides', 'Rides', 'Rides', 'Rides']);
-  assert.match(out.steps[0].text, /\(tapped 4 times: the first did nothing\)$/);
+  assert.match(out.steps[0].text, /\(tapped 4 times: nothing came of the first\)$/);
   // The first tap worked, slowly, and the next screen has a "Rides" in the same place: that is
   // another screen, and nothing is tapped on it.
   const moved = new FakeDevice('home', {
     home: { els: [{ text: 'Rides' }, { text: 'Food' }, { text: 'Shops' }, { text: 'Pay' }, { text: 'Balance' }], go: { Rides: 'promo' } },
     promo: { els: [{ text: 'Rides' }, { text: 'Offers for you' }, { text: 'Today only' }, { text: 'Book a trip' }, { text: 'Later' }] },
   });
-  await assert.rejects(runWith(moved, 'cancel', r), /never showed\. "Rides" was not tapped again: the screen changed \(4 of 5/);
+  await assert.rejects(
+    runWith(moved, 'cancel', r),
+    /never showed\. "Rides" was not tapped again: the screen changed \(4 of 5 things on it are gone: "Food", "Shops", "Pay", "Balance"\)/,
+  );
   assert.deepEqual(moved.taps, ['Rides'], 'not tapped again on a screen it was not tapped on');
+  // What the target finds when it is tapped again is held to what every tap is: the button,
+  // found by its id, now says "Book now" (the app moved on while the tap seemed lost): not tapped.
+  const screens = structuredClone(SCREENS);
+  screens.home.els[0] = { id: 'cta', text: 'Next' };
+  const booking = Object.assign(new FakeDevice('home', screens), { lose: 1 });
+  const first = booking.tap.bind(booking);
+  booking.tap = async (x, y) => {
+    await first(x, y);
+    if (booking.taps.length === 1) booking.screens.home.els[0] = { id: 'cta', text: 'Book now' };
+  };
+  await assert.rejects(
+    runWith(booking, 'cancel', { ...r, steps: [{ do: 'tap', target: { resourceId: 'cta' } }, r.steps[1]] }),
+    /was not tapped again: "Book now" books, pays or sends/,
+  );
+  assert.deepEqual(booking.taps, ['Next'], 'never the booking button');
+  const homeEls = [
+    { text: 'Rides', at: [40, 100] },
+    { text: 'Food', at: [40, 250] },
+    { text: 'Shops', at: [40, 400] },
+    { text: 'Balance', at: [40, 550], tap: false },
+  ];
+  // A known pop-up over the screen is cleared first, even when what is under it can be found.
+  const rated = new FakeDevice('rating', {
+    rating: {
+      els: [{ text: 'How was your trip?', tap: false, at: [40, 700] }, { text: 'Skip', at: [40, 850] }, ...homeEls],
+      go: { Skip: 'home' },
+    },
+    home: { els: homeEls, go: { Rides: 'search' } },
+    search: SCREENS.search,
+  });
+  assert.equal((await runWith(rated, 'cancel', r)).outcome, 'finished');
+  assert.deepEqual(rated.taps, ['Skip', 'Rides'], 'the pop-up first, then what the step is for');
+  // An app just opened draws a first home screen and then swaps it for its real one, with
+  // "Rides" in the same place: a tap on the first is lost, and on the real one most of what
+  // was there has gone. The first step waits for the screen to settle. (A real case: 53 of 74
+  // things went, and "Rides" was never pressed.)
+  const draft = [
+    ...homeEls,
+    ...Array.from({ length: 10 }, (_, k) => ({
+      text: `search bar · Discover anything ${k}`,
+      tap: false,
+      at: [0, 700 + k * 20],
+      size: [10, 10],
+    })),
+  ];
+  const real = [
+    ...homeEls,
+    ...['Discover groceries', 'The Self Check Rose', 'Freshness, at your fingertips', 'Hala Taxi', 'DineOut', 'Salik'].map((text, k) => ({
+      text,
+      tap: false,
+      at: [0, 700 + k * 20],
+      size: [10, 10],
+    })),
+  ];
+  const opening = new FakeDevice('draft', { draft: { els: draft }, home: { els: real, go: { Rides: 'search' } }, search: SCREENS.search });
+  const look = opening.dump.bind(opening);
+  let looks = 0;
+  opening.dump = async () => (++looks === 6 && (opening.at = 'home'), look());
+  assert.equal((await runWith(opening, 'cancel', r, { startMs: 2000 })).outcome, 'finished');
+  assert.deepEqual(opening.taps, ['Rides'], 'once, on the real screen');
+  // One that goes on from what is showing is not waited for.
+  const showing = Object.assign(new FakeDevice(), { n: 0 });
+  const t0 = Date.now();
+  await runWith(showing, 'cancel', { ...r, start: 'running' }, { startMs: 2000 });
+  assert.ok(Date.now() - t0 < 1500, 'not waited for');
   const once = Object.assign(new FakeDevice(), { lose: 1 });
   r.steps[0].retry = false;
   await assert.rejects(runWith(once, 'cancel', r), /never showed/);
   assert.deepEqual(once.taps, ['Rides']);
+});
+
+test('a keyboard the app brings up over what a step waits for is closed; not after a step that keeps it', async () => {
+  // (A real case: a ride app's pick-up map opened with its search box's keyboard up, hiding
+  // "Confirm pick-up"; the step that asks for it passed it over, and the booking screen never came.)
+  const screens = {
+    home: { els: [{ text: 'Rides' }], go: { Rides: 'pickup' } },
+    pickup: {
+      els: [
+        { text: 'Map', tap: false },
+        { text: 'Confirm pick-up', at: [40, 900] },
+      ],
+      go: { 'Confirm pick-up': 'booked' },
+    },
+    booked: SCREENS.booked,
+  };
+  const phone = () => {
+    const d = new FakeDevice('home', screens);
+    const dump = d.dump.bind(d);
+    const tap = d.tap.bind(d);
+    d.keyboard = false;
+    d.tap = async (x, y) => (await tap(x, y), d.at === 'pickup' && (d.keyboard = true));
+    // (With the keyboard up, what is under it is not drawn.)
+    d.dump = async () => (d.keyboard ? xml(screens[d.at].els.filter((e) => e.text !== 'Confirm pick-up')) : dump());
+    d.hideKeyboard = async () => (d.keyboard ? ((d.keyboard = false), d.keys.push('BACK'), true) : false);
+    return d;
+  };
+  const r = {
+    name: 'r',
+    app: APP.package,
+    steps: [
+      { do: 'tap', target: { text: 'Rides' } },
+      { do: 'if_shown', target: { text: 'Confirm pick-up' }, wait: 5, then: [{ do: 'tap', target: { text: 'Confirm pick-up' } }] },
+      { do: 'wait', target: { text: 'Your driver is on the way' }, wait: 3 },
+    ],
+  };
+  const d = phone();
+  assert.equal((await runWith(d, 'cancel', r)).outcome, 'finished');
+  assert.deepEqual([d.taps, d.keys], [['Rides', 'Confirm pick-up'], ['BACK']]);
+  // A routine whose app needs the keyboard open ("keyboard": "keep") is left with it open.
+  const kept = phone();
+  const keep = { ...r, steps: [r.steps[0], { do: 'type', text: 'x', keyboard: 'keep' }, { ...r.steps[1], wait: 2.5 }] };
+  await runWith(kept, 'cancel', keep);
+  assert.deepEqual(kept.keys, [], 'never closed');
 });
 
 // ---------- adb commands ----------
@@ -880,7 +1016,14 @@ test('what the model suggests that is not safe is not done, and a run has at mos
 
 test("a routine is learned one action at a time: the owner's values become {{values}}, dead ends are dropped, the booking button is never tapped", async () => {
   const { Learner, targetFor, refuseLearnTap } = await import('../plugins/android/learn.js');
-  const dev = new FakeDevice('home');
+  // (on the confirmation screen, a heading of the app's own, with this time's words in it, and
+  // words of this one time with no id)
+  const cars = SCREENS.cars.els;
+  const extra = [
+    { id: 'ride_title', text: 'Choose a ride · 3 nearby', tap: false, at: [40, 1000] },
+    { text: 'Main St branch', tap: false, at: [40, 1150] },
+  ];
+  const dev = new FakeDevice('home', { ...SCREENS, cars: { ...SCREENS.cars, els: [...cars, ...extra] } });
   Object.assign(dev, { startApp: async () => {}, swipe: async () => {} });
   const idx = (els, w) => els.findIndex((e) => (e.text ?? e.description) === w);
   const script = [
@@ -895,7 +1038,11 @@ test("a routine is learned one action at a time: the owner's values become {{val
       thought: 'this is the confirmation screen',
       do: 'confirm_screen',
       button: idx(els, 'Book now'),
-      must_show: [els.findIndex((e) => e.text === 'Central Station')],
+      must_show: [
+        els.findIndex((e) => e.text === 'Central Station'),
+        els.findIndex((e) => e.id === 'ride_title'),
+        els.findIndex((e) => e.text === 'Main St branch'),
+      ],
       read: [{ name: 'Price', anchor: idx(els, 'Comfort'), how: 'row', kind: 'money' }],
     }),
   ];
@@ -922,7 +1069,11 @@ test("a routine is learned one action at a time: the owner's values become {{val
       ['tap', { textContains: '{{to}}' }],
     ],
   );
-  assert.deepEqual(got.confirm.must_show, [{ textContains: '{{to}}' }]);
+  assert.deepEqual(
+    got.confirm.must_show,
+    [{ textContains: '{{to}}' }, { resourceId: 'ride_title' }],
+    "the owner's value by itself, the app's own heading by its id; this one time's words not at all",
+  );
   assert.ok(got.confirm.read.Price.row_of && got.confirm.read.Price.pattern);
   assert.match(notes.flat().join(' '), /only the owner's values may be typed/);
   assert.match(notes.flat().join(' '), /"Book now" books, pays or sends/);
@@ -1092,25 +1243,55 @@ test('with the button to stop at named by the owner, learning never taps it and 
 
 test('a result with the same words as the field above it is the one found, not the field', async () => {
   const { alone, targetFor } = await import('../plugins/android/learn.js');
-  const root = parse(xml([{ id: 'field_search', text: 'Mall of the Emirates', field: true }, { text: 'Mall of the Emirates, Al Barsha' }]));
+  const root = parse(xml([{ id: 'field_search', text: 'Riverside Market', field: true }, { text: 'Riverside Market, Old Town' }]));
   const els = elements(root);
-  const values = { from: 'Mall of the Emirates' };
+  const values = { from: 'Riverside Market' };
   assert.deepEqual(alone(root, els[1], targetFor(els[1], values), values), { textContains: '{{from}}' });
   // A tile, its words in a child: the same.
   const tiles = parse(
     xml([
-      { id: 'field_search', text: 'Mall of the Emirates', field: true },
+      { id: 'field_search', text: 'Riverside Market', field: true },
       {
         at: [40, 250],
         children: [
-          { text: 'Mall of the Emirates', tap: false, at: [50, 260], size: [300, 40] },
-          { text: 'Al Barsha', tap: false, at: [50, 310], size: [300, 40] },
+          { text: 'Riverside Market', tap: false, at: [50, 260], size: [300, 40] },
+          { text: 'Old Town', tap: false, at: [50, 310], size: [300, 40] },
         ],
       },
     ]),
   );
   const tile = elements(tiles).find((x) => x.label);
   assert.deepEqual(alone(tiles, tile, targetFor(tile, values), values), { textContains: '{{from}}' });
+});
+
+test('a text field with no id is named as a field, by its place among fields: found again whatever it holds', async () => {
+  const { alone } = await import('../plugins/android/learn.js');
+  const { targetOf } = await import('../plugins/android/recover.js');
+  const at = (texts) =>
+    parse(
+      xml([
+        { text: 'From' },
+        { text: texts[0], field: true },
+        { text: texts[1], field: true, desc: 'Destination' },
+        { text: texts[2], field: true },
+      ]),
+    );
+  const learned = at(['Home', 'Where to?', '']);
+  const els = elements(learned).filter((e) => e.field);
+  const named = els.map((e) => alone(learned, e, targetOf(e)));
+  assert.deepEqual(named, [
+    { className: 'EditText', instance: 0 },
+    { className: 'EditText', description: 'Destination' },
+    { className: 'EditText', instance: 2 },
+  ]);
+  // next time the fields hold other words: each is the same one still
+  const later = at(['Office', 'City Mall', 'note']);
+  assert.deepEqual(
+    named.map((t) => find(later, t).map((n) => n.text)),
+    [['Office'], ['City Mall'], ['note']],
+  );
+  // (by its words, as before, it was never found: a field is not named by what it holds)
+  assert.deepEqual(find(learned, { text: 'Home' }), []);
 });
 
 test('a target by words never names a text field holding those words', () => {
@@ -1121,8 +1302,8 @@ test('a target by words never names a text field holding those words', () => {
 });
 
 test('words a routine looks for are matched without case; a recovery that taps what the step meant counts as the step', async () => {
-  const root = parse(xml([{ text: 'Mall of The Emirates' }]));
-  assert.equal(find(root, { textContains: 'Mall of the Emirates' }).length, 1);
+  const root = parse(xml([{ text: 'Riverside market' }]));
+  assert.equal(find(root, { textContains: 'Riverside Market' }).length, 1);
   const screens = { ...SCREENS, home: { els: [{ text: 'Ride Hailing' }], go: { 'Ride Hailing': 'search' } } };
   const dev = new FakeDevice('home', screens);
   const recover = async ({ els }) => ({
@@ -1239,6 +1420,30 @@ test("a label on the confirmation screen is kept without this moment's numbers",
   assert.deepEqual(steady({ text: 'Arrive by 21:02' }), { textContains: 'Arrive by' });
   assert.deepEqual(steady({ text: 'Comfort' }), { text: 'Comfort' });
   assert.equal(steady({ text: '21:02' }), null);
+  assert.deepEqual(steady({ text: 'Delivery in 2 days' }), { textContains: 'Delivery in' });
+  assert.deepEqual(steady({ text: '2 seats left' }), { textContains: 'seats left' }, 'starting with a number is not reason to lose it');
+  assert.deepEqual(steady({ text: '12 min · Comfort' }), { textContains: 'Comfort' });
+  assert.equal(steady({ text: '3 x 2' }), null);
+  assert.equal(steady({ text: '12 min' }), null, "a unit is the number's, not a label");
+  assert.deepEqual(steady({ text: 'Arrive in 12 min' }), { textContains: 'Arrive in' });
+  // what cannot be kept to read is said, not dropped without a word
+  const { readSpec } = await import('../plugins/android/learn.js');
+  const els = [{ text: 'Fare' }, { text: '12:40' }];
+  const notes = [];
+  const read = readSpec(
+    [
+      { name: 'Price', anchor: 0, how: 'after', kind: 'money' },
+      { name: 'Time', anchor: 1, how: 'after' },
+      { name: 'Nowhere', anchor: 7, how: 'after' },
+    ],
+    els,
+    (n) => notes.push(n),
+  );
+  assert.deepEqual(Object.keys(read), ['Price']);
+  assert.deepEqual(notes, [
+    'not kept to read: Time: its label "12:40" has no words that stay the same (only numbers, or fewer than three letters); name a label with words',
+    'not kept to read: Nowhere: there is no element 7; name a label with words',
+  ]);
 });
 
 test('what the owner reads names an element in plain words', async () => {

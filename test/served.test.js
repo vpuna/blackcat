@@ -218,10 +218,12 @@ test('a path is judged as the file it really is: a link into the secrets is refu
 });
 
 test('a command still running when the conversation is stopped is stopped with it', async () => {
+  const began = path.join(dir, 'began');
   const marker = path.join(dir, 'outlived');
   brain.setApprover(async () => ({ allow: true }));
-  const going = brain.reply(CHAT, DO('bash', { command: `sleep 4; touch ${marker}` })).catch((e) => e);
-  await new Promise((r) => setTimeout(r, 800));
+  const going = brain.reply(CHAT, DO('bash', { command: `blackcat host run 'touch ${began}; sleep 4; touch ${marker}'` })).catch((e) => e);
+  for (let i = 0; i < 100 && !fs.existsSync(began); i++) await new Promise((r) => setTimeout(r, 100));
+  assert.ok(fs.existsSync(began), 'it was running');
   brain.resetSession(CHAT);
   await going;
   await new Promise((r) => setTimeout(r, 4500));
@@ -253,7 +255,12 @@ test('the other two ways are an option away: supervised (the usual one), or the 
   // the engine deciding for itself, as it was: its own tools, no hook
   const engine = await startedAs('engine');
   assert.equal(engine.tools, 'Bash,Read,Glob,Grep');
-  assert.equal(hookOf(engine), null);
+  assert.equal(hookOf(engine).hooks, undefined);
+  // and nothing of the owner's own Claude Code: no settings, hooks or plugins of theirs, no memory
+  for (const s of [supervised, engine]) {
+    assert.equal(s.args[s.args.indexOf('--setting-sources') + 1], '');
+    assert.equal(hookOf(s).autoMemoryEnabled, false);
+  }
   assert.ok(engine.args.includes('--add-dir'));
   eng.choose('chat', { options: { tools: 'blackcat' } });
 });

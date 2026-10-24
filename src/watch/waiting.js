@@ -14,7 +14,7 @@ import { WORDLESS, fileWords, reader } from './collect.js';
 // What the owner asked of somebody and is waiting for. At every look, what that person has
 // sent in the conversation since is judged by a reader: an answer, and the entry is ticked
 // off without a word. When its time comes with no answer, the owner is told, once; after
-// that it is the owner's.
+// that it is still read, and ticked off when an answer comes, but never told about again.
 //
 // And what the owner owes (OWED: an answer, a promise, something due), the other way round:
 // when the owner has written in that conversation since, a reader says whether they did it
@@ -23,6 +23,7 @@ import { WORDLESS, fileWords, reader } from './collect.js';
 // that was not done is worse than one left open.
 export const OWED = ['reply', 'commitment', 'deadline'];
 const SURE = 0.8;
+const CONTEXT = 6; // (messages shown from before what is new)
 const subjectOf = (text) =>
   (/^Subject:\s*(.*)$/im.exec(text ?? '')?.[1] ?? '')
     .replace(/^((re|fwd?|aw|wg)\s*:\s*)+/i, '')
@@ -34,13 +35,13 @@ export async function checkBack(db, w) {
     .prepare(
       `SELECT * FROM watch_items WHERE watch_id = ? AND category IN (${[WAITING, ...OWED].map(() => '?').join(', ')}) AND status IN ('new', 'kept') ORDER BY remind_ts`,
     )
-    .all(w.id, WAITING, ...OWED)
-    // (Waiting, once its time has come, is the owner's. What the owner owes has its nudge waiting.)
-    .filter((it) => OWED.includes(it.category) || (!pendingNudge(db, it.id) && !wasNudged(db, it.id)));
+    .all(w.id, WAITING, ...OWED);
   {
     for (const it of open) {
       const owed = OWED.includes(it.category);
       const due = it.remind_ts <= nowS;
+      // (Waiting, and the owner already told that no reply came: only an answer is looked for.)
+      const told = !owed && (!!pendingNudge(db, it.id) || wasNudged(db, it.id));
       // The message it came from, and what has been said in that conversation since, by
       // either of them: what was written, and what was sent without words (a voice note, a picture).
       const { asked, since } = withDb(openArchive, (archive) => {
@@ -66,14 +67,16 @@ export async function checkBack(db, w) {
         // (A mail account holds mail from everybody: what belongs to this one goes by its subject.)
         if (source(msgSource(it.msg_id))?.optIn) rows = rows.filter((r) => subjectOf(r.text) && subjectOf(r.text) === subjectOf(m.text));
         // (Both sides of it: an answer is often spread over a back-and-forth, and what the
-        // owner said in between is what makes sense of the rest.)
-        return { asked: m, since: rows.slice(-24) };
+        // owner said in between is what makes sense of the rest. Everything not yet judged,
+        // however much came after it, and a few before it to make sense of it.)
+        const first = rows.findIndex((r) => r.ts > (it.checked_ts ?? 0));
+        return { asked: m, since: first < 0 ? rows.slice(-CONTEXT) : rows.slice(Math.max(0, first - CONTEXT)) };
       });
       // Nothing has come from them since it was last looked at, and its time has not come: nothing to do.
       const theirs = since.filter((r) => !r.mine);
       const mine = since.filter((r) => r.mine);
       const fresh = (owed ? mine : theirs).some((r) => r.ts > (it.checked_ts ?? 0));
-      if (owed ? !fresh || !asked : !due && !fresh) continue;
+      if (owed ? !fresh || !asked : !fresh && (!due || told)) continue;
       // An answer may be spoken. A voice note is written down when it arrives, so its words
       // are usually here; one that is still to be listened to is waited for (this entry is
       // judged at the next look), unless its time has come.
@@ -90,7 +93,7 @@ export async function checkBack(db, w) {
           }
         }
       });
-      if (toCome && !due) continue;
+      if (toCome && (!due || told)) continue;
       const named = (r) => (r.file_name ? `(a file: ${r.file_name}) ` : '');
       const said = (r) =>
         r.text
@@ -153,7 +156,7 @@ export async function checkBack(db, w) {
         }
       }
       if (theirs.length) db.prepare('UPDATE watch_items SET checked_ts = ? WHERE id = ?').run(Math.max(...theirs.map((r) => r.ts)), it.id);
-      if (!due) continue;
+      if (!due || told) continue;
       // Its time has come and it is not answered: told once. Where they sent a voice note
       // nobody could listen to, that is said: it may be the answer.
       setNudgeFor(db, it.id, {

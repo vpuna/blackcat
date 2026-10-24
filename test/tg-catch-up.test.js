@@ -7,7 +7,7 @@ import { home } from './helpers.js';
 
 home();
 const { save } = await import('../src/config.js');
-save({ tga: { apiId: 1, apiHash: 'x', days: 30, mode: 'all' } });
+save({ plugins: { settings: { tg: { apiId: 1, apiHash: 'x', days: 30, mode: 'all' } } } });
 const db = await import('../src/archive/db.js');
 const now = Math.floor(Date.now() / 1000);
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -56,6 +56,7 @@ const client = {
 const events = { NewMessage: class {}, EditedMessage: class {}, DeletedMessage: class {} };
 const utils = { strippedPhotoToJpg: (b) => b, getPeerId: (p) => (typeof p === 'object' ? (p.userId ?? p.id) : p) };
 
+say(sam, 90, 'older than the 30 days chosen', 40 * 86400);
 say(sam, 0, 'long before', 5 * 86400);
 say(sam, 1, 'before blackcat was linked', 3 * 86400);
 say(sam, 2, 'the day before', 86400 + 60);
@@ -71,7 +72,7 @@ const settled = async () => {
   await wait(900);
 };
 
-test('at first, the history of each chat is fetched once', async () => {
+test('at first, the history of each chat is fetched once, back to the days chosen', async () => {
   await settled();
   assert.deepEqual(texts('tg:222'), ['long before', 'before blackcat was linked', 'the day before']);
   assert.deepEqual(texts('tg:-1005'), ['welcome to the club']);
@@ -130,8 +131,9 @@ test('a chat whose latest is something not kept (someone joined) is looked at on
   assert.deepEqual([texts('tg:-1005'), logged], [['welcome to the club'], []]);
 });
 
-test('nothing older than the days chosen is fetched, and a chat that is not collected is left alone', async () => {
-  // an old message turns up in what Telegram gives (it was hidden, say): beyond 30 days, it is not taken
+test('nothing older than what was fetched already is fetched again, and a chat that is not collected is left alone', async () => {
+  // an old message turns up in what Telegram gives (it was hidden, say): older than what was
+  // fetched already, it is not taken
   say(club, 3, 'from two months ago', 60 * 86400);
   say(club, 4, 'new today', 300);
   await tg.backfill();

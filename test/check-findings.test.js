@@ -180,6 +180,70 @@ test('back within a few minutes of working again: the same outage, opened again;
   db.close();
 });
 
+test('back within a few minutes, after its fix was taken away: what the fix did is said to have been before, not now', async () => {
+  const { db, id } = await made({ fix: `touch ${flag}`, tries: 1, wait: '0s' });
+  const { updateCheck } = await import('../src/checks/db.js');
+  const { addRule } = await import('../src/agent/permissions.js');
+  addRule('allow', `touch ${flag}`, { via: `check ${id}` });
+  down();
+  assert.match((await look(db, id))[0], /^🔧 .*I ran `touch .*` 1 time and it is working again/);
+  // the owner says: only tell me (the fix is taken away), and it goes wrong again at once
+  updateCheck(db, id, { fix: null });
+  down();
+  const said = (await look(db, id))[0];
+  assert.match(
+    said,
+    /: not working\. .*\. I ran `touch .*` 1 time; it worked, but it was back \d+s later\./,
+    'what was run is said to have been before',
+  );
+  // and the record still has it, for bc check history
+  const { pastFindings } = await import('../src/checks/db.js');
+  assert.match(pastFindings(db, id)[0].fix_note, /^ran `touch .*` 1 time; it worked, but it was back \d+s later$/);
+  db.close();
+});
+
+test('a check that watches for something (--no-working-again): told each time it happens, never that it is fine again', async () => {
+  const { db, id } = await made({ alert: { at: 'now', back: false } });
+  const { pastFindings, snoozeFinding } = await import('../src/checks/db.js');
+  up();
+  await look(db, id);
+  down();
+  assert.match((await look(db, id))[0], /^⚠️ Web \w+: not working\./);
+  // the owner is the cause, and says so: snoozed until it is fine again, which ends without a word
+  snoozeFinding(db, pastFindings(db, id)[0].id, null);
+  up();
+  assert.deepEqual(await look(db, id), []);
+  assert.equal(pastFindings(db, id)[0].state, 'resolved', 'it is still kept that it was over');
+  // happening again a minute later is a time of its own, told as new
+  down();
+  assert.match((await look(db, id))[0], /^⚠️ Web \w+: not working\./);
+  assert.deepEqual(
+    pastFindings(db, id).map((f) => [f.state, f.times]),
+    [
+      ['open', 1],
+      ['resolved', 1],
+    ],
+  );
+  up();
+  assert.deepEqual(await look(db, id), [], 'told it happened; not told it stopped');
+  db.close();
+});
+
+test('--no-working-again is set, shown, kept when --alert changes, and undone with --working-again', () => {
+  const name = `Watch ${Math.random().toString(36).slice(2, 6)}`;
+  up();
+  assert.equal(bc('check', 'add', name, '--run', `test -f ${flag}`, '--no-working-again', '--json').status, 0);
+  const show = () => bc('check', 'show', name, '--json').json();
+  assert.equal(show().workingAgain, false);
+  assert.match(bc('check', 'show', name).stdout, /says nothing when it is fine again/);
+  assert.equal(bc('check', 'edit', name, '--alert', 'after 2', '--json').status, 0);
+  assert.deepEqual([show().workingAgain, show().alert], [false, 'after 2 looks in a row find it']);
+  assert.equal(bc('check', 'edit', name, '--working-again', '--json').status, 0);
+  assert.deepEqual([show().workingAgain, show().alert], [true, 'after 2 looks in a row find it']);
+  assert.doesNotMatch(bc('check', 'show', name).stdout, /says nothing when it is fine again/);
+  bc('check', 'remove', name);
+});
+
 test('the commands: snooze, unsnooze, fixed, fix; and the options that say when to tell', async () => {
   const { db, id } = await made({ fix: `touch ${flag}`, wait: '1s' });
   const { getCheck, updateCheck } = await import('../src/checks/db.js');
@@ -194,6 +258,14 @@ test('the commands: snooze, unsnooze, fixed, fix; and the options that say when 
   assert.match(bc('check', 'show', name).stdout, /snoozed until /);
   const probe = JSON.parse(bc('selftest', 'check', '--json').stdout).parts[0].results.find((x) => x.name === name);
   assert.deepEqual([probe.outcome, /^not working, snoozed: /.test(probe.detail)], ['skipped', true], 'snoozed: known, not a failure');
+  // and still, what would keep it from doing its job is said: its fix taken away meanwhile
+  const { removeRule, listRules } = await import('../src/agent/permissions.js');
+  const rule = listRules().find((r) => r.command === 'false');
+  removeRule(rule.id);
+  const taken = JSON.parse(bc('selftest', 'check', '--json').stdout).parts[0].results.find((x) => x.name === name);
+  assert.equal(taken.outcome, 'failed');
+  assert.match(taken.detail, /^not working, snoozed: .*, but its fix is no longer permitted/);
+  addRule('allow', 'false', { via: `check ${id}` });
   assert.match(bc('check', 'snooze', name, '--for', '5m').said, /at least 10m/);
   assert.match(bc('check', 'unsnooze', name).stdout, /^Not snoozed any more/);
   assert.match(bc('check', 'snooze', name, '-n', '2').said, /give a number from 1 to 1/);
@@ -204,7 +276,7 @@ test('the commands: snooze, unsnooze, fixed, fix; and the options that say when 
   updateCheck(db, id, { fix: `touch ${flag}` });
   addRule('allow', `touch ${flag}`, { via: `check ${id}` });
   assert.match(bc('check', 'fix', name).stdout, /working again/);
-  assert.match(bc('check', 'fixed', name, '--no-wait').said, /working/);
+  assert.match(bc('check', 'fixed', name, '--no-wait').said, /^✅ .*: working\. all checks passed$/m);
   assert.match(bc('check', 'snooze', name).said, /Nothing is wrong with/);
   // changed so that it works: the look made then closes what was wrong
   updateCheck(db, id, { fix: null });

@@ -116,7 +116,19 @@ const ONLY_BLACKCAT = [
   // (a blackcat command that does not exist is not one either)
   'blackcat pi health --json',
 ];
-for (const c of DENY) test(`refused: ${c}`, () => assert.equal(bash(c), 'deny'));
+// Each refused by the rule that is about it, not only by the one that refuses anything that is
+// not a blackcat command (which would hide a rule that stopped working): as it is, and inside
+// `blackcat host run`. (Those two are blackcat commands wrapped in another; that rule is theirs.)
+const WRAPPED = ['nohup blackcat backup now', 'echo x | xargs blackcat ssh run nas'];
+const quoted = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
+for (const c of DENY)
+  test(`refused: ${c}`, () => {
+    for (const command of [c, `blackcat host run ${quoted(c)}`]) {
+      const d = decide('Bash', { command });
+      assert.equal(d.action, 'deny', command);
+      if (!WRAPPED.includes(c)) assert.match(d.reason, /^Refused by blackcat's policy/, command);
+    }
+  });
 test('only blackcat commands are run: anything else is refused outright, and pointed at blackcat host run', () => {
   for (const c of ONLY_BLACKCAT) {
     const d = decide('Bash', { command: c });

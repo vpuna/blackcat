@@ -64,9 +64,12 @@ export const listed = (els) =>
 
 // An element as a routine names it: by its id, else its exact text, else its description.
 // One whose words are its children's (a tile, a button drawn from a picture and a label) is
-// found by the first of them: a tap on that lands on the element around it.
+// found by the first of them: a tap on that lands on the element around it. A text field
+// with no id is named as a field (and by its description, which is not what was typed):
+// its words are what is typed there, and change (screen.js matches() holds to that).
 export function targetOf(e) {
   if (e.id) return { resourceId: e.id };
+  if (e.field) return { className: 'EditText', ...(e.description ? { description: e.description } : {}) };
   if (e.text) return { text: e.text };
   if (e.description) return { description: e.description };
   if (e.inner?.text) return { textContains: e.inner.text };

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { OlderData, hasColumn, hasTable, madeReady, noteUpgrade, openSqlite, withDb } from '../db.js';
 import { ARCHIVE_DB } from './files.js';
+import { fileType } from './writer.js';
 
 export const DB_PATH = ARCHIVE_DB;
 
@@ -238,6 +239,25 @@ const PARTS = [
     UPDATE chats SET ref = 'wa:' || ref WHERE ref GLOB '[0-9]*@*';
     UPDATE contacts SET ref = 'wa:' || ref WHERE ref GLOB '[0-9]*@*';
     UPDATE lid_map SET lid = 'wa:' || lid, pn = 'wa:' || pn WHERE lid GLOB '[0-9]*@*';`);
+  },
+
+  // 9: a file whose sender said only "a file" (application/octet-stream) is the kind its name
+  // says ("scan.pdf" a PDF), so that it is read (src/archive/writer.js, fileType). Those kept
+  // before are given it now; one that is a picture is a picture message.
+  (db) => {
+    const rows = db
+      .prepare(
+        "SELECT msg_rowid, mimetype, file_name FROM media WHERE file_name IS NOT NULL AND (mimetype IS NULL OR mimetype = '' OR lower(mimetype) LIKE 'application/%' OR lower(mimetype) LIKE 'binary/%')",
+      )
+      .all();
+    const set = db.prepare('UPDATE media SET mimetype = ? WHERE msg_rowid = ?');
+    const picture = db.prepare("UPDATE messages SET type = 'image' WHERE rowid = ? AND type = 'document'");
+    for (const r of rows) {
+      const t = fileType(r.mimetype, r.file_name);
+      if (t === r.mimetype) continue;
+      set.run(t, r.msg_rowid);
+      if (t.startsWith('image/')) picture.run(r.msg_rowid);
+    }
   },
 ];
 

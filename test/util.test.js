@@ -110,3 +110,39 @@ test('a file written whole: private, and no temporary file left behind', async (
   assert.equal(fs.statSync(f).mode & 0o777, 0o600);
   assert.deepEqual(fs.readdirSync(dir), ['state.json']);
 });
+
+test('before a service ends, nothing it started is left: given a moment, then asked, then killed with all it started', async () => {
+  const { spawn } = await import('node:child_process');
+  const { endChildren, childProcesses } = await import('../src/util/run.js');
+  const os = await import('node:os');
+  const fsm = await import('node:fs');
+  const pathm = await import('node:path');
+  const tmp = fsm.mkdtempSync(pathm.join(os.tmpdir(), 'blackcat-end-'));
+  const grandchild = pathm.join(tmp, 'grandchild.pid');
+  const quick = spawn('sleep', ['0.3']); // ends by itself
+  const polite = spawn('sleep', ['30']); // ends when asked
+  // ignores being asked, in a group of its own, with a child of its own
+  const stubborn = spawn('sh', ['-c', `trap '' TERM; sleep 30 & echo $! > ${grandchild}; wait`], { detached: true });
+  for (let i = 0; i < 50 && !fsm.existsSync(grandchild); i++) await new Promise((r) => setTimeout(r, 50));
+  const g = Number(fsm.readFileSync(grandchild, 'utf8'));
+  assert.equal(childProcesses().length, 3);
+  const { asked, killed } = await endChildren({ waitMs: 800, graceMs: 800 });
+  assert.ok(!asked.some((c) => c.pid === quick.pid), 'the quick one ended by itself');
+  assert.deepEqual(asked.map((c) => c.pid).sort(), [polite.pid, stubborn.pid].sort());
+  assert.deepEqual(
+    killed.map((c) => c.pid),
+    [stubborn.pid],
+  );
+  assert.match(killed[0].cmd, /^sh -c trap/);
+  await new Promise((r) => setTimeout(r, 200));
+  const gone = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return /^\d+ \(\S+\) Z/.test(fsm.readFileSync(`/proc/${pid}/stat`, 'utf8'));
+    } catch {
+      return true;
+    }
+  };
+  assert.ok([polite.pid, stubborn.pid, g].every(gone), 'none is left, nor what they started');
+  fsm.rmSync(tmp, { recursive: true, force: true });
+});

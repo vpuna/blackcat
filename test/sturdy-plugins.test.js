@@ -106,7 +106,7 @@ test('a service may not be called agent, and a plugin whose service has a taken 
     refused().map((r) => [r.name, r.why]),
     [['second', 'its service "feed" has the name of one the first plugin has']],
   );
-  assert.match(all.agent.summary ?? 'the agent', /./);
+  assert.match(all.agent?.summary ?? '', /\w/, "blackcat's own services are still there");
 });
 
 test('a setup form that cannot be built costs that one command: every other command still runs, and the plugin can be switched off', () => {
@@ -207,7 +207,6 @@ test('a calendar that cannot be read does not cost the others theirs, and nothin
       ev('two', 2).replace("'work'", "'home'") +
       ']; }',
   );
-  plugin('cal-odd', "agenda: () => 'tomorrow, probably'");
   save({ plugins: { enabled: ['cal-good', 'cal-bad'] } });
   await loadPlugins();
   const { openWatchDb, findWatch, listItems, addWatch } = await import('../src/watch/db.js');

@@ -335,7 +335,7 @@ class Session {
   // the engine: blackcat's policy allows it, refuses it, or has the owner asked.
   //   r: { tool, input, toolUseId } → { allow, message }
   async mayIt(r) {
-    const d = decide(r.tool, r.input);
+    const d = decide(r.tool, r.input, { tainted: this.tainted });
     // Which call this is about, for the activity record.
     const call =
       this.calls.get(r.toolUseId) ??

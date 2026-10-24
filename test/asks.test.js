@@ -106,7 +106,9 @@ test('the owner writing instead of tapping closes the question, unanswered, as C
   const answer = askOwner('demo', 'Demo', { text: 'Book it?', choices: ['Book', 'Cancel'] });
   await until(() => did.some((d) => d.send));
   await desk.text({ chat: 42, conversation: 42, who: 'Owner', text: 'no, the pickup is wrong' });
-  assert.deepEqual(await answer, { answer: null, how: 'answered', why: 'the owner wrote instead of answering' });
+  assert.deepEqual(await answer, { answer: null, how: 'withdrawn', why: 'the owner wrote instead of answering' });
+  const { recent } = await import('../src/activity/log.js');
+  assert.equal(recent({ category: 'demo' })[0].summary, 'asked the owner: not answered: they wrote instead');
   await until(() => did.some((d) => d.edit));
   assert.match(did.find((d) => d.edit).text, /Not answered: nothing was done/);
   asks.stop();

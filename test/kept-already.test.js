@@ -101,9 +101,13 @@ test('what every list says about something: watch find', () => {
   assert.equal(JSON.parse(bc(['watch', 'show', 'todo', '--find', 'chess', '--json']).stdout).items.length, 1);
 });
 
-test('the agent is never given more than it can take in at once: it is told to ask for less', () => {
-  for (let k = 0; k < 120; k++)
-    bc(['watch', 'add-item', 'School notices', '--title', `Notice ${k} ${'about a thing of the school '.repeat(8)}`, '--anyway']);
+test('the agent is never given more than it can take in at once: it is told to ask for less', async () => {
+  // (Put straight on the list: adding is tested above, and 120 commands take minutes.)
+  const { addItem, findWatch, openWatchDb } = await import('../src/watch/db.js');
+  const db = openWatchDb();
+  const notices = findWatch(db, 'School notices');
+  for (let k = 0; k < 120; k++) addItem(db, { watchId: notices.id, title: `Notice ${k} ${'about a thing of the school '.repeat(8)}` });
+  db.close();
   const owner = bc(['watch', 'show', 'School notices', '--json']);
   assert.equal(owner.status, 0, 'the owner gets all of it');
   assert.ok(owner.stdout.length > 25_000);

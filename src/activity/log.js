@@ -72,7 +72,11 @@ INSERT INTO activity_daily_new (day, kind, category, model, n, failed, ms, token
 DROP TABLE activity_daily;
 ALTER TABLE activity_daily_new RENAME TO activity_daily;
 `;
-const STEPS = [(db) => db.exec(SCHEMA), (db) => db.exec(WORK)];
+// How many of a day's runs a schedule set off (surface job, the entry that stands for the
+// run), counted with the rest: a run that found nothing to do is counted, not listed, so this
+// is the only place it is seen.
+const SCHEDULED = `ALTER TABLE activity_daily ADD COLUMN scheduled INTEGER NOT NULL DEFAULT 0;`;
+const STEPS = [(db) => db.exec(SCHEMA), (db) => db.exec(WORK), (db) => db.exec(SCHEDULED)];
 
 // ---- who, and which piece of work ----
 //
@@ -232,9 +236,10 @@ export function record(entry) {
           );
         }
         db.prepare(
-          `INSERT INTO activity_daily (day, kind, category, model, who, n, failed, ms, slowest, tokens_in, tokens_out, cache_read, cache_write, cost)
-          VALUES (@day, @kind, @category, @model, @who, @n, @failed, @ms, @ms, @tokens_in, @tokens_out, @cache_read, @cache_write, @cost)
-          ON CONFLICT (day, kind, category, model, who) DO UPDATE SET n = n + excluded.n, failed = failed + excluded.failed, ms = ms + excluded.ms,
+          `INSERT INTO activity_daily (day, kind, category, model, who, n, scheduled, failed, ms, slowest, tokens_in, tokens_out, cache_read, cache_write, cost)
+          VALUES (@day, @kind, @category, @model, @who, @n, @scheduled, @failed, @ms, @ms, @tokens_in, @tokens_out, @cache_read, @cache_write, @cost)
+          ON CONFLICT (day, kind, category, model, who) DO UPDATE SET n = n + excluded.n, scheduled = scheduled + excluded.scheduled,
+            failed = failed + excluded.failed, ms = ms + excluded.ms,
             slowest = MAX(slowest, excluded.slowest),
             tokens_in = tokens_in + excluded.tokens_in, tokens_out = tokens_out + excluded.tokens_out,
             cache_read = cache_read + excluded.cache_read, cache_write = cache_write + excluded.cache_write, cost = cost + excluded.cost`,
@@ -245,6 +250,9 @@ export function record(entry) {
           model: row.model ?? '',
           who: row.who ?? '',
           n: entry.countOnly && num(entry.count) > 0 ? Math.round(num(entry.count)) : 1, // (several of the same, counted at once)
+          // (Only the entry that stands for a whole run: what a run did inside it, a file read for
+          // each message say, goes with how many messages came.)
+          scheduled: row.surface === 'job' && row.lead ? (entry.countOnly && num(entry.count) > 0 ? Math.round(num(entry.count)) : 1) : 0,
           failed: row.ok ? 0 : 1,
           ms: row.ms ?? 0,
           tokens_in: row.tokens_in ?? 0,

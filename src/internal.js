@@ -56,6 +56,9 @@ export {
   markSent as markReminderSent,
   reschedule as rescheduleReminder,
   setStatus as setReminderStatus,
+  answer as answerReminder,
+  oneEach as oneOfEachSeries,
+  stopSeries,
 } from './reminders/db.js';
 export { QUIET_CHOICES, describeQuiet, inQuiet, outOfQuiet, quiet, setQuiet } from './quiet.js';
 

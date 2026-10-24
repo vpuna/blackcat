@@ -35,6 +35,31 @@ const counted = (stmt, isNew = null) => ({
   },
 });
 
+// What kind of file it is. A sender may say no more than "a file" (`application/octet-stream`,
+// as some mail programs do of every attachment), and then its name says: "scan.pdf" is a
+// PDF, and is read as one. A type that says what it is is kept as it is.
+const GENERIC = /^(application\/(octet-stream|x-download|force-download|binary)|binary\/octet-stream)?$/;
+export const BY_NAME = {
+  pdf: 'application/pdf',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  doc: 'application/msword',
+  txt: 'text/plain',
+  csv: 'text/csv',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  gif: 'image/gif',
+  webp: 'image/webp',
+};
+export function fileType(mimetype, name) {
+  const said = String(mimetype ?? '')
+    .split(';')[0]
+    .trim()
+    .toLowerCase();
+  if (!GENERIC.test(said)) return mimetype;
+  return BY_NAME[/\.([a-z0-9]+)$/i.exec(String(name ?? ''))?.[1]?.toLowerCase()] ?? (mimetype || null);
+}
+
 // `account()`: the key of the owner's account it collects through (src/archive/db.js,
 // accountFor), written on every chat and message; null while it is not known yet (the rows
 // are claimed for it once it is).
@@ -44,6 +69,7 @@ export function archiveStatements(db, account = () => null) {
   return {
     ...q,
     chat: unlessOwn(on(q.chat), (r) => r.ref),
+    media: { run: (row) => q.media.run({ ...row, mimetype: fileType(row.mimetype, row.fileName) }) },
     msg: counted(unlessOwn(on(q.msg), (r) => r.chat)),
     msgFill: counted(
       unlessOwn(on(q.msgFill), (r) => r.chat),

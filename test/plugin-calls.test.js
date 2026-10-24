@@ -145,6 +145,39 @@ test('the agent is given times as dates, which it can read; a script is given th
     bytes: 1737633792,
     last: 30,
   });
+  // And without --json, where what a command gives is shown as it is: the same dates.
+  const plainRun = spawnSync(process.execPath, [`${root}bin/bc.js`, 'lamp', 'when'], {
+    encoding: 'utf8',
+    env: { ...env, BLACKCAT_CALLER: 'agent', BLACKCAT_SLOW: '1' },
+  });
+  assert.equal(JSON.parse(plainRun.stdout).lastTs, date(1792346595));
+  // Every kind of name a time is kept under; a count, an id or a flag left as it is.
+  assert.deepEqual(
+    readableTimes({
+      created: 1792328461,
+      first_seen: 1792328461,
+      last_run: 1792328461,
+      last_scan: 1792328461,
+      snoozed_until: 1792328461,
+      error_since: 1792328461,
+      backfill_cutoff: 1792328461,
+      deleted: 1,
+      last_rowid: 123456,
+      times: 3,
+    }),
+    {
+      created: date(1792328461),
+      first_seen: date(1792328461),
+      last_run: date(1792328461),
+      last_scan: date(1792328461),
+      snoozed_until: date(1792328461),
+      error_since: date(1792328461),
+      backfill_cutoff: date(1792328461),
+      deleted: 1,
+      last_rowid: 123456,
+      times: 3,
+    },
+  );
   // The same for a command that prints its own --json (wa status, tg account status…).
   const { asJson } = await import('../src/util/when.js');
   process.env.BLACKCAT_CALLER = 'agent';

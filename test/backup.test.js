@@ -31,7 +31,7 @@ for (const f of [
   'unifi-media/snap.jpg',
 ])
   put(f);
-for (const f of ['archive.db', 'agent.db', 'plugins/mail/mail.db']) {
+for (const f of ['archive.db', 'agent.db', 'check-history.db', 'plugins/mail/mail.db']) {
   const db = new Database(path.join(data, f));
   db.pragma('journal_mode = WAL');
   db.exec("CREATE TABLE t (x); INSERT INTO t VALUES ('kept')");
@@ -65,13 +65,14 @@ test('a backup carries everything that cannot be recreated, and keeps it private
     'plugins/someone-elses/anything/deep.bin',
     'archive.db',
     'agent.db',
+    'check-history.db',
     'plugins/mail/mail.db',
   ])
     assert.ok(has(f), `${f} is in the backup`);
   // left out on purpose: downloaded or rebuilt
   for (const f of ['models/big.onnx', 'archive-index.db', 'unifi-media/snap.jpg']) assert.ok(!has(f), `${f} is left out`);
   // databases arrive whole, with what was still in their write-ahead log
-  for (const f of ['archive.db', 'agent.db', 'plugins/mail/mail.db']) {
+  for (const f of ['archive.db', 'agent.db', 'check-history.db', 'plugins/mail/mail.db']) {
     const db = new Database(path.join(root, 'data', f), { readonly: true });
     assert.equal(db.prepare('SELECT x FROM t').pluck().get(), 'kept');
     assert.equal(db.pragma('integrity_check', { simple: true }), 'ok');

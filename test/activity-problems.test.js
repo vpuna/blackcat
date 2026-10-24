@@ -37,14 +37,15 @@ const put = ({
     .run(now() - ago, kind, category, surface, ok, cost, summary, data ? JSON.stringify(data) : null, who, lead);
 const keys = () => problems().map((p) => p.key);
 const fresh = () => db.exec('DELETE FROM activity; DELETE FROM activity_daily');
-// A day's count in the daily totals, `ago` days back.
-const { dayOf } = await import('../src/activity/log.js');
-const runs = (ago, category, n, { kind = 'job', who = 'blackcat' } = {}) =>
+// A day's count in the daily totals, `ago` days back: `scheduled` of them set off by a schedule.
+const { dayOf, record } = await import('../src/activity/log.js');
+const runs = (ago, category, n, { kind = 'job', who = 'blackcat', scheduled = n } = {}) =>
   db
     .prepare(
-      "INSERT INTO activity_daily (day, kind, category, model, who, n) VALUES (?, ?, ?, '', ?, ?) ON CONFLICT DO UPDATE SET n = n + excluded.n",
+      `INSERT INTO activity_daily (day, kind, category, model, who, n, scheduled) VALUES (?, ?, ?, '', ?, ?, ?)
+        ON CONFLICT DO UPDATE SET n = n + excluded.n, scheduled = scheduled + excluded.scheduled`,
     )
-    .run(dayOf(now() - ago * 86400), kind, category, who, n);
+    .run(dayOf(now() - ago * 86400), kind, category, who, n, scheduled);
 
 test('the same thing failing again and again is found; once or twice, or what the owner or a developer did, is not', () => {
   fresh();
@@ -143,7 +144,6 @@ test("scheduled work costing far more than on a usual day, or each call far more
 
 test('scheduled work running far more often than usual is found, counting every run, not only those listed', () => {
   fresh();
-  put({ category: 'mail/sync', ago: 2 * 86400 });
   for (let d = 2; d <= 6; d++) runs(d, 'mail/sync', 24);
   runs(1, 'mail/sync', 30);
   assert.deepEqual(keys(), []);
@@ -155,18 +155,35 @@ test('scheduled work running far more often than usual is found, counting every 
   for (let d = 2; d <= 6; d++) put({ kind: 'event', category: 'check: blackcat', summary: 'working again', ago: d * 86400 });
   for (let k = 0; k < 24; k++) put({ kind: 'event', category: 'check: blackcat', summary: 'not working', ago: k * H + 60 });
   assert.deepEqual(keys(), []);
-  // Messages coming in are how many were sent, not work done on a schedule.
+  // Messages coming in are how many were sent, not work done on a schedule; nor what a run did
+  // inside it (a file read for each message).
   fresh();
-  put({ kind: 'event', category: 'messages: tg', surface: null, ago: 2 * 86400 });
-  for (let d = 2; d <= 6; d++) runs(d, 'messages: tg', 30, { kind: 'event' });
-  runs(1, 'messages: tg', 125, { kind: 'event' });
+  for (let d = 2; d <= 6; d++) runs(d, 'messages: tg', 30, { kind: 'event', scheduled: 0 });
+  runs(1, 'messages: tg', 125, { kind: 'event', scheduled: 0 });
   assert.deepEqual(keys(), []);
   // What the owner or a developer ran is theirs.
   fresh();
-  put({ category: 'mail/sync', ago: 2 * 86400 });
   for (let d = 2; d <= 6; d++) runs(d, 'mail/sync', 2, { who: 'dev' });
   runs(1, 'mail/sync', 64, { who: 'dev' });
   assert.deepEqual(keys(), []);
+});
+
+test('a job that runs far more often and never finds anything to do is found too: it is counted, never listed', () => {
+  fresh();
+  const day = (d) => Math.floor(new Date().setHours(12, 0, 0, 0) / 1000) - d * 86400;
+  const ran = (d, times, extra = {}) => {
+    for (let k = 0; k < times; k++)
+      record({ kind: 'job', category: 'msg/index', surface: 'job', lead: true, who: 'blackcat', countOnly: true, ts: day(d), ...extra });
+  };
+  for (let d = 2; d <= 6; d++) ran(d, 24);
+  ran(1, 96);
+  // and inside each of yesterday's runs, much more of something else, which is not a run
+  for (let k = 0; k < 200; k++) record({ kind: 'event', category: 'attachments', surface: 'job', who: 'blackcat', work: 'w', ts: day(1) });
+  assert.equal(db.prepare('SELECT COUNT(*) FROM activity WHERE category = ?').pluck().get('msg/index'), 0, 'not one of them listed');
+  assert.deepEqual(
+    problems().map((p) => p.title),
+    ['msg/index ran 96 times yesterday, against 24 on a usual day before'],
+  );
 });
 
 test('told it is fixed, a rule counts only what happened after that', () => {

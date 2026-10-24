@@ -1,3 +1,4 @@
+import { classify } from '../util/readonly.js';
 import { LEVELS, findCommand, makeCtx } from './registry.js';
 
 // Split a command line into words the way a shell would, but ONLY if it is one plain
@@ -47,15 +48,16 @@ export function stripJson(tokens) {
   return { tokens: t, json };
 }
 
-// What a plugin command's manifest says about one invocation.
+// What a plugin command's manifest says about one invocation. `tainted`: the agent's
+// conversation has read what other people wrote.
 // → { level: 'allow' | 'ask' | 'owner' | 'never', reason?, describe? }
-export function levelOf(plugin, commandName, tokens, caller = 'agent') {
+export function levelOf(plugin, commandName, tokens, caller = 'agent', { tainted = false } = {}) {
   const c = plugin.manifest.commands[commandName];
   if (!c) return { level: 'never', reason: `${plugin.manifest.title} has no "${commandName}" command` };
   let r = c.access;
   if (typeof r === 'function') {
     try {
-      r = r(makeCtx(plugin, { caller }), tokens);
+      r = r(makeCtx(plugin, { caller, tainted }), tokens);
     } catch (e) {
       return { level: 'never', reason: e.message };
     }
@@ -71,7 +73,7 @@ const PROGRAM = /^(?:\S*\/)?(?:blackcat|bc)$/;
 
 // Is this Bash command an invocation of an enabled plugin? If so, how should it be treated?
 // → null (not a plugin command), or { plugin, command, tokens, level, reason, describe, title }.
-export function pluginAccess(cmd) {
+export function pluginAccess(cmd, { tainted = false } = {}) {
   // A quick look first, without full parsing: is it `blackcat <a plugin's first word> …`?
   const m = /^\s*(\S+)\s+(\S+)(?:\s+(\S+))?/.exec(cmd);
   if (!m || !PROGRAM.test(m[1])) return null;
@@ -101,5 +103,19 @@ export function pluginAccess(cmd) {
   const { tokens } = stripJson(found.rest);
   if (plugin.manifest.commands[found.command] && tokens.length === 1 && HELP.includes(tokens[0]))
     return { plugin, title, command: found.command, tokens, level: 'allow' };
-  return { plugin, title, command: found.command, tokens, ...levelOf(plugin, found.command, tokens) };
+  return { plugin, title, command: found.command, tokens, ...levelOf(plugin, found.command, tokens, 'agent', { tainted }) };
+}
+
+// How a command may be tried without changing anything (a shortcut tried when it is made):
+// as it is, when it only looks; with its own --dry or --dry-run, when the command has one and
+// that makes it a look (a routine that stops before the press); else not at all.
+// → the command line to run, or null. Standing permissions do not count: only what it is.
+const DRY = ['--dry', '--dry-run'];
+export function triedAs(cmd) {
+  const a = pluginAccess(cmd);
+  if (!a) return /^\s*(?:\S*\/)?(?:blackcat|bc)\s/.test(cmd) ? null : classify(cmd) === 'read' ? cmd : null;
+  if (a.level === 'allow') return cmd;
+  const flags = (a.plugin.manifest.commands[a.command]?.options ?? []).map((o) => o[0].split(/[ ,]/)[0]);
+  for (const flag of DRY.filter((f) => flags.includes(f))) if (pluginAccess(`${cmd} ${flag}`)?.level === 'allow') return `${cmd} ${flag}`;
+  return null;
 }

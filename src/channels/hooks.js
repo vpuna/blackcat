@@ -5,6 +5,8 @@
 //     install: (ui, { ctx }) => { ui.command(…); ui.action(…) },  once, when the agent service starts
 //     tick: (ui, s) => { … },          every scheduler tick; ui is null when no channel is active
 //                                      (s.chat is the owner's chat, for what you send them by yourself)
-//     quick: (text, { ctx }) => null | { text, note? } | { confirm, run },   answer without the agent
+//     quick: (text, { ctx }) => null | { text, note? } | { confirm, run } | { note, answer: (c) => … },
+//                                      answer without the agent (see quick.js)
+//     quickFirst: true                 its quick is tried before the others' (names the owner gave)
 //   }
 export const chatHooks = (p) => p.manifest.chat ?? {};

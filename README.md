@@ -215,7 +215,7 @@ bc remind add Take the bins out --at 20:00 --repeat weekly
 bc remind list
 ```
 
-A reminder arrives with Done and snooze buttons. `bc remind setup --quiet 23:00-07:00` sets quiet hours.
+A reminder arrives with Done and snooze buttons; a repeating one is snoozed only to before its next time. Done and cancel on a repeating one are for that time only; `bc remind stop <id>` (or its Stop repeating button) ends it. One left unanswered when the next comes is marked missed, so the briefing shows it once. `bc remind setup --quiet 23:00-07:00` sets quiet hours.
 
 <table>
   <tr><th>In a terminal</th><th>In Telegram</th></tr>
@@ -237,7 +237,7 @@ bc watch item 12 done                # or keep, drop
 ```
 
 - A watch reports in the daily briefing (the default), on a schedule of its own (`--mode digest`) or at once (`--mode alert`).
-- One is built in: "Things I need to do". It reads all your chats, and mail and calendar if connected, for promises, unanswered questions, deadlines, bookings and things on their way. It ticks off what you were waiting on when the answer comes, what you owed once you have plainly done it (the briefing says so, with a button to undo it), and a parcel or a booking when a message with its number says it arrived or was cancelled.
+- One is built in: "Things I need to do". It reads all your chats, and mail and calendar if connected, for promises, unanswered questions, deadlines, bookings and things on their way. It ticks off what you were waiting on when the answer comes, even after it told you none had, what you owed once you have plainly done it (the briefing says so, with a button to undo it), and a parcel or a booking when a message with its number says it arrived or was cancelled.
 
 <table>
   <tr><th>In a terminal</th><th>In Telegram</th></tr>
@@ -292,7 +292,7 @@ bc check history "nas heat" --since 7d             # the readings, and each time
 
 ### Shortcuts
 
-A shortcut runs commands you chose and sends back a file or what they printed. It runs as `/<name>`, with no model involved.
+A shortcut runs commands you chose and sends back a file or what they printed. It runs as `/<name>`, or when you say its name ("tv on" for `/tv_on`), with no model involved.
 
 ```sh
 bc shortcut add door --description "Front door camera" \
@@ -332,7 +332,7 @@ It arrives as `build: Done`, outside your conversation with the agent, and exits
 
 ### Memory and conversations
 
-Tell the agent things worth keeping ("Sam is my brother") and it has them in every later conversation. Forgetting or replacing a memory needs your approval. `bc memory list` shows them; `bc conversations find "school trip"` searches what was said, kept for 90 days.
+Tell the agent things worth keeping ("Sam is my brother") and it has them in every later conversation. Forgetting or replacing a memory needs your approval, and so does saving one after it has read other people's messages or files. `bc memory list` shows them; `bc conversations find "school trip"` searches what was said, kept for 90 days.
 
 <table>
   <tr><th>In a terminal</th><th>In Telegram</th></tr>

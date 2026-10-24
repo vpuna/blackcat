@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS reminders (
   created_ts  INTEGER NOT NULL,
   source      TEXT NOT NULL DEFAULT 'user',     -- user: asked for; auto: picked up from WhatsApp
   repeat      TEXT,                      -- daily | weekdays | weekly | monthly
-  status      TEXT NOT NULL DEFAULT 'pending',  -- pending | sent | done | cancelled
+  status      TEXT NOT NULL DEFAULT 'pending',  -- pending | sent | done | cancelled | missed
   sent_ts     INTEGER,
   note        TEXT,                      -- auto: why it was picked up
   -- A snapshot of the WhatsApp message it's about, so the reminder still makes
@@ -34,7 +34,20 @@ CREATE INDEX IF NOT EXISTS reminders_item ON reminders (item_id) WHERE item_id I
 
 // item_id: the watch item a reminder is the nudge for (see watch/nudge.js); one you set
 // yourself has none. file: a picture or document to send along when it arrives.
-const STEPS = [(db) => db.exec(SCHEMA)];
+// series (step 2): of a reminder that repeats, the id of the first of them; each time it comes
+// round is a reminder of its own. missed: one of a series left unanswered when the next came.
+const STEPS = [
+  (db) => db.exec(SCHEMA),
+  (db) => {
+    db.exec('ALTER TABLE reminders ADD COLUMN series INTEGER');
+    // (Those made before: one series for each chat, wording and schedule.)
+    db.exec(`UPDATE reminders SET series = (SELECT MIN(o.id) FROM reminders o
+      WHERE o.chat_id = reminders.chat_id AND o.text = reminders.text AND o.repeat = reminders.repeat) WHERE repeat IS NOT NULL`);
+    db.exec(`UPDATE reminders SET status = 'missed' WHERE status = 'sent' AND series IS NOT NULL
+      AND EXISTS (SELECT 1 FROM reminders l WHERE l.series = reminders.series AND l.status = 'sent' AND l.due_ts > reminders.due_ts)`);
+    db.exec('CREATE INDEX IF NOT EXISTS reminders_series ON reminders (series) WHERE series IS NOT NULL');
+  },
+];
 
 // Bring the reminders' own table up to date in a database that is already open. (Watches
 // keep their nudges in it, so they see to it too.)
@@ -48,10 +61,14 @@ export function openRemindersDb() {
   return db;
 }
 
-// A reminder that repeats, sent: the next one, the same in every way but when (never less
-// than a minute from now, however late this one went). Nothing when it does not repeat.
+// A reminder that repeats, sent: the next one, the same in every way but when: the next time
+// still to come, however late this one went (one gone while blackcat was off is not sent again
+// a minute later), and never less than a minute from now. Nothing when it does not repeat.
 export function addNextRepeat(db, r) {
-  const next = nextRepeat(r.due_ts, r.repeat);
+  // (One snoozed after it went has its next time already.)
+  if (nextOf(db, r)) return null;
+  let next = nextRepeat(r.due_ts, r.repeat);
+  for (let i = 0; next && next <= now() && i < 10_000; i++) next = nextRepeat(next, r.repeat);
   if (!next) return null;
   return addReminder(db, {
     chatId: r.chat_id,
@@ -59,6 +76,7 @@ export function addNextRepeat(db, r) {
     dueTs: Math.max(next, now() + 60),
     source: 'user',
     repeat: r.repeat,
+    series: r.series ?? r.id,
     file: r.file,
     msgId: r.msg_id,
     msgChat: r.msg_chat,
@@ -71,8 +89,8 @@ export function addNextRepeat(db, r) {
 export function addReminder(db, r) {
   const info = db
     .prepare(
-      `INSERT INTO reminders (chat_id, text, due_ts, created_ts, source, repeat, note, msg_id, msg_chat, msg_sender, msg_quote, msg_ts, item_id, file)
-    VALUES (@chatId, @text, @dueTs, @createdTs, @source, @repeat, @note, @msgId, @msgChat, @msgSender, @msgQuote, @msgTs, @itemId, @file)
+      `INSERT INTO reminders (chat_id, text, due_ts, created_ts, source, repeat, note, msg_id, msg_chat, msg_sender, msg_quote, msg_ts, item_id, file, series)
+    VALUES (@chatId, @text, @dueTs, @createdTs, @source, @repeat, @note, @msgId, @msgChat, @msgSender, @msgQuote, @msgTs, @itemId, @file, @series)
     ON CONFLICT DO NOTHING`,
     )
     .run({
@@ -86,10 +104,15 @@ export function addReminder(db, r) {
       msgTs: null,
       itemId: null,
       file: null,
+      series: null,
       createdTs: now(),
       ...r,
     });
-  return info.changes ? getReminder(db, Number(info.lastInsertRowid)) : null;
+  if (!info.changes) return null;
+  const id = Number(info.lastInsertRowid);
+  // (The first of a series is the series.)
+  if (r.repeat && r.series == null) db.prepare('UPDATE reminders SET series = id WHERE id = ?').run(id);
+  return getReminder(db, id);
 }
 
 export const getReminder = (db, id) => db.prepare('SELECT * FROM reminders WHERE id = ?').get(id);
@@ -135,3 +158,36 @@ export const markSent = (db, r) =>
 
 export const reschedule = (db, id, dueTs) =>
   db.prepare("UPDATE reminders SET due_ts = ?, status = 'pending', sent_ts = NULL WHERE id = ?").run(dueTs, id).changes;
+
+// The next time of a series, made when the one before it went.
+export const nextOf = (db, r) =>
+  r.series == null
+    ? undefined
+    : db.prepare("SELECT * FROM reminders WHERE series = ? AND id > ? AND status = 'pending' ORDER BY id LIMIT 1").get(r.series, r.id);
+
+// A reminder of a series has just been sent: the times before it still open, never answered
+// or snoozed past it, were missed. (Yesterday's walk is not still to do today.)
+export const closeMissed = (db, r) =>
+  r.series == null
+    ? 0
+    : db.prepare("UPDATE reminders SET status = 'missed' WHERE series = ? AND id < ? AND status IN ('pending', 'sent')").run(r.series, r.id)
+        .changes;
+
+// Done with, or skipped, this time. Of a series, one not yet sent makes way for the next time
+// (one sent has made it already): the series goes on. → whether it changed
+export function answer(db, r, status) {
+  const changes = setStatus(db, r.id, status);
+  if (changes && r.status === 'pending' && r.repeat) addNextRepeat(db, r);
+  return changes;
+}
+
+// No more of a series: what of it is still open is cancelled. → how many
+export const stopSeries = (db, r) =>
+  db.prepare("UPDATE reminders SET status = 'cancelled' WHERE series = ? AND status IN ('pending', 'sent')").run(r.series ?? r.id).changes;
+
+// One of each: of a series, only the first still open (the time that went and is not yet
+// answered, or else the next). Rows in due order.
+export function oneEach(rows) {
+  const seen = new Set();
+  return rows.filter((r) => r.series == null || (!seen.has(r.series) && seen.add(r.series)));
+}

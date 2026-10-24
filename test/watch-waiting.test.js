@@ -201,6 +201,25 @@ test('they wrote, but about something else: the owner is told', async () => {
   assert.ok(nudges().some((r) => r.item_id === it.id && r.text === 'No reply yet · Waiting on Maya: the trip date'));
 });
 
+// (A real case: told no reply had come, then paid back days later, and the entry stayed open.)
+test('told that no reply came, then they answer: it is still ticked off, and its nudge with it, and not told again', async () => {
+  const it = listItems(db, todo().id, { status: 'new,kept' }).find((x) => x.title.includes('trip date'));
+  db.prepare("UPDATE reminders SET status = 'sent' WHERE item_id = ?").run(it.id);
+  const asked = calls().length;
+  await collect(db, todo());
+  assert.equal(calls().length, asked, 'nothing new from them: no reader asked');
+  say('the school confirmed: the trip is on the 12th');
+  queue({ data: { state: 'answered', by: null, why: 'the trip is on the 12th' } });
+  await collect(db, todo());
+  assert.equal(getItem(db, it.id).status, 'done');
+  assert.deepEqual(
+    listReminders(db, { all: true })
+      .filter((r) => r.item_id === it.id)
+      .map((r) => [r.text, r.status]),
+    [['No reply yet · Waiting on Maya: the trip date', 'done']],
+  );
+});
+
 test('everything else on the list is nudged as before, when it is filed', async () => {
   const m = say("I'll send you the photos tonight", 1);
   queue({
@@ -216,6 +235,7 @@ test('everything else on the list is nudged as before, when it is filed', async 
 });
 
 test('they answered with a voice note: it is judged by what was said', async () => {
+  clearOthers();
   const m = say('shall we keep the kitchen order, or cancel it? let me know by tomorrow', 1);
   queue({ data: { items: [waitingFor(m, 'Waiting on Maya: keep the kitchen order or cancel it')] } });
   await collect(db, todo());
@@ -241,6 +261,7 @@ test('they answered with a voice note: it is judged by what was said', async () 
 });
 
 test('a voice note that cannot be listened to is not taken for silence: the owner is told there is one', async () => {
+  clearOthers();
   const m = say('can you confirm the delivery date?', 1);
   queue({ data: { items: [waitingFor(m, 'Waiting on Maya: the delivery date')] } });
   await collect(db, todo());
@@ -268,6 +289,7 @@ test('a voice note that cannot be listened to is not taken for silence: the owne
 });
 
 test('every look judges what has come since: an answer before its time ticks it off at once', async () => {
+  clearOthers();
   const m = say('what time does the match start on Saturday?', 1);
   queue({ data: { items: [waitingFor(m, 'Waiting on Maya: when the match starts')] } });
   await collect(db, todo());
@@ -294,6 +316,7 @@ test('every look judges what has come since: an answer before its time ticks it 
 });
 
 test('judged before and no answer, then its time comes with nothing new: the owner is told, with no reader asked again', async () => {
+  clearOthers();
   const m = say('did you book the table?', 1);
   queue({ data: { items: [waitingFor(m, 'Waiting on Maya: whether the table is booked')] } });
   await collect(db, todo());
@@ -306,6 +329,32 @@ test('judged before and no answer, then its time comes with nothing new: the own
   await collect(db, todo());
   assert.equal(calls().length, asked);
   assert.ok(nudges().some((r) => r.item_id === it.id && r.text === 'No reply yet · Waiting on Maya: whether the table is booked'));
+});
+
+// (A real case: the receipt came, then a long talk about other things, and only the last 24
+// messages were shown, so the receipt never was.)
+test('an answer followed by a long talk about other things is still shown to the reader, and what was judged before is not', async () => {
+  clearOthers();
+  const m = say('please send a receipt for the deposit when you get it', 1);
+  queue({ data: { items: [waitingFor(m, 'Waiting on Maya: the deposit receipt')] } });
+  await collect(db, todo());
+  const it = listItems(db, todo().id, { status: 'new,kept' }).find((x) => x.title.includes('deposit receipt'));
+  say('okay, judged already');
+  for (let i = 0; i < 8; i++) say(`older chat ${i}`, i % 2);
+  queue({ data: { state: 'waiting', by: null, why: 'not yet' } }, { data: { items: [] } });
+  await collect(db, todo());
+  say('here is the receipt for the deposit');
+  for (let i = 0; i < 30; i++) say(`about the tiles, part ${i}`, i % 2);
+  queue({ data: { state: 'answered', by: null, why: 'she sent the receipt' } }, { data: { items: [] } });
+  await collect(db, todo());
+  const judged = calls()
+    .filter((c) => /deposit receipt/.test(c.input) && /Said in that conversation since/.test(c.input))
+    .at(-1);
+  assert.match(judged.input, /here is the receipt for the deposit/);
+  assert.match(judged.input, /about the tiles, part 29/);
+  assert.match(judged.input, /older chat 7/, 'a few from before, to make sense of it');
+  assert.doesNotMatch(judged.input, /judged already/, 'not everything judged before');
+  assert.equal(getItem(db, it.id).status, 'done');
 });
 
 test('a back-and-forth in text and voice notes from both of them is read as one conversation, and what it came to is kept', async () => {

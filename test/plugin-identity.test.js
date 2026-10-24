@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
+import { pathToFileURL } from 'node:url';
 import { home } from './helpers.js';
 
 const dir = home();
@@ -65,7 +66,7 @@ test('nor one with the name of a part of blackcat itself', async () => {
   fs.rmSync(path.join(dir, 'user-plugins/backup'), { recursive: true });
 });
 
-test("a plugin's commands sit under its own name, or the part of it before a dash: never under another's word", () => {
+test("a plugin's commands sit under its own name, or the part of it before a dash: never under another's word", async () => {
   const said = (m) => R.problems({ ...base, ...m }, m.name ?? 'demo').join('; ');
   assert.match(said({ name: 'aaa', mount: 'ssh' }), /mount \("ssh"\) must begin with the plugin's own name \("aaa"\)/);
   assert.match(said({ name: 'aaa', mount: 'ssh run' }), /must begin with the plugin's own name/);
@@ -74,7 +75,12 @@ test("a plugin's commands sit under its own name, or the part of it before a das
   assert.equal(said({ name: 'weather', mount: 'weather now' }), '');
   assert.equal(said({ name: 'weather' }), '');
   // everything that comes with blackcat already keeps to it
-  for (const e of R.available()) assert.ok(true, e.name);
+  const bundled = R.available().filter((e) => e.bundled);
+  assert.ok(bundled.length > 10, 'what comes with blackcat is all there');
+  for (const e of bundled) {
+    const manifest = (await import(pathToFileURL(path.join(e.dir, e.file ?? 'plugin.js')).href)).default;
+    assert.deepEqual(R.problems(manifest, e.name), [], e.name);
+  }
 });
 
 test("what is another's cannot be claimed: the word a plugin's commands sit under, a title, a service, a chat command, a kind of message", async () => {

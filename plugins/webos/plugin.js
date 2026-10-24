@@ -2,7 +2,6 @@
 // volume, the input, an app, the remote's buttons, a message on the screen, and what it is doing
 // now. Each TV is paired under a name ("tv", "bedroom-tv"), with the owner's OK on the TV.
 // Nothing here reads the screen: what the TV says it is doing is all there is to go by.
-import * as p from '@clack/prompts';
 import { plural, prompts, sleep } from '../../src/api.js';
 import { BUTTONS, MAC, powerState, Tv, TvError, wake, withTv } from './tv.js';
 
@@ -125,8 +124,10 @@ function pick(ctx, list, words, kind) {
 
 // ---------- commands ----------
 
+let p; // the terminal questions, loaded by pair() (only pairing asks them)
 async function pair(ctx, i) {
   const { orExit } = await prompts();
+  p = await import('@clack/prompts');
   p.intro('blackcat · pairing an LG webOS TV');
   if (i.name && !NAME.test(i.name)) return void stop(`"${i.name}" is not a name for a TV: lowercase letters, digits and dashes, like tv.`);
   const host =

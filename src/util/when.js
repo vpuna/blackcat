@@ -77,10 +77,13 @@ export function fmtWhen(ts, nowMs = Date.now()) {
 }
 
 // For the agent, which cannot read a Unix time: every value under a key that names a time
-// (ts, next, since, last, newest, oldest, until, due, and …Ts, …_ts, …_at, …At, …Since,
-// …Until), in seconds or milliseconds, as a date ("Mon 19 Oct 2026 06:00"). Anything else,
-// and a number too small or large to be a time, is left as it is.
-const TIME_KEY = /^(ts|next|since|last|newest|oldest|until|due)$|(Ts|_ts|_at|At|Since|Until)$/;
+// (ts, next, since, last, newest, oldest, until, due, created, edited, deleted, checked,
+// started, born, expires, and …Ts, …_ts, …_at, …At, …Since, …_since, …Until, …_until,
+// …_seen, …_run, …_scan, …_digest, …_cutoff), in seconds or milliseconds, as a date
+// ("Mon 19 Oct 2026 06:00"). Anything else, and a number too small or large to be a time (a
+// count, an id, a flag), is left as it is.
+const TIME_KEY =
+  /^(ts|next|since|last|newest|oldest|until|due|created|edited|deleted|checked|started|born|expires)$|(Ts|_ts|_at|At|Since|_since|Until|_until|_seen|_run|_scan|_digest|_cutoff)$/;
 export function readableTimes(v, key = '') {
   if (Array.isArray(v)) return v.map((x) => readableTimes(x, key));
   if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, readableTimes(x, k)]));

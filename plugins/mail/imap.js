@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { ImapFlow } from 'imapflow';
+import { fileType } from '../../src/api.js';
 import { addrOf, bulk } from './rules.js';
 
 const SOURCE_MAX = 3 * 1024 ** 2; // bytes of one mail read for its text; attachments beyond this are not needed
@@ -58,6 +59,26 @@ export async function mailboxMark(client) {
 }
 
 const pick = (list) => list?.[0] ?? {};
+
+// The files attached to a mail, from its structure: each named part that is a real
+// attachment (not the mail's own text, not a picture shown inside it). → [{ name, part, type, size }]
+function filesIn(structure) {
+  const files = [];
+  const walk = (n) => {
+    if (!n) return;
+    const name = n.dispositionParameters?.filename ?? n.parameters?.name;
+    if (name && n.part && (n.disposition === 'attachment' || (!/^text\//.test(n.type ?? '') && n.disposition !== 'inline')))
+      files.push({
+        name: String(name).slice(0, 120),
+        part: n.part,
+        type: fileType(String(n.type ?? 'application/octet-stream').toLowerCase(), name),
+        size: n.size ?? null,
+      });
+    (n.childNodes ?? []).forEach(walk);
+  };
+  walk(structure);
+  return files;
+}
 function headerMap(buf) {
   const out = {};
   for (const line of String(buf ?? '')
@@ -105,21 +126,7 @@ export async function newHeaders(client, { sinceMs, have, me }) {
       )) {
         const f = pick(m.envelope?.from);
         const from = addrOf(f.address);
-        const files = [];
-        const walk = (n) => {
-          if (!n) return;
-          const name = n.dispositionParameters?.filename ?? n.parameters?.name;
-          // A named part that is a real attachment (not the mail's own text, not a picture shown inside it).
-          if (name && n.part && (n.disposition === 'attachment' || (!/^text\//.test(n.type ?? '') && n.disposition !== 'inline')))
-            files.push({
-              name: String(name).slice(0, 120),
-              part: n.part,
-              type: String(n.type ?? 'application/octet-stream').toLowerCase(),
-              size: n.size ?? null,
-            });
-          (n.childNodes ?? []).forEach(walk);
-        };
-        walk(m.bodyStructure);
+        const files = filesIn(m.bodyStructure);
         fresh.push({
           uid: m.uid,
           ts: Math.floor(new Date(m.internalDate ?? m.envelope?.date ?? Date.now()) / 1000),
@@ -177,12 +184,15 @@ export async function texts(client, uids, box = 'INBOX') {
   }
 }
 
-// Save one attachment of a mail to `dest`. `part` is its position in the mail, noted when the mail arrived.
-export async function download(client, uid, part, dest) {
-  const lock = await client.getMailboxLock('INBOX', { readOnly: true });
+// Save one attachment of a mail to `dest`. `part` is its position in the mail, noted when the
+// mail arrived. `sent`: a mail the owner sent, in the Sent folder.
+export async function download(client, uid, part, dest, { sent = false } = {}) {
+  const box = sent ? await sentBox(client) : 'INBOX';
+  if (!box) throw new Error('the mail server no longer names a Sent folder');
+  const lock = await client.getMailboxLock(box, { readOnly: true });
   try {
     const d = await client.download(String(uid), part, { uid: true });
-    if (!d?.content) throw new Error('the mail is no longer in the Inbox');
+    if (!d?.content) throw new Error(`the mail is no longer in ${sent ? 'the Sent folder' : 'the Inbox'}`);
     await pipeline(d.content, fs.createWriteStream(dest, { mode: 0o600 }));
   } finally {
     lock.release();
@@ -212,7 +222,7 @@ export async function sentMark(client) {
 }
 
 // The header line of every sent mail since `sinceMs` that is not in `have` (a Set of UIDs).
-// → null with no Sent folder, or { box, uidValidity, uids, fresh: [{ uid, ts, to, toName, others, subject }] }
+// → null with no Sent folder, or { box, uidValidity, uids, fresh: [{ uid, ts, to, toName, others, subject, files }] }
 export async function sentHeaders(client, { sinceMs, have }) {
   const box = await sentBox(client);
   if (!box) return null;
@@ -224,7 +234,7 @@ export async function sentHeaders(client, { sinceMs, have }) {
     for (let i = 0; i < want.length; i += 200) {
       for await (const m of client.fetch(
         want.slice(i, i + 200).join(','),
-        { uid: true, envelope: true, internalDate: true },
+        { uid: true, envelope: true, internalDate: true, bodyStructure: true },
         { uid: true },
       )) {
         const all = [...(m.envelope?.to ?? []), ...(m.envelope?.cc ?? [])].filter((a) => a?.address);
@@ -236,6 +246,7 @@ export async function sentHeaders(client, { sinceMs, have }) {
           toName: (first.name || '').replace(/\s+/g, ' ').trim().slice(0, 80) || null,
           others: Math.max(0, all.length - 1),
           subject: (m.envelope?.subject ?? '').replace(/\s+/g, ' ').trim().slice(0, 300),
+          files: filesIn(m.bodyStructure),
         });
       }
     }

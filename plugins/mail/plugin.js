@@ -194,6 +194,29 @@ async function syncAccount(ctx, name, { full = false } = {}) {
 const line = (ctx, m, many) =>
   `${m.kept ? '●' : '○'} ${when(m.ts)}  ${(m.from_name || m.from_addr || 'unknown').slice(0, 28)}: ${m.subject || '(no subject)'}${many ? ` [${label(ctx, m.account)}]` : ''}  ‹mail:${m.account}:${m.uid}›${m.kept ? '' : `  (skipped: ${m.reason})`}`;
 
+// One mail the owner sent (mail:personal:s4812), with its attachments, as `mail show` gives one that arrived.
+async function showSent(ctx, id, account, uid) {
+  const row = withDb(
+    () => openStore(ctx),
+    (db) => db.prepare('SELECT * FROM sent WHERE account = ? AND uid = ?').get(account, uid),
+  );
+  if (!row) ctx.fail('There is no such mail (it may be older than what is kept).');
+  let text = row.stored ? storedText(account, uid, { sent: true }) : null;
+  if (!text) {
+    const { sentBox, texts, withMailbox } = await imap();
+    const got = await withMailbox(login(ctx, account), async (c) => texts(c, [uid], await sentBox(c))).catch((e) =>
+      ctx.fail(`Could not fetch it: ${e.message}.`),
+    );
+    text = `Subject: ${row.subject || '(no subject)'}\n\n${got.get(uid) || '(this mail has no readable text, or it is no longer in the Sent folder)'}`;
+  }
+  const files = row.stored ? filesOf(row).map((f, n) => ({ id: `${id}:${n + 1}`, name: f.name, type: f.type, size: f.size })) : [];
+  if (files.length) text += `\n${files.map((f) => `  ${f.name}: bc msg media ${f.id}`).join('\n')}`;
+  return {
+    text: `From: you, to ${row.to_name ? `${row.to_name} <${row.to_addr}>` : (row.to_addr ?? 'nobody named')}\nDate: ${when(row.ts)}\n${text}`,
+    data: { id, sent: true, to: row.to_addr, toName: row.to_name, ts: row.ts, text, attachments: files },
+  };
+}
+
 export default {
   api: 1,
   name: 'mail',
@@ -335,7 +358,7 @@ Read-only: nothing is sent, deleted, moved or marked as read.`,
 
     history: {
       changes: true,
-      summary: "how far back an account's mail is fetched: 7, 30, 90 or 180 days (what is stored is kept)",
+      summary: "how far back an account's mail is fetched, what arrived and what you sent: 7, 30, 90 or 180 days (what is stored is kept)",
       access: () => ({ level: 'ask', describe: 'change how far back mail is fetched' }),
       usage: '<name> <days>',
       run: async (ctx, i) => {
@@ -605,12 +628,14 @@ Read-only: nothing is sent, deleted, moved or marked as read.`,
       usage: '<id>',
       run: async (ctx, i) => {
         need(ctx);
-        const m = /^mail:([a-z0-9_-]+):(\d+)$/.exec(i.id);
+        const m = /^mail:([a-z0-9_-]+):(s?)(\d+)$/.exec(i.id);
         if (!m || !accounts(ctx)[m[1]])
           ctx.fail('The id looks like mail:personal:4812. Get it from: bc mail recent, or bc mail find <words>');
+        const uid = Number(m[3]);
+        if (m[2]) return showSent(ctx, i.id, m[1], uid);
         const row = withDb(
           () => openStore(ctx),
-          (db) => db.prepare('SELECT * FROM mail WHERE account = ? AND uid = ?').get(m[1], Number(m[2])),
+          (db) => db.prepare('SELECT * FROM mail WHERE account = ? AND uid = ?').get(m[1], uid),
         );
         if (!row) ctx.fail('There is no such mail (it may be older than what is kept).');
         let text = row.stored ? storedText(m[1], row.uid) : null;
@@ -706,7 +731,7 @@ Read-only: nothing is sent, deleted, moved or marked as read.`,
       try {
         await (await import('./attachments.js')).fetchAttachment(ctx, id, row.direct_path, dest);
       } catch (e) {
-        throw new Error(`${e.message}; a mail moved out of the Inbox can no longer be reached`);
+        throw new Error(`${e.message}; a mail moved out of its folder can no longer be reached`);
       }
     },
   },
@@ -750,15 +775,27 @@ Read-only: nothing is sent, deleted, moved or marked as read.`,
   ],
 
   // `bc selftest`: every account, logged in to and its mailbox looked at. Nothing is fetched or marked.
-  // (Gmail answers slowly in spells, every step 3 to 10 times slower: half a minute is not unusual.)
+  // How long each part took is said (and logged as it goes, for one that runs out of time), so
+  // that a slow answer shows where: reaching and logging in to the server, or its mailbox.
+  // (A server can answer slowly in spells: up to a minute and a half is waited.)
   selftest: (ctx) =>
     Object.entries(accounts(ctx)).map(([name, a]) => ({
       name: `${label(ctx, name)} (${a.address})`,
       timeoutMs: 90_000,
       run: async () => {
         const { withMailbox, mailboxMark } = await imap();
-        const mark = await withMailbox(login(ctx, name), (client) => mailboxMark(client));
-        return `logged in · the mailbox answers${mark ? '' : ' (empty)'}`;
+        const secs = (ms) => `${(ms / 1000).toFixed(1)}s`;
+        const t0 = Date.now();
+        let inAt = null;
+        let askedAt = null;
+        const mark = await withMailbox(login(ctx, name), async (client) => {
+          inAt = Date.now();
+          ctx.log(`self-test ${label(ctx, name)}: logged in after ${secs(inAt - t0)}`);
+          const m = await mailboxMark(client);
+          askedAt = Date.now();
+          return m;
+        });
+        return `logged in (${secs(inAt - t0)}) · the mailbox answers${mark ? '' : ' (empty)'} (${secs(askedAt - inAt)}) · logged out (${secs(Date.now() - askedAt)})`;
       },
     })),
 

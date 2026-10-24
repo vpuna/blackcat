@@ -4,7 +4,6 @@
 // through a second socket it hands out. Turning it on is a wake-up packet to its network card,
 // which the TV listens for while it is off when "Turn on via Wi-Fi" (or "Mobile TV On") is on.
 import dgram from 'node:dgram';
-import WebSocket from 'ws';
 import { PluginError, sleep } from '../../src/api.js';
 
 export class TvError extends PluginError {}
@@ -81,7 +80,9 @@ export const BUTTONS = [
 ];
 
 // A WebSocket to the TV, open. `cert`: given the TV's certificate, when it has one.
-function socket(url, cert) {
+// (The library is loaded here, not at the top: every `bc` command loads this plugin.)
+async function socket(url, cert) {
+  const { default: WebSocket } = await import('ws');
   return new Promise((resolve, reject) => {
     // (Its certificate is its own, signed by LG, not one this machine can check: it is compared
     // with the one seen at pairing instead.)
@@ -213,7 +214,7 @@ export class Tv {
   // for a while, and after a few of those it closes new connections at once); cut off when it
   // does not answer that in a second.
   async close() {
-    const open = [this.input, this.ws].filter((ws) => ws && ws.readyState !== WebSocket.CLOSED);
+    const open = [this.input, this.ws].filter((ws) => ws && ws.readyState !== ws.CLOSED);
     this.input = this.ws = null;
     await Promise.all(
       open.map(

@@ -64,6 +64,8 @@ export { shell, withoutSecrets } from './util/run.js';
 export { duration } from './system.js';
 // Is this shell command one that only looks? → 'read' | 'sensitive' | 'change'
 export { COMMAND_MODES, classify, commandAccess } from './util/readonly.js';
+// How a command can be tried without changing anything: itself, with its --dry, or null.
+export { triedAs } from './plugins/access.js';
 // Would this command show blackcat's own private files? (for a plugin that runs commands the agent gives it)
 export { touchesSecrets } from './agent/policy.js';
 
@@ -100,7 +102,7 @@ export const semantic = () => import('./archive/semantic.js');
 export { openWrite as openArchiveForWriting } from './archive/db.js';
 // The owner's account a source collects through, and the rows it stored before that was known.
 export { accountFor, claimRows } from './archive/db.js';
-export { archiveStatements, mediaRow, messageRow } from './archive/writer.js';
+export { archiveStatements, fileType, mediaRow, messageRow } from './archive/writer.js';
 // The chats that are blackcat itself (its bot, as your account sees it): never collected, never offered.
 export { ownRefs } from './channels/registry.js';
 

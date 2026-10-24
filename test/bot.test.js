@@ -35,6 +35,8 @@ before(async () => {
           shortcut: {
             shortcuts: {
               hi: { description: 'says hi', run: ['echo hi from a shortcut'] },
+              tv_on: { description: 'turns the tv on', run: ['echo the tv is on'] },
+              slow: { description: 'takes a while', run: ['sleep 9; echo slow done'] },
               asker: {
                 description: 'asks the owner',
                 run: [`${process.execPath} ${new URL('../bin/bc.js', import.meta.url).pathname} demo ask`],
@@ -269,13 +271,13 @@ test('an approval: asked with buttons, and the answer is kept in the chat', asyn
   assert.deepEqual(tg.buttons(perms), ['Remove 1']);
   await then(() => tg.tap(perms, 'Remove 1'), { until: 'editMessageText' });
   assert.equal(tg.shows(perms).text, 'No standing permissions. I ask you every time something needs approval.');
-  // a request still waiting when a new conversation is started is cancelled
+  // a request still waiting when a new conversation is started is closed: anything written
+  // while it waits closes it, /new among them, before the command is taken
   const waiting = await tg.ask('please delete the folder');
   await then(() => tg.say('/new'));
   // (The request's message is changed a moment after the reply to /new: wait for that, not for a quarter of a second.)
-  // (Anything written while it waits closes it, /new among them.)
-  for (let i = 0; i < 40 && !/Cancelled|wrote instead/.test(tg.shows(waiting).text); i++) await new Promise((r) => setTimeout(r, 100));
-  assert.match(tg.shows(waiting).text, /<b>(🚫 Cancelled, nothing was done|✖ Not now: you wrote instead)<\/b>$/);
+  for (let i = 0; i < 40 && !/wrote instead/.test(tg.shows(waiting).text); i++) await new Promise((r) => setTimeout(r, 100));
+  assert.match(tg.shows(waiting).text, /<b>✖ Not now: you wrote instead<\/b>$/);
 });
 
 test('a command that fetches a picture, typed in the chat: the picture is sent, with its caption', async () => {
@@ -302,6 +304,12 @@ test('files: one the owner sends is saved and described to Claude, and one Claud
   assert.ok(told.endsWith('\n\nsend it back'));
   assert.equal(fs.readFileSync(/^- (\S+) \(/m.exec(told)[1], 'utf8'), 'the contents');
   // a file from outside the folders the bot may send from is refused
+  const mark = tg.mark();
+  await tg.say('send the hostname');
+  const far = () => tg.calls.slice(mark).filter((c) => c.method !== 'sendChatAction');
+  for (let i = 0; i < 50 && !texts(far()).some((t) => /Not allowed/.test(t)); i++) await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(texts(far()), ['Here.', '😿 Not allowed to send /etc/hostname']);
+  assert.ok(!methods(far()).includes('sendDocument'));
   assert.match((await tg.ask('hello')).text, /^echo: hello$/);
 });
 
@@ -336,6 +344,21 @@ test('the quick route: a plugin answers at once, or asks first; Claude hears of 
   // a voice note is transcribed by whichever plugin can, shown, and then treated as typed
   const heard = await then(() => tg.sendVoice(), { until: (c) => c.text === 'done quickly' });
   assert.deepEqual(texts(heard), ['🎙 “demo quick”', 'done quickly']);
+});
+
+test('a shortcut said in words is run, before any other plugin that would take the words; anything more goes to Claude', async () => {
+  // (The demo plugin takes "turn tv on" too, as Home Assistant would with a thing called TV.)
+  assert.equal((await tg.ask('Turn TV on.')).text, 'the tv is on');
+  assert.equal((await tg.ask('and now?')).text, 'echo: and now?');
+  // (After what the test before left to be said.)
+  assert.ok(
+    toldClaude().at(-1).text.endsWith('ran /tv_on (turns the tv on) | /tv_on worked: the tv is on]\n\nand now?'),
+    toldClaude().at(-1).text,
+  );
+  assert.equal((await tg.ask('turn tv on at nine')).text, 'echo: turn tv on at nine');
+  // Said in a voice note, the same.
+  const heard = await then(() => tg.sendVoice('say:turn on the TV'), { until: (c) => c.text === 'the tv is on' });
+  assert.deepEqual(texts(heard), ['🎙 “turn on the TV”', 'the tv is on']);
 });
 
 test("a plugin's own screen and buttons, and a note sent from one of its commands", async () => {
@@ -387,6 +410,27 @@ test('reminders: one that comes due arrives with buttons, which work', async () 
     (await tg.ask('/remind')).text,
     /^⏰ Reminders\n\n1\. (today|tomorrow) \d\d:\d\d · Call the bank\n\nTell me to move, cancel or finish one/,
   );
+});
+
+test('a reminder that repeats arrives with a button to stop it, which ends the series', async () => {
+  const { addReminder, listReminders, openRemindersDb: openAgentDb } = await import('../src/reminders/db.js');
+  const db = openAgentDb();
+  const r = addReminder(db, {
+    chatId: tg.owner.id,
+    text: 'Go for a walk',
+    dueTs: Math.floor(Date.now() / 1000) - 5,
+    repeat: '0 3 1 1 *',
+  });
+  db.close();
+  const due = await tg.next((c) => c.method === 'sendMessage' && /Go for a walk/.test(c.text), { ms: 45_000 });
+  // (moved on to later only to before its next time, so never to tomorrow)
+  assert.deepEqual(tg.buttons(due), ['✅ Done', '⏭ Skip this time', '🛑 Stop repeating', '⏰ 1 hour']);
+  const stopped = await then(() => tg.tap(due, 'Stop repeating'), { until: 'editMessageText' });
+  assert.equal(stopped.find((c) => c.method === 'answerCallbackQuery').text, '🛑 Stopped: it will not come again');
+  const after = openAgentDb();
+  const left = listReminders(after, { chatId: tg.owner.id }).filter((x) => x.series === r.id);
+  after.close();
+  assert.deepEqual(left, [], 'neither this time nor the next is left');
 });
 
 test('a command that takes minutes runs beside the conversation, says when it is done, and can be stopped', async () => {
@@ -501,7 +545,8 @@ test('watches: the list of them, a report with its items, and the briefing', asy
   assert.ok(tg.buttons(briefing).includes('1'));
   const open = (await then(() => tg.tap(briefing, '1'))).find((c) => c.method === 'sendMessage');
   assert.match(open.text, /^⏰ <b>Call the bank<\/b>\n\n<i>Due (today|tomorrow) \d\d:\d\d<\/i>$/);
-  assert.deepEqual(tg.buttons(open), ['✅ Done', '🗑 Cancel it', '⏰ In 1 hour', '🌅 Tomorrow 9:00']);
+  // (not yet gone: snoozing it would only move it, perhaps earlier)
+  assert.deepEqual(tg.buttons(open), ['✅ Done', '🗑 Cancel it']);
   const finished = await then(() => tg.tap(open, 'Done'), { until: 'editMessageText' });
   assert.ok(finished.find((c) => c.method === 'answerCallbackQuery'));
   assert.deepEqual(tg.shows(open).buttons, []);
@@ -560,9 +605,17 @@ test('bc notify: a script or another program sends the owner a message through t
   assert.deepEqual(texts(tg.calls.slice(mark)), []);
 });
 
+test('a shortcut that takes a while shows "typing…" all along', async () => {
+  const mark = tg.mark();
+  await then(() => tg.say('/slow'), { until: (c) => c.text === 'slow done', ms: 20_000 });
+  const typing = tg.calls.slice(mark).filter((m) => m.method === 'sendChatAction');
+  assert.ok(typing.length >= 3, `shown again every few seconds (${typing.length} times in 9 seconds)`);
+});
+
 test('a tap is taken while a shortcut waits for it: the bot goes on reading while a message is handled', async () => {
   // The shortcut runs a command that asks the owner and waits; the bot must still read the tap.
   const t0 = Date.now();
+  const mark = tg.mark();
   tg.say('/asker');
   let q;
   for (let i = 0; i < 100 && !q; i++) {
@@ -570,6 +623,13 @@ test('a tap is taken while a shortcut waits for it: the bot goes on reading whil
     if (!q) await new Promise((r) => setTimeout(r, 100));
   }
   assert.ok(q, 'the question was asked');
+  // While it waits for the tap, "typing…" is not shown: it is the owner's turn. (It is shown
+  // again, every few seconds, for as long as the shortcut runs otherwise.)
+  const at = tg.calls.indexOf(q);
+  await new Promise((r) => setTimeout(r, 9000));
+  const typing = (from, to = tg.calls.length) => tg.calls.slice(from, to).filter((m) => m.method === 'sendChatAction').length;
+  assert.ok(typing(mark, at) >= 1, 'shown while it worked');
+  assert.equal(typing(at + 1), 0, 'not over the question');
   await tg.tap(q, 'No');
   let done;
   for (let i = 0; i < 150 && !done; i++) {

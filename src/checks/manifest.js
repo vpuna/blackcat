@@ -30,6 +30,10 @@ const WHAT = [
   ['--quiet <from-to>', 'a time of day when it tells you nothing, e.g. 03:00-03:30 (it still looks and fixes)'],
   ['--remind <duration>', 'tell you again this often while it is not working and not snoozed, e.g. 1h'],
   [
+    '--no-working-again',
+    'say nothing when it is fine again, and tell you each time it happens: for a check that watches for something (a TV that turns itself on), not for an outage',
+  ],
+  [
     '--measure <figures>',
     'figures to keep from what --run prints, e.g. "temp,load": JSON with those fields, one number alone, or lines of name=value',
   ],
@@ -63,7 +67,8 @@ export default {
 
 What is wrong is kept one row an outage, from when it was first found until it works again:
 found again meanwhile, that row is brought up to date. You are told when it starts (or as
---alert says), when a snooze runs out, and when it works again.
+--alert says), when a snooze runs out, and when it works again (not with --no-working-again:
+then each time it happens is told, and kept, on its own).
 
 A check asks; what it asks is usually a plugin's own "check" command, which knows how to
 tell whether its system is well (bc ha check, bc unifi check, and so on).`,
@@ -104,6 +109,7 @@ tell whether its system is well (bc ha check, bc unifi check, and so on).`,
         ['--no-look-for', 'drop the description, so only the plain rules decide'],
         ['--no-quiet', 'no quiet time'],
         ['--no-remind', 'no reminders'],
+        ['--working-again', 'say again when it is fine again (the usual)'],
         ['--no-measure', 'keep no figures'],
         ['--no-limit', 'no limits'],
         ['--no-context', 'keep nothing of what was going on'],
@@ -242,12 +248,15 @@ tell whether its system is well (bc ha check, bc unifi check, and so on).`,
       run: () => {
         if (!c.active) return { skip: 'paused' };
         if (c.wrong?.open) throw new Error(`not working: ${c.wrong.title}`);
-        // (Not working, and the owner knows: snoozed. Said, but not counted as a failure.)
-        if (c.wrong) return { skip: `not working, snoozed: ${c.wrong.title}` };
-        if (c.fix && !fixAllowed(c)) throw new Error('working, but its fix is no longer permitted (bc permissions): it would not be run');
-        if (!c.last_run) return { skip: 'it has not looked yet' };
+        // Not working, and the owner knows (snoozed): said, but not counted as a failure. What
+        // would still keep it from doing its job is looked at all the same: its fix, its looks.
+        const state = c.wrong ? `not working, snoozed: ${c.wrong.title}` : 'working';
+        if (c.fix && !fixAllowed(c)) throw new Error(`${state}, but its fix is no longer permitted (bc permissions): it would not be run`);
+        if (!c.last_run) return { skip: c.wrong ? `${state} (it has not looked on its schedule yet)` : 'it has not looked yet' };
         const mins = Math.round((Date.now() / 1000 - c.last_run) / 60);
-        if (mins > 24 * 60) throw new Error(`it has not looked for ${Math.round(mins / 60)} hours: is the agent service running?`);
+        if (mins > 24 * 60)
+          throw new Error(`${state}, but it has not looked for ${Math.round(mins / 60)} hours: is the agent service running?`);
+        if (c.wrong) return { skip: `${state} (it last looked ${mins < 1 ? 'just now' : `${mins} min ago`})` };
         return `working when it last looked, ${mins < 1 ? 'just now' : `${mins} min ago`}${c.fix ? ' · its fix is permitted' : ''}`;
       },
     }));

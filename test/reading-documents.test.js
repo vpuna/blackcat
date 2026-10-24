@@ -327,8 +327,8 @@ test('by the model only, the file is given to it whole; with nothing in it, or n
   queue({ data: { items: [] } });
   const before = asks();
   await look();
+  assert.equal(asks(), before + 1, 'the watch asked once (so the line looked for would be in that question)');
   assert.equal(lineFor(empty), undefined, 'an empty one is passed over');
-  assert.ok(asks() >= before);
   // switched off: nothing is read
   assert.match(text('--documents', 'off'), /^Documents: not read \(switched off\)/m);
   const off = document({ parts: [{ label: null, text: 'not to be read' }] });

@@ -96,8 +96,12 @@ export const ui = {
     if (!out().remove) throw new Error('a message cannot be taken back on this channel');
     return out().remove(chat, ref);
   },
-  // (Not while the owner is being asked to choose by number: it is their turn, and nothing is being worked on.)
-  working: async (chat, kind = 'typing') => (awaiting.has(offerKey(chat)) ? undefined : out().working?.(chat, kind)),
+  // (Not while the owner is being asked to choose by number, or a question waits for their tap
+  // there (`holdWorking`): it is their turn, and nothing is being worked on.)
+  working: async (chat, kind = 'typing') =>
+    awaiting.has(offerKey(chat)) || turns.some((t) => t(chat)) ? undefined : out().working?.(chat, kind),
+  // `turn(chat)` → true while it is the owner's turn in that chat (a question waits for their tap).
+  holdWorking: (turn) => void turns.push(turn),
   // Send a file the bot is allowed to send (see files.js). → true if it went.
   async sendFile(chat, requested, { caption } = {}) {
     const { sendable } = await import('./files.js');
@@ -117,6 +121,7 @@ const numbered = new Map(); // chat → the ids of the actions last offered ther
 // (A channel that is one conversation and nothing else, the terminal, has one set of choices.)
 const offerKey = (chat) => (can().oneChat ? '*' : String(chat));
 const awaiting = new Set(); // chats where a numbered choice has just been offered and not yet answered or passed over
+const turns = []; // (see holdWorking)
 function fit(chat, m) {
   const c = can();
   let { text } = m;

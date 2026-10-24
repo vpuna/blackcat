@@ -18,13 +18,14 @@ const saved = () => load().plugins?.settings?.shortcut?.shortcuts ?? {};
 const mark = path.join(dir, 'ran.log');
 
 test('a shortcut is made, tried at once, listed, run, and is a word of its own', () => {
-  const r = bc('shortcut', 'add', 'hello', '--description', 'Says hello', '--run', `echo one >> ${mark}`, '--run', 'echo hello there');
+  const r = bc('shortcut', 'add', 'hello', '--description', 'Says hello', '--run', 'echo one', '--run', 'echo hello there');
   assert.equal(r.status, 0, r.stderr);
   assert.match(r.stdout, /^Saved\./);
-  assert.match(r.stdout, /Tested now: it works:\nhello there/);
+  assert.match(r.stdout, /Tested now: it works:\nhello there/, 'steps that only look are tried');
   assert.match(r.stdout, /Use it: \/hello in the bot, or bc shortcut run hello/);
-  assert.deepEqual(saved().hello, { description: 'Says hello', run: [`echo one >> ${mark}`, 'echo hello there'] });
-  assert.equal(fs.readFileSync(mark, 'utf8'), 'one\n', 'trying it ran its steps, in order, once');
+  assert.deepEqual(saved().hello, { description: 'Says hello', run: ['echo one', 'echo hello there'] });
+  // (the steps after this one write to the marker: the file is there for them to add to)
+  fs.writeFileSync(mark, '');
   assert.match(bc('shortcut', 'list').stdout, /\/hello: Says hello/);
   assert.deepEqual(json('shortcut', 'run', 'hello'), {
     notice: json('shortcut', 'run', 'hello').notice,
@@ -48,8 +49,8 @@ test('steps stop at the first that fails, which is said; nothing after it runs',
     '--run',
     `echo never >> ${mark}`,
   );
-  assert.equal(r.status, 0, 'it is saved all the same: the owner is told it does not work');
-  assert.match(r.stdout, /Tested now: it FAILED\. Stopped at step 2 of 3/);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /Tried now: the first step works\. "sh -c .*" \(and 1 step after it\) changes something, so it was not run now/);
   const run = bc('shortcut', 'run', 'brittle');
   assert.notEqual(run.status, 0);
   assert.match(run.stderr, /Stopped at step 2 of 3 \(sh -c "echo it broke >&2; exit 3"\): it broke/);
@@ -71,7 +72,7 @@ test('a file it fetches into its own folder is sent back; one outside the folder
     'Today',
   );
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /Tested now: it works \(chart\.png\)/);
+  assert.match(r.stdout, /Not run now: "sh -c .*" changes something, so it runs when the shortcut is used/);
   const out = json('shortcut', 'run', 'chart');
   assert.deepEqual([out.files, out.caption], [[path.join(data, 'shortcut-files/chart/chart.png')], 'Today']);
   assert.equal(fs.readFileSync(out.files[0], 'utf8'), 'png\n');
@@ -81,6 +82,44 @@ test('a file it fetches into its own folder is sent back; one outside the folder
     /is outside the folders files may be sent from/,
   );
   assert.match(bc('shortcut', 'add', 'ghost', '--send', '{dir}/nothing.png').stdout, /There is no file at/);
+});
+
+test('made: nothing is changed by trying it. A step that changes something is not run; one with its own --dry is run that way', () => {
+  // a plugin with a command that books, unless asked only to try (--dry, which then only looks)
+  const booked = path.join(dir, 'booked.log');
+  fs.mkdirSync(path.join(dir, 'user-plugins/booker'), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'user-plugins/booker/plugin.js'),
+    `import fs from 'node:fs';
+export default { api: 1, name: 'booker', title: 'Booker', description: 'books',
+  commands: { book: { summary: 'book it', options: [['--dry', 'only try']],
+    access: (ctx, tokens) => (tokens.includes('--dry') ? 'allow' : 'ask'),
+    run: (ctx, i) => (fs.appendFileSync(${JSON.stringify(booked)}, i.dry ? 'tried\\n' : 'BOOKED\\n'), i.dry ? 'would book' : 'booked') } } };\n`,
+  );
+  save({ ...load(), plugins: { ...load().plugins, enabled: [...(load().plugins?.enabled ?? []), 'booker'] } });
+  const before = fs.readFileSync(mark, 'utf8');
+  const r = bc('shortcut', 'add', 'trip', '--run', 'blackcat booker book', '--run', `echo went >> ${mark}`, '--run', 'echo done');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(fs.readFileSync(booked, 'utf8'), 'tried\n', 'tried with its --dry: not booked');
+  assert.match(
+    r.stdout,
+    /Tried now: the first step works\. "echo went .*" \(and 1 step after it\) changes something, so it was not run now/,
+  );
+  assert.equal(fs.readFileSync(mark, 'utf8'), before, 'the step that writes was not run, nor what follows it');
+  // one that changes something and has no way to be tried: not run, and said
+  const lamp = bc('shortcut', 'add', 'lampon', '--run', `echo on >> ${mark}`);
+  assert.match(lamp.stdout, /Not run now: "echo on .*" changes something, so it runs when the shortcut is used\. Its programs are there\./);
+  assert.equal(fs.readFileSync(mark, 'utf8'), before);
+  // a program that is not there is still said at once, though it is not run
+  assert.match(
+    bc('shortcut', 'add', 'typo', '--run', 'nosuchprogram-xyz > /tmp/x').stdout,
+    /starts with nosuchprogram-xyz, which is not a program on this machine/,
+  );
+  // used, it does everything
+  assert.equal(bc('shortcut', 'run', 'trip').status, 0);
+  assert.equal(fs.readFileSync(booked, 'utf8'), 'tried\nBOOKED\n');
+  assert.equal(fs.readFileSync(mark, 'utf8'), `${before}went\n`);
+  for (const n of ['trip', 'lampon', 'typo']) bc('shortcut', 'remove', n);
 });
 
 test('what a shortcut may be called: its own short word, never one blackcat or the chat already uses, and it needs something to do', () => {
@@ -120,13 +159,16 @@ test('the agent may run one freely, and must ask before making, scheduling or re
 test('sent by itself: at times of day, on a cron schedule, once; and stopped', () => {
   assert.match(
     bc('shortcut', 'schedule', 'hello', '--at', '08:00', '--days', 'mon,fri').stdout,
-    /\/hello will be sent to you at 08:00 on Mondays? and Fridays?\.|will be sent to you/,
+    /^\/hello will be sent to you at 08:00, only on Monday and Friday\./,
   );
   assert.deepEqual(saved().hello.cron, ['0 8 * * 1,5']);
   assert.match(bc('shortcut', 'schedule', 'hello', '--in', '2h').stdout, /once, /);
   assert.equal(saved().hello.once.length, 1);
   assert.ok(Math.abs(saved().hello.once[0] - (Date.now() / 1000 + 7200)) < 120);
-  assert.match(bc('shortcut', 'schedule', 'hello', '--cron', 'not a schedule').stderr, /./);
+  assert.match(
+    bc('shortcut', 'schedule', 'hello', '--cron', 'not a schedule').stderr,
+    /^"not a schedule" is not a schedule\. Cron has five parts/,
+  );
   assert.match(bc('shortcut', 'schedule', 'hello').stderr, /Say when/);
   assert.match(bc('shortcut', 'schedule', 'hello', '--off').stdout, /no longer sent by itself/);
   assert.deepEqual([saved().hello.cron, saved().hello.once], [undefined, undefined]);
@@ -574,13 +616,24 @@ test('steps are named by their own comment, else by the command; a long shortcut
   const shot = await say('/pictured');
   assert.match(shot.edits.at(-1), /✓ 3\. Checking\n✓ Done · \d+s$/, 'the list says nothing of the marker');
   assert.deepEqual(shot.order, ['file end.jpg'], "the routine's picture, and not a file of anywhere else");
+  // What a step ran has sent the owner how it ended (a routine's screen after the press): the
+  // shortcut does not say it again, not even that it is done.
+  add('ridden', '--description', 'A ride', '--run', "printf 'Pressed.\\nAfter the press: a car\\n[[told]]\\n'", '--reply', 'output');
+  const ride = await say('/ridden');
+  assert.deepEqual([ride.replies, ride.order], [[], []]);
+  assert.equal(
+    JSON.parse(bc('shortcut', 'run', 'ridden', '--json').stdout).output,
+    'Pressed.\nAfter the press: a car',
+    'a command that runs it (the agent) still gets what it said, without the marker',
+  );
 });
 
 test('selftest looks over each action as well, and still runs nothing', () => {
+  assert.equal(bc('shortcut', 'action', 'lamp', 'dim', '--run', `echo dim >> ${mark}`, '--no-test').status, 0);
   const before = fs.readFileSync(mark, 'utf8');
   const out = JSON.parse(bc('selftest', 'shortcut', '--json').stdout);
   const names = out.parts[0].results.map((r) => r.name);
-  for (const n of ['/music play', '/music pause', '/music stop', '/lamp on', '/hello']) assert.ok(names.includes(n), n);
+  for (const n of ['/music play', '/music pause', '/music stop', '/lamp on', '/lamp dim', '/hello']) assert.ok(names.includes(n), n);
   assert.ok(!names.includes('/music'), 'a menu has no steps of its own to look over');
   assert.equal(fs.readFileSync(mark, 'utf8'), before);
 });

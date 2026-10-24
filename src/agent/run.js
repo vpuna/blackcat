@@ -19,6 +19,7 @@ import { installQuick } from '../channels/quick.js';
 import { activeChannel } from '../channels/registry.js';
 import { installSetup } from '../channels/setup.js';
 import { errMsg } from '../util/format.js';
+import { endChildren } from '../util/run.js';
 import { prepare, stopAll } from './brain.js';
 import { owner } from '../owner.js';
 import { startScheduler } from './scheduler.js';
@@ -38,10 +39,13 @@ async function runWithoutChannel() {
   );
   const local = startScheduler(null);
   const warm = startWarm();
-  const stop = () => {
+  const stop = async () => {
     local.stop();
     warm.stop();
-    process.exit(0);
+    const { killed } = await endChildren().catch(() => ({ killed: [] }));
+    if (killed.length)
+      log(`after stopping, ${killed.length} had to be killed: ${killed.map((c) => `${c.pid} ${c.cmd.slice(0, 80)}`).join('; ')}`);
+    process.exit(killed.length ? 1 : 0);
   };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
@@ -60,19 +64,26 @@ async function runWithoutChannel() {
   log('a channel is now in use: starting it');
 }
 
-// After stopping, the process ends once nothing is left open. Should something still be open a
-// few seconds on (a connection being closed, a worker, a timer), what it is goes in the log and
-// the process ends itself, rather than being killed by the supervisor (which waits 15 seconds).
-const EXIT_AFTER_MS = 8000;
-function endSoon() {
+// After stopping: nothing this service started is left running (a conversation's engine, a
+// question to a model, a command being run, a scheduled job). Each is given a moment to end
+// by itself, then ended with all it started; what had to be ended is said in the log. Then the
+// process ends once nothing is left open. Should something still be open a few seconds on, what
+// it is goes in the log and the process ends itself with an error (it did not stop cleanly),
+// before the supervisor (which waits 15 seconds) would kill it.
+const EXIT_AFTER_MS = 4000;
+async function endWhenDone() {
+  const { asked, killed } = await endChildren();
+  const said = (list) => list.map((c) => `${c.pid} ${c.cmd.slice(0, 80)}`).join('; ');
+  if (asked.length) log(`after stopping, ${asked.length} still running had to be asked to end: ${said(asked)}`);
+  if (killed.length) log(`after stopping, ${killed.length} had to be killed: ${said(killed)}`);
   setTimeout(() => {
     const open = {};
     for (const r of process.getActiveResourcesInfo?.() ?? []) open[r] = (open[r] ?? 0) + 1;
-    const said = Object.entries(open)
+    const what = Object.entries(open)
       .map(([k, n]) => `${k}${n > 1 ? ` ×${n}` : ''}`)
       .join(', ');
-    log(`still open ${EXIT_AFTER_MS / 1000}s after stopping: ${said || 'nothing known'}; ending now`);
-    process.exit(0);
+    log(`still open ${EXIT_AFTER_MS / 1000}s after everything was ended: ${what || 'nothing known'}; ending now`);
+    process.exit(1);
   }, EXIT_AFTER_MS).unref();
 }
 
@@ -135,7 +146,7 @@ export async function run() {
     stopAll();
     stopReaders();
     carrier.stop();
-    endSoon();
+    endWhenDone().catch((e) => (log(`could not end what was still running: ${e.message}`), process.exit(1)));
   };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);

@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
-import { home } from './helpers.js';
+import { codeFiles, home } from './helpers.js';
 
 const dir = home();
 process.env.HOME = dir;
@@ -435,10 +435,7 @@ const KEPT_OPEN = {
   'plugins/wa/service.js': 'the WhatsApp source, for as long as it runs',
   'plugins/tg/service.js': 'the Telegram source, for as long as it runs (the archive, and its requests)',
 };
-const sourceFiles = () =>
-  spawnSync('git', ['ls-files', 'src', 'plugins'], { cwd: root, encoding: 'utf8' })
-    .stdout.split('\n')
-    .filter((f) => f.endsWith('.js'));
+const sourceFiles = () => codeFiles('src', 'plugins').filter((f) => f.endsWith('.js'));
 
 test('a database is opened through withDb, so that it is always closed', () => {
   const wrong = [];

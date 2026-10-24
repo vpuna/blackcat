@@ -58,3 +58,28 @@ export async function setUp({ bot, ...config } = {}) {
     },
   });
 }
+
+// blackcat's own code files in these folders, as paths from the top of the repository. Read
+// from the folders, not from git: an image has no .git, and a file not yet added still counts.
+// (A folder of blackcat's that is there and has no code at all is a mistake in the test.)
+const ROOT = new URL('..', import.meta.url).pathname;
+export function codeFiles(...dirs) {
+  const out = [];
+  const walk = (rel) => {
+    for (const e of fs.readdirSync(path.join(ROOT, rel), { withFileTypes: true })) {
+      const f = `${rel}/${e.name}`;
+      if (e.isDirectory() && e.name !== 'node_modules') walk(f);
+      else if (e.isFile() && /\.m?js$/.test(e.name)) out.push(f);
+    }
+  };
+  for (const d of dirs) {
+    if (!fs.existsSync(path.join(ROOT, d))) {
+      if (d === 'user-plugins') continue; // (the owner's own: often none)
+      throw new Error(`codeFiles: there is no ${d}`);
+    }
+    const before = out.length;
+    walk(d);
+    if (out.length === before && d !== 'user-plugins') throw new Error(`codeFiles: no code found in ${d}`);
+  }
+  return out.sort();
+}

@@ -130,11 +130,16 @@ function build(opts, cur = {}) {
   return c;
 }
 
-// When the owner is told, from the options: --alert, --quiet / --no-quiet, --remind / --no-remind.
-function telling(opts) {
+// When the owner is told, from the options: --alert, --working-again / --no-working-again,
+// --quiet / --no-quiet, --remind / --no-remind. `c`: the check as it is, when one is changed.
+function telling(opts, c = null) {
   const out = {};
   try {
-    if (opts.alert !== undefined) out.alert = parseAlert(opts.alert);
+    if (opts.alert !== undefined || opts.workingAgain === false || (c && opts.workingAgain === true)) {
+      const { back: _b, ...when } = opts.alert !== undefined ? parseAlert(opts.alert) : (c?.alert ?? { at: 'now' });
+      const back = opts.workingAgain ?? c?.alert?.back ?? true;
+      out.alert = back ? when : { ...when, back: false };
+    }
     if (opts.quiet === false) out.quiet = null;
     else if (opts.quiet !== undefined) out.quiet = parseQuiet(opts.quiet);
   } catch (e) {
@@ -193,6 +198,7 @@ export function view(c) {
     looks: describeSchedule(c.every).replace(/^./, (x) => x.toLowerCase()),
     every: { cron: c.every, next: nextRun(c.every) },
     alert: alertText(c.alert),
+    workingAgain: c.alert?.back !== false,
     quiet: c.quiet,
     remind: c.remind,
     state: c.wrong ? (c.wrong.open ? 'failing' : 'snoozed') : c.state?.checked ? 'working' : 'unknown',
@@ -408,14 +414,14 @@ export const edit = guard((i) =>
     if (i.every) patch.every = everyOpt(i.every);
     if (i.pause) patch.active = false;
     if (i.resume) patch.active = true;
-    Object.assign(patch, telling(i));
+    Object.assign(patch, telling(i, c));
     const changes = ['run', 'file', 'maxAge', 'fix', 'tries', 'wait', 'measure', 'limit', 'context', 'keep'].some(
       (k) => i[k] !== undefined,
     );
     if (changes) Object.assign(patch, Object.fromEntries(Object.entries(build(i, c)).map(([k, v]) => [k, v ?? null])));
     if (!Object.keys(patch).length)
       throw new Mistake(
-        'Say what to change: --run, --file, --max-age, --fix, --no-fix, --tries, --wait, --measure, --limit, --context, --keep, --every, --look-for, --alert, --quiet, --remind, --name, --pause or --resume.',
+        'Say what to change: --run, --file, --max-age, --fix, --no-fix, --tries, --wait, --measure, --limit, --context, --keep, --every, --look-for, --alert, --working-again, --quiet, --remind, --name, --pause or --resume.',
       );
     if (changes && (patch.fix ?? null) !== (c.fix ?? null)) {
       dropFixRule(c);

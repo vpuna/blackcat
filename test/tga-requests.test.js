@@ -66,7 +66,10 @@ test('a request for a file is answered and the file is saved', async () => {
 
 test('with nothing to do, the database is not written to', async () => {
   await wait(2000); // let anything in progress settle
-  const files = ['agent.db', 'agent.db-wal'].map((f) => path.join(dir, 'data', f)).filter((f) => fs.existsSync(f));
+  const files = ['plugins/tg/requests.db', 'plugins/tg/requests.db-wal', 'agent.db', 'agent.db-wal']
+    .map((f) => path.join(dir, 'data', f))
+    .filter((f) => fs.existsSync(f));
+  assert.ok(files[0].endsWith('requests.db'), 'the table the service looks at is there to watch');
   const stamp = () => files.map((f) => fs.statSync(f).mtimeMs).join(',');
   const before = stamp();
   await wait(5000); // three looks at the table

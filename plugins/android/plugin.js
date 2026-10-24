@@ -6,7 +6,6 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import * as p from '@clack/prompts';
 import { ago, COMMAND_MODES, commandAccess, dataPath, isoLocal, now, plural, prompts, recordActivity, sleep } from '../../src/api.js';
 import { judge } from './adb.js';
 import { ADDRESS, adbInstalled, connect, Device, devices, PACKAGE, pairWithCode, SERVER, serverFile, STOP_SERVER } from './device.js';
@@ -120,6 +119,8 @@ async function until(test, ms) {
   return null;
 }
 
+let p; // the terminal questions, loaded by pair() (only pairing asks them)
+
 // ---------- pairing ----------
 
 const stop = (msg) => {
@@ -208,6 +209,7 @@ async function onNetwork(ctx, orExit, given) {
 
 async function pair(ctx, i) {
   const { orExit } = await prompts();
+  p = await import('@clack/prompts');
   p.intro('blackcat · pairing an Android device');
   const adb = await adbInstalled(ctx);
   if (!adb) return void stop('adb is needed, the program that talks to Android devices. Install it with: sudo apt install adb');
@@ -714,7 +716,7 @@ async function run(ctx, i) {
     unasked: `At the confirmation screen, but you could not be asked (${unasked}). Nothing was pressed.`,
     expired: 'No answer in time at the confirmation screen. Nothing was pressed.',
     confirmed: `Pressed, on your word, ${result.seconds}s after the start.`,
-    finished: `Done in ${result.seconds}s.${result.shot ? `\nThe screen at the end: ${result.shot}` : ''}`,
+    finished: `Done in ${result.seconds}s.${result.shot ? `\nThe screen at the end: ${result.shot}` : result.noShot ? `\nNo picture of the screen at the end: ${result.noShot}` : ''}`,
     failed: `${result.error}\nThe screen when it stopped: ${result.shot ?? '(no picture)'}`,
     stopped: `Stopped at step ${result.step}, as the routine says: ${result.error}. Nothing was pressed.`,
   }[result.outcome];
@@ -727,8 +729,10 @@ async function run(ctx, i) {
   // (Run as a step of a shortcut that shows its own steps: the picture is handed to it, to go
   // after its last step rather than before.)
   const handOn = process.env.BLACKCAT_PROGRESS === 'off';
-  if (result.outcome === 'finished' && result.shot && !atTerminal() && !handOn)
-    await ctx.notify(`${runTitle() ?? `${r.name} on the ${d.name}`} · ${whenTaken()}`, { picture: result.shot });
+  const sentEnd = result.outcome === 'finished' && result.shot && !atTerminal() && !handOn;
+  if (sentEnd) await ctx.notify(`${runTitle() ?? `${r.name} on the ${d.name}`} · ${whenTaken()}`, { picture: result.shot });
+  // (Run by a shortcut, and the owner has been sent how it ended: the shortcut need not say it again.)
+  const told = !!runTitle() && (sentEnd || (!!after && !atTerminal()));
   await tellAndKeep(ctx, { r, base, app, d, result, trouble, said });
   return {
     text: [
@@ -737,6 +741,7 @@ async function run(ctx, i) {
       ...values,
       ...afterLines,
       ...(handOn && result.outcome === 'finished' && result.shot ? [`[[send: ${result.shot}]]`] : []),
+      ...(told ? ['[[told]]'] : []),
     ].join('\n'),
     data: {
       routine: r.name,
@@ -993,7 +998,7 @@ async function looked(ctx, files, { goal, app, routine = null, log }) {
 
 // Learn a routine from words, try it again by itself, and ask the owner to approve it.
 async function learnCmd(ctx, i) {
-  if (!NAME.test(i.name ?? '')) ctx.fail('A routine is named in lowercase letters, digits and dashes: bc android learn amazon-buy …');
+  if (!NAME.test(i.name ?? '')) ctx.fail('A routine is named in lowercase letters, digits and dashes: bc android learn shop-order …');
   if (!i.goal?.trim()) ctx.fail('Say what to do, and where to stop, in words: --goal "…"');
   const values = sets(i.set);
   for (const k of Object.keys(values))

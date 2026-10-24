@@ -35,6 +35,19 @@ const record = (...args) => {
     ok: e.ok !== false,
   }));
 };
+// Everything the record keeps, every column of its tables: what must never be in it is looked
+// for here, not only in what a listing shows. (The reminders in the same database hold their words.)
+const everything = async () => {
+  const { openActivityDb } = await import('../src/activity/log.js');
+  const db = openActivityDb();
+  try {
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'activity%'").pluck().all();
+    assert.ok(tables.length >= 2, 'the record is there to look in');
+    return JSON.stringify(tables.map((t) => db.prepare(`SELECT * FROM "${t}"`).all()));
+  } finally {
+    db.close();
+  }
+};
 const has = (list, what, summary) =>
   list.some((e) => e.what === what && (summary instanceof RegExp ? summary.test(e.summary ?? '') : e.summary === summary));
 
@@ -69,7 +82,7 @@ test('what the owner does in the chat without the agent is on the record: a comm
   assert.ok(has(mine, 'done directly', 'demo: the demo did something quick'));
   assert.ok(has(mine, 'tapped', /^"✅ Done" · rm:\d+:d$/), 'what the button said, and its id');
   // never what was said
-  assert.doesNotMatch(JSON.stringify(record()), /mortgage|Water the plants/);
+  assert.doesNotMatch(await everything(), /mortgage|Water the plants/);
 });
 
 test('what blackcat sent by itself is on the record, named, and never what it said', async () => {
@@ -89,7 +102,7 @@ test('what blackcat sent by itself is on the record, named, and never what it sa
   );
   assert.equal(code, 0);
   assert.ok(has(record('--kind', 'sent'), 'notify: disk', /^sent \(\d+ characters\)$/));
-  assert.doesNotMatch(JSON.stringify(record()), /ninety per cent/);
+  assert.doesNotMatch(await everything(), /ninety per cent/);
 });
 
 test('an account that is not paired is turned away, and that is noted once, not for every message it sends', async () => {
@@ -98,7 +111,7 @@ test('an account that is not paired is turned away, and that is noted once, not 
   await settle();
   const seen = record('--kind', 'event').filter((e) => e.what === 'channel');
   assert.deepEqual(seen, [{ kind: 'event', what: 'channel', summary: 'ignored an account that is not paired (id 999)', ok: false }]);
-  assert.doesNotMatch(JSON.stringify(record()), /let me in/);
+  assert.doesNotMatch(await everything(), /let me in/);
 });
 
 test('a change to what blackcat may do is on the record, however it was made: a plugin, a mode, a standing permission, a service', async () => {

@@ -245,7 +245,9 @@ async function look(c, known, seen) {
     else return fine; // nothing to judge by
     return verdict(answer);
   } catch (e) {
-    return { ok: null, reason: `could not judge it (${e.message.slice(0, 120)})`, problems: [] };
+    // (A long one is cut at a word, and says so.)
+    const why = e.message.length > 300 ? `${e.message.slice(0, 300).replace(/\s+\S*$/, '')}…` : e.message;
+    return { ok: null, reason: `could not judge it (${why})`, problems: [] };
   } finally {
     if (pic?.temp) fs.rmSync(path.dirname(pic.file), { recursive: true, force: true });
   }
@@ -398,7 +400,7 @@ export async function runCheck(db, c, { dryRun = false, fixAgain = false } = {})
   let r = await evaluate(c, known);
   const done = (notices = [], changed = null) => ({ result: r, notices, changed });
   if (dryRun) return done();
-  if (r.numbers) addReading(c.id, r.numbers, keepS(c));
+  if (r.numbers) addReading(c.id, r.numbers, keepS(c), t);
   if (r.ok === null) {
     log(`[check] "${c.name}": ${r.reason}`);
     return done();
@@ -438,18 +440,26 @@ export async function runCheck(db, c, { dryRun = false, fixAgain = false } = {})
       if (fixAgain && fixNote) setFixNote(db, cur.id, `${fixNote} (asked for again)`);
       continue;
     }
-    const back = justResolved(db, c.id, p.key, BOUNCE_S);
+    // (Back within minutes is the same outage, opened again; for a check that watches for
+    // something, each time it happens is one of its own.)
+    const back = c.alert?.back === false ? null : justResolved(db, c.id, p.key, BOUNCE_S);
     const f = back
       ? seenAgain(db, back.id, { title: p.title, detail: r.reason })
       : addFinding(db, c.id, { key: p.key, title: p.title, detail: r.reason });
-    if (fixNote) setFixNote(db, f.id, fixNote);
-    now.push({ ...f, alerted: back ? 0 : f.alerted, fix_note: fixNote ?? f.fix_note });
+    // Opened again: what its fix did the time before is kept, and said to have been before,
+    // so that neither the alert nor the history says it was done again now.
+    const note =
+      back?.fix_note != null
+        ? `${back.fix_note}, but it was back ${lasted(t - back.resolved_ts)} later${fixNote ? `; then ${fixNote}` : ''}`
+        : fixNote;
+    if (note) setFixNote(db, f.id, note);
+    now.push({ ...f, alerted: back ? 0 : f.alerted, fix_note: note ?? f.fix_note });
     changed ??= 'not working';
   }
   for (const f of known.filter((x) => !found.some((p) => p.key === x.key))) {
     resolveFinding(db, f.id);
     changed = changed ?? 'working again';
-    if (f.alerted)
+    if (f.alerted && c.alert?.back !== false)
       tell(
         `✅ ${c.name}: working again${known.length > 1 ? ` (${f.title})` : ''}. It had not been since ${fmtWhen(f.first_seen)}: down ${lasted(t - f.first_seen)}${peak(c, f, t)}. ${r.reason}`,
       );
@@ -511,6 +521,7 @@ export function checkText(c, { short = false } = {}) {
   const bits = [];
   const told = [
     c.alert && c.alert.at !== 'now' ? `tells you ${alertText(c.alert)}` : null,
+    c.alert?.back === false ? 'says nothing when it is fine again' : null,
     c.quiet ? `quiet ${c.quiet}` : null,
     c.remind ? `reminds every ${c.remind}` : null,
   ].filter(Boolean);

@@ -311,10 +311,31 @@ test('a note left by a supervisor that was killed is not taken for one that is r
   // The same from a note that names the new supervisor's own number (in a container the
   // first numbers are the same each time): it is made to find one by writing it once it
   // is known, with nothing to tell the two apart, as an earlier version left it.
-  const { run } = await import('../src/service/supervisor.js');
-  assert.equal(typeof run, 'function');
-  const src = fs.readFileSync(new URL('../src/service/supervisor.js', import.meta.url), 'utf8');
-  assert.match(src, /supervisorState\(\)\.pid !== process\.pid/, 'its own number in a note is never another supervisor');
+  const units = new URL('../src/service/units.js', import.meta.url).href;
+  const supervisor = new URL('../src/service/supervisor.js', import.meta.url).href;
+  out = '';
+  sup = spawn(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `import fs from 'node:fs'; const U = await import(${JSON.stringify(units)});
+       fs.writeFileSync(U.STATE_FILE, JSON.stringify({ pid: process.pid, born: U.bornAt(process.pid) }));
+       if (U.supervisorState()?.pid !== process.pid) throw new Error('the note is not believed: this tests nothing');
+       await (await import(${JSON.stringify(supervisor)})).run();`,
+    ],
+    { env, stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  sup.stdout.on('data', (d) => (out += d));
+  sup.stderr.on('data', (d) => (out += d));
+  sup.gone = new Promise((r) => sup.on('exit', (code, signal) => r({ code, signal })));
+  await until(
+    'it started, its own number in the note notwithstanding',
+    () => svc('steady')?.state === 'running' || /already running|Error/.test(out),
+  );
+  assert.doesNotMatch(out, /already running|Error/, 'its own number in a note is never another supervisor');
+  sup.kill('SIGTERM');
+  await sup.gone;
 });
 
 test('started at boot by one unit, where there is systemd: written for this installation, and never over another one', async () => {
@@ -340,4 +361,15 @@ test('started at boot by one unit, where there is systemd: written for this inst
   });
   assert.match(o.stdout + o.stderr, new RegExp(`This account already runs the blackcat in ${dir} at boot`));
   assert.equal(fs.readFileSync(unit, 'utf8'), text);
+});
+
+test('the wait before a start again: longer each time it ends quickly, from the start once it ran long enough', async () => {
+  const { backoff } = await import('../src/service/supervisor.js');
+  const T = { backoff: [1000, 2000, 5000, 15_000, 30_000, 60_000], settled: 60_000 }; // (as on a real installation)
+  let fails = 0;
+  const waits = [];
+  for (let k = 0; k < 7; k++) ({ wait: waits[k], fails } = backoff(fails, 2000, T));
+  assert.deepEqual(waits, [1000, 2000, 5000, 15_000, 30_000, 60_000, 60_000], 'longer each time, up to a minute');
+  assert.deepEqual(backoff(fails, 59_999, T), { wait: 60_000, fails: 8 }, 'not quite long enough');
+  assert.deepEqual(backoff(fails, 60_000, T), { wait: 1000, fails: 1 }, 'up a minute: from the start again');
 });

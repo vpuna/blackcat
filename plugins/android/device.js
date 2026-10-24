@@ -24,8 +24,6 @@ const START = (key) =>
 // (The pattern does not match its own command line, which holds the name written otherwise:
 // `pkill -f com.wetest.uia2.Main` would stop the shell it runs in, and what came after it.)
 export const STOP_SERVER = "pkill -f 'com.wetest.uia2.Mai[n]' || true";
-// What the server says when it has lost its link to the system (it then cannot look at anything).
-const STUCK = /RuntimeException|UiAutomation not connected|IllegalStateException/;
 const KEY_HEADER = 'x-blackcat-key';
 // How long one that was just started is given to answer (a TV box's first takes about 9 s).
 const START_WAIT_MS = 20_000;
@@ -233,8 +231,11 @@ export class Device {
     let j = await res.json().catch(() => null);
     if (!j) throw new AndroidError(`the server on the device gave no answer to ${method}`);
     // Answering but unable to look at the screen (its link to the system was lost, as when a TV
-    // box's HDMI link resets as the TV comes on): started again, and asked once more.
-    if (j.error && restart && STUCK.test(j.error.message ?? '')) {
+    // box's HDMI link resets as the TV comes on): started again, and asked once more. Told
+    // from an error of the request itself by asking what needs the screen least (as a start
+    // does): when that fails too, it is the server. (Its words say neither: a bare
+    // RuntimeException, as most errors are.)
+    if (j.error && restart && !(await this.canLook())) {
       await this.ensureServer({ stuck: true });
       j = await (await ask(await this.serverKeyOf())).json().catch(() => null);
       if (!j) throw new AndroidError(`the server on the device gave no answer to ${method}`);
@@ -267,6 +268,16 @@ export class Device {
   // through adb, and only with its key. The pinned one is put on the device first if another is
   // there. `file`: the checked copy, when the caller has it already.
   // `stuck`: it answers, but cannot look at the screen: started again all the same.
+  // Can the server look at the screen just now? (It answers deviceInfo only when it can.)
+  async canLook() {
+    try {
+      await this.call('deviceInfo', [], { timeoutMs: 10_000, restart: false });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async ensureServer({ file, stuck = false } = {}) {
     this.file = file ?? this.file; // (the checked copy, kept for a start again)
     if (!stuck && (await this.serverAnswers())) return;
@@ -287,6 +298,7 @@ export class Device {
     const put = await this.putServer(this.file);
     // One that is stuck (registered with the system but not answering), or an earlier one, is
     // stopped first, and once more should it not come up.
+    let last = null; // why the last try did not come up
     for (let attempt = 0; attempt < 2; attempt++) {
       await this.shell(STOP_SERVER);
       const key = crypto.randomBytes(32).toString('hex');
@@ -298,16 +310,21 @@ export class Device {
         await sleep(250);
         up = (await this.pinged(key)) === 200;
       }
-      if (!up) continue;
+      if (!up) {
+        last = `it did not answer within ${START_WAIT_MS / 1000} s of being started`;
+        continue;
+      }
       // Up; and able to look at the screen (what can be stuck), which the first time takes a while.
       try {
         await this.call('deviceInfo', [], { timeoutMs: 30_000, restart: false });
         note(true, `screen server started on the ${name} with a new key: ${why}${put ? ' (the pinned build was put on it)' : ''}`);
         return;
-      } catch {}
+      } catch (e) {
+        last = `it answered, but could not look at the screen: ${e.message}`;
+      }
     }
-    note(false, `screen server did not start on the ${name} (${why})`);
-    throw new AndroidError('the server on the device did not start');
+    note(false, `screen server did not start on the ${name} (${why}): ${last}`);
+    throw new AndroidError(`the server on the device did not start: ${last}`);
   }
 
   // ---------- reading and touching ----------

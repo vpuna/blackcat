@@ -24,7 +24,7 @@ const whenOf = (name) => {
 };
 const machineOf = (name) => NAME.exec(name)?.[1] ?? '';
 // Databases are copied with SQLite's own backup, which is safe while they are in use.
-const DATABASES = ['archive.db', 'agent.db'];
+const DATABASES = ['archive.db', 'agent.db', 'check-history.db'];
 // Everything else that can't be recreated. Left out: the search index and the embedding
 // model (both rebuilt or downloaded again), and camera snapshots.
 // The form of a backup, noted in its manifest. Raised when a backup changes in a way an

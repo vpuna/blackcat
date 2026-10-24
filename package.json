@@ -1,6 +1,6 @@
 {
   "name": "blackcat",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A personal always-on agent you run at home",
   "private": true,
   "license": "Elastic-2.0",

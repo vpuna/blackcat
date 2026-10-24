@@ -176,3 +176,26 @@ test("a plugin whose `checks` are the engine check's requests is told they are `
     said.join('\n'),
   );
 });
+
+test('a check whose command is slow still says which way it is going by what it just read', async () => {
+  // (Its reading was kept with the time the command ended, and the alert, going by when the
+  // look began, could not see it: 70 then 80 was said to be falling, from the look before.)
+  temp(60);
+  const made = bc('check', 'add', 'Slow', 'heat', '--run', `sleep 1.2; cat ${dir}/temp`, '--limit', 'temp>75', '--json').json();
+  const { getCheck, openChecksDb } = await import('../src/checks/db.js');
+  const { runCheck } = await import('../src/checks/check.js');
+  const { openSqlite } = await import('../src/db.js');
+  const h = openSqlite(history.HISTORY_DB);
+  h.prepare("INSERT INTO history (check_id, ts, kind, numbers) VALUES (?, ?, 'reading', ?)").run(
+    made.id,
+    Math.floor(Date.now() / 1000) - 2700,
+    JSON.stringify({ temp: 70 }),
+  );
+  h.close();
+  temp(80);
+  const db = openChecksDb();
+  const r = await runCheck(db, getCheck(db, made.id));
+  db.close();
+  assert.match(r.notices[0].text, /^⚠️ Slow heat: temp 80, above 75\. Rising: it was 70 45m ago\./);
+  bc('check', 'remove', 'Slow heat');
+});

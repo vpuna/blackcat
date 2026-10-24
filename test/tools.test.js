@@ -163,7 +163,9 @@ test('glob and grep: files by name, newest first; lines by what they say', async
     `${agent}/notes/a.md\n${agent}/notes/deep/b.md`,
   );
   // a pattern is a pattern, never part of a command
-  assert.match(said(await call('grep', { pattern: '-e x; touch /tmp/blackcat-grep-injected', path: 'notes' })), /Nothing in/);
+  const injected = path.join(dir, 'grep-injected');
+  assert.match(said(await call('grep', { pattern: `-e x; touch ${injected}`, path: 'notes' })), /Nothing in/);
+  assert.equal(fs.existsSync(injected), false, 'nothing in it was run');
   assert.match(said(await call('grep', { pattern: '(' })), /The search failed/);
   // a link inside the folder is not followed out of it
   fs.writeFileSync(path.join(dir, 'outside.txt'), 'the Heron is outside\n');

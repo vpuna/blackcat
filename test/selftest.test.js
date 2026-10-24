@@ -29,11 +29,12 @@ const json = async (...a) => {
 };
 const of = (out, part) => Object.fromEntries((out.parts.find((p) => p.part === part)?.results ?? []).map((r) => [r.name, r]));
 
-// A stand-in for ssh: the machine at 10.0.0.9 refuses the key, any other answers.
-const touched = path.join(dir, 'touched-by-a-probe');
+// A stand-in for ssh: the machine at 10.0.0.9 refuses the key, any other answers, and what it
+// is asked to run is noted.
+const ranThere = path.join(dir, 'ran-on-the-machines');
 fs.writeFileSync(
   path.join(dir, 'fake-bin/ssh'),
-  `#!/bin/sh\ncase "$*" in *@10.0.0.9*) echo "me@10.0.0.9: Permission denied (publickey)." >&2; exit 255;; esac\nwhile [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done\n[ $# -gt 1 ] || exit 0\nshift\nexec sh -c "$1"\n`,
+  `#!/bin/sh\ncase "$*" in *@10.0.0.9*) echo "me@10.0.0.9: Permission denied (publickey)." >&2; exit 255;; esac\nwhile [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done\n[ $# -gt 1 ] || exit 0\nshift\nprintf '%s\\n' "$1" >> ${ranThere}\nexec sh -c "$1"\n`,
   { mode: 0o755 },
 );
 // Two calendars and a Home Assistant, served here.
@@ -213,7 +214,8 @@ test('nothing is changed by asking: only reads were made of the servers, no file
   assert.deepEqual([...new Set(asked.map((a) => a.split(' ')[0]))], ['GET']);
   assert.equal(JSON.stringify(load()), before);
   assert.equal(tree(), files);
-  assert.equal(fs.existsSync(touched), false);
+  // on the other machines, only the one look that says it answers
+  assert.deepEqual([...new Set(fs.readFileSync(ranThere, 'utf8').trim().split('\n'))], ['echo blackcat-ok; uname -sr']);
 });
 
 test('a wrong token is found by asking, not by looking at what is saved', async () => {

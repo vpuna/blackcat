@@ -378,7 +378,13 @@ test('a record from before who and work were kept is brought up to date with not
   record({ kind: 'model', category: 'chat', model: 'm', cost: 0.5, who: 'owner' });
   assert.equal(totals({ dev: 'all' }).rows.find((x) => x.name === 'chat').n, 13);
   db = new Database(file, { readonly: true });
-  assert.equal(db.prepare("SELECT step FROM shapes WHERE part = 'activity'").pluck().get(), 3);
+  assert.equal(db.prepare("SELECT step FROM shapes WHERE part = 'activity'").pluck().get(), 4);
+  // (a day's totals from before it was kept how many a schedule set off: none known, nothing lost)
+  assert.deepEqual(db.prepare("SELECT n, scheduled, cost FROM activity_daily WHERE category = 'chat' AND who = ''").get(), {
+    n: 12,
+    scheduled: 0,
+    cost: 6.5,
+  });
   db.close();
   // an entry from before can still be read by its number
   assert.equal(ofWork(old[1].id).entries[0].category, 'bc restart');

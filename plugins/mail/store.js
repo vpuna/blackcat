@@ -10,6 +10,7 @@ import {
   accountFor,
   archiveStatements,
   claimRows,
+  fileType,
   mediaRow,
   messageRow,
   openArchiveForWriting as openWrite,
@@ -42,9 +43,8 @@ const STEPS = [
       CREATE TABLE IF NOT EXISTS known (account TEXT NOT NULL, addr TEXT NOT NULL, PRIMARY KEY (account, addr));
       CREATE TABLE IF NOT EXISTS state (account TEXT PRIMARY KEY, uid_validity TEXT, known_at INTEGER, synced_at INTEGER, error TEXT, error_since INTEGER, told INTEGER NOT NULL DEFAULT 0, gmail INTEGER, mark TEXT, full_at INTEGER);
     `),
-  // 3: the mail the owner sent, one header line each. It is collected from the day this
-  //    came in (state.sent_since), so that a month of old replies does not arrive at once
-  //    as if it were new.
+  // 3: the mail the owner sent, one header line each. (state.sent_since: when it was first
+  //    collected. From step 4 it goes back as far as the account's days, as what arrives does.)
   (db) =>
     db.exec(`
       CREATE TABLE sent (
@@ -54,6 +54,14 @@ const STEPS = [
         PRIMARY KEY (account, uid));
       ALTER TABLE state ADD COLUMN sent_validity TEXT;
       ALTER TABLE state ADD COLUMN sent_since INTEGER;
+    `),
+  // 4: what the owner sent keeps its attachments, as what arrives does, and goes as far back
+  //    as the account's days. The header lines kept so far had no files: they are gone
+  //    through again (what is in the archive stays; each file is added beside its mail).
+  (db) =>
+    db.exec(`
+      ALTER TABLE sent ADD COLUMN files TEXT;
+      DELETE FROM sent;
     `),
 ];
 
@@ -91,6 +99,27 @@ function withArchive(fn, owner = null) {
   });
 }
 
+// Each attachment follows its mail as a message of its own, the way a file arrives in a chat,
+// so it can be fetched and read like any other (bc msg media, watches with attachments on).
+function attach(q, base, id, subject, files) {
+  files.forEach((f, n) => {
+    const type = fileType(f.type, f.name) ?? 'application/octet-stream';
+    const r = q.msg.run(
+      messageRow({
+        ...base,
+        id: `${id}:${n + 1}`,
+        type: type.startsWith('image/') ? 'image' : 'document',
+        text: `${f.name} (attached to "${subject || 'a mail with no subject'}")`,
+      }),
+    );
+    // dlType "mail": fetched from the mail server when asked for; directPath is the part of the mail it is.
+    if (r.changes)
+      q.media.run(
+        mediaRow({ rowid: r.lastInsertRowid, dlType: 'mail', mimetype: type, size: f.size, fileName: f.name, directPath: f.part }),
+      );
+  });
+}
+
 // `label`: the name the account goes by now (its key, unless it was renamed). `address`: its own.
 export function archive(account, rows, textOf, label = account, address = null) {
   withArchive(
@@ -113,30 +142,7 @@ export function archive(account, rows, textOf, label = account, address = null) 
               text: `Subject: ${m.subject || '(no subject)'}\n\n${textOf(m) || '(this mail has no readable text)'}${files.length ? `\n\n[attached: ${files.map((f) => f.name).join(', ')}]` : ''}`,
             }),
           );
-          // Each attachment follows as a message of its own, the way a file arrives in a chat,
-          // so it can be fetched and read like any other (bc msg media, watches with attachments on).
-          files.forEach((f, n) => {
-            const r = q.msg.run(
-              messageRow({
-                ...base,
-                id: `${msgId(account, m.uid)}:${n + 1}`,
-                type: f.type.startsWith('image/') ? 'image' : 'document',
-                text: `${f.name} (attached to "${m.subject || 'a mail with no subject'}")`,
-              }),
-            );
-            // dlType "mail": fetched from the mail server when asked for; directPath is the part of the mail it is.
-            if (r.changes)
-              q.media.run(
-                mediaRow({
-                  rowid: r.lastInsertRowid,
-                  dlType: 'mail',
-                  mimetype: f.type,
-                  size: f.size,
-                  fileName: f.name,
-                  directPath: f.part,
-                }),
-              );
-          });
+          attach(q, base, msgId(account, m.uid), m.subject, files);
         }
       })(),
     { account, address, label },
@@ -150,21 +156,21 @@ export function archiveSent(account, me, rows, textOf, label = account) {
     (q, wa) =>
       wa.transaction(() => {
         for (const m of rows) {
+          const files = filesOf(m);
           q.chat.run({ ref: chatRef(account), name: chatName(label), isGroup: 1, ts: m.ts });
           q.contact.run({ ref, name: me || 'Me', notify: null, phone: null });
           const to = m.to_addr
             ? `${m.to_name ? `${m.to_name} <${m.to_addr}>` : m.to_addr}${m.others ? ` and ${m.others} more` : ''}`
             : 'nobody named';
+          const base = { chat: chatRef(account), sender: ref, fromMe: 1, ts: m.ts };
           q.msg.run(
             messageRow({
-              chat: chatRef(account),
-              sender: ref,
-              fromMe: 1,
-              ts: m.ts,
+              ...base,
               id: sentId(account, m.uid),
-              text: `Subject: ${m.subject || '(no subject)'}\nTo: ${to}\n\n${textOf(m) || '(this mail has no readable text)'}`,
+              text: `Subject: ${m.subject || '(no subject)'}\nTo: ${to}\n\n${textOf(m) || '(this mail has no readable text)'}${files.length ? `\n\n[attached: ${files.map((f) => f.name).join(', ')}]` : ''}`,
             }),
           );
+          attach(q, base, sentId(account, m.uid), m.subject, files);
         }
       })(),
     { account, address: me, label },
@@ -203,4 +209,5 @@ export function forget(db, account) {
   });
 }
 
-export const storedText = (account, uid) => withArchive((q) => q.text.get(chatRef(account), msgId(account, uid)) ?? null);
+export const storedText = (account, uid, { sent = false } = {}) =>
+  withArchive((q) => q.text.get(chatRef(account), sent ? sentId(account, uid) : msgId(account, uid)) ?? null);

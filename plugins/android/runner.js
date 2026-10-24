@@ -17,7 +17,8 @@ const POLL_MS = 150;
 // After a tap: what was on the screen before it is not taken for what came of it until this
 // long has passed (an element that is new, or has moved, is taken at once).
 const SETTLE_MS = 500;
-const END_PICTURE_WAIT_MS = 1000; // before the picture at the end (`picture: true`)
+const END_PICTURE_STILL_MS = 1000; // the picture at the end (`picture: true`): once the screen has stayed the same this long…
+const END_PICTURE_MAX_MS = 4000; // …or this long has gone by
 // A step for a screen that may not come (if_shown) ends early when what a later step waits
 // for has been on the screen this long, and it was not before the last tap.
 const SKIP_AFTER_MS = 1500;
@@ -29,6 +30,14 @@ const KEY_GAP_MS = 250; // between presses of a remote's key
 // After the press: a screen is the app's last one when it has stayed the same this long (unless
 // the routine names what its last one shows); waited for at most, unless the routine says.
 const STEADY_MS = 3000;
+// An app just opened: its first screen is waited for until it has stayed the same this long
+// (a home screen is often drawn once and then swapped for the real one, and a tap made on the
+// first is lost)…
+const START_STILL_MS = 2000;
+const START_MAX_MS = 10_000; // …or this long has gone by
+// What a step waits for has not come in this long, and the keyboard is up: the app brought it
+// up over the screen (a pick-up map with a search box), and it is closed, once in a wait.
+const KEYBOARD_AFTER_MS = 1500;
 const RESULT_WAIT_S = 60;
 const NAMED_RESULT_WAIT_S = 120;
 const DONE_SETTLE_MS = 10_000; // at most, for the app's last screen to stay the same before its picture
@@ -90,6 +99,19 @@ const NEW_SIGNS = { '\u20C3': 'AED ', '\u20CE': 'AED ' };
 // What a screen shows, in words: to tell the same screen (still loading) from another.
 const labelsOf = (root) => new Set([...walk(root ?? {})].map(labelOf).filter(Boolean));
 const sameScreen = (was, now) => !!was?.size && [...was].filter((l) => !now.has(l)).length <= Math.max(2, 0.2 * was.size);
+// Two looks at a screen that is the same one still settling: few things gone, few come (a
+// search box's hint that changes, a clock). An app just opened that swaps its first screen
+// for its real one is not.
+const alike = (a, b) => {
+  const room = Math.max(2, 0.1 * Math.max(a.size, b.size));
+  return [...a].filter((l) => !b.has(l)).length <= room && [...b].filter((l) => !a.has(l)).length <= room;
+};
+// What is gone from a screen, a few of them, for saying why.
+const goneFrom = (was, now) => {
+  const gone = [...was].filter((l) => !now.has(l));
+  const named = gone.slice(0, 5).map((l) => `"${l.length > 40 ? `${l.slice(0, 39)}…` : l}"`);
+  return `${gone.length} of ${was.size} things on it are gone: ${named.join(', ')}${gone.length > named.length ? ', …' : ''}`;
+};
 const same = (a, b) => !!a && !!b && a.every((x, k) => x === b[k]);
 // (The same element after the screen under it moved, as a home screen still loading does: the same size, anywhere.)
 const sameSize = (a, b) => !!a && !!b && a[2] - a[0] === b[2] - b[0] && a[3] - a[1] === b[3] - b[1];
@@ -116,9 +138,10 @@ export class Runner {
       judge = null,
       onWait = () => {},
       steadyMs = STEADY_MS,
+      startMs = START_STILL_MS,
     },
   ) {
-    Object.assign(this, { dev, routine, app, answer, log, media, onStep, onDone, recover, judge, onWait, steadyMs });
+    Object.assign(this, { dev, routine, app, answer, log, media, onStep, onDone, recover, judge, onWait, steadyMs, startMs });
     this.steps = [];
     this.recoveries = [];
     this.started = Date.now();
@@ -151,9 +174,11 @@ export class Runner {
   // taken once it is in the same place on two looks in a row (not while it slides in). `ahead`: for a screen that may not come, what later
   // steps wait for; when one of those is on the screen (and stays), it is not waited for longer.
   async waitFor(target, seconds, { retap = false, steady = false, ahead = [] } = {}) {
-    const end = Date.now() + seconds * 1000;
+    const t0 = Date.now();
+    const end = t0 + seconds * 1000;
     let prev = null;
     let later = null; // (what a later step waits for, and since when it has been there)
+    let keyboard = this.keepKeyboard; // (looked for already, or to be left open)
     this.skippedFor = null;
     for (;;) {
       const root = await this.screen();
@@ -161,6 +186,12 @@ export class Runner {
       if (found) this.lastTap = null; // (what the tap was for has come)
       const hit = found && (!steady || !this.landing() || (prev && same(prev.bounds, found.bounds))) ? found : null;
       prev = found;
+      // A known pop-up is cleared before what is under it is tapped: the screen as read holds
+      // what a pop-up covers too, and a tap there lands on the pop-up.
+      if (hit && steady && Date.now() <= end && (await this.clearPopup(root))) {
+        prev = null;
+        continue;
+      }
       if (hit || Date.now() > end) return hit ?? found ?? null;
       // (Only once something has been tapped: at the app's start what shows first says little.)
       if (!found && ahead.length && this.tapped) {
@@ -177,13 +208,19 @@ export class Runner {
         // around it still there (a home screen still loading offers is the same screen; another is not).
         const now = labelsOf(root);
         const onIt = sameScreen(t.labels, now);
-        const again = onIt ? find(root, t.target).find((n) => sameSize(n.bounds, t.bounds)) : null;
+        const found = onIt ? find(root, t.target).find((n) => sameSize(n.bounds, t.bounds)) : null;
+        // (What the target finds now is held to what every tap is held to: never what books,
+        // pays or sends. It may not be what was tapped, though it is found the same way.)
+        const commitsNow = found && commits(this.app, { text: labelOf(found) });
+        const again = commitsNow ? null : found;
         // (Why not, with the step's failure should it fail: on the run's record and for a model's look.)
         if (!again) {
           this.untapped = `${spoken(t.target)} was not tapped again: ${
-            onIt
-              ? 'it is not on the screen, the same size'
-              : `the screen changed (${[...t.labels].filter((l) => !now.has(l)).length} of ${t.labels.size} things on it are gone)`
+            commitsNow
+              ? `"${labelOf(found)}" books, pays or sends`
+              : onIt
+                ? 'it is not on the screen, the same size'
+                : `the screen changed (${goneFrom(t.labels, now)})`
           }`;
           this.log(this.untapped);
         }
@@ -192,12 +229,19 @@ export class Runner {
         if (again) {
           await this.tapNode(again);
           const step = this.steps[t.n];
-          if (step) step.text = `${step.text.replace(/ \(tapped \d+ times: .*\)$/, '')} (tapped ${times} times: the first did nothing)`;
-          this.log(`tapped ${spoken(t.target)} again (${times}): the tap before did nothing`);
+          if (step) step.text = `${step.text.replace(/ \(tapped \d+ times: .*\)$/, '')} (tapped ${times} times: nothing came of the first)`;
+          this.log(`tapped ${spoken(t.target)} again (${times}): nothing came of the tap before`);
           continue;
         }
       }
       await this.clearPopup(root);
+      if (!found && !keyboard && Date.now() - t0 > KEYBOARD_AFTER_MS) {
+        keyboard = true;
+        if (await this.dev.hideKeyboard?.()) {
+          this.log(`the keyboard was up while waiting for ${spoken(target)}: closed it`);
+          continue;
+        }
+      }
       await sleep(POLL_MS);
     }
   }
@@ -239,20 +283,57 @@ export class Runner {
     }
   }
 
+  // Until the screen has stayed the same for `ms` (its elements, where they are), or `max` has gone by.
+  async still(ms, max) {
+    const end = Date.now() + max;
+    let was = null;
+    let since = Date.now();
+    while (Date.now() < end) {
+      const now = await this.dev.dump().catch(() => null);
+      if (now !== was) ((was = now), (since = Date.now()));
+      else if (Date.now() - since >= ms) return;
+      await sleep(POLL_MS);
+    }
+  }
+
   async shot(name) {
     // (For the owner: full size, up to OWNER_PICTURE on its long side, so a 4K TV's is not a huge file.)
     return this.dev.screenshot(path.join(this.media, `${this.routine.name}-${name}-${Date.now()}.jpg`), { longEdge: OWNER_PICTURE });
   }
 
+  // The first screen of an app just opened, once it has settled (see START_STILL_MS). Not for
+  // a routine that goes on from what is showing: that screen is there already.
+  async firstScreen() {
+    if (this.routine.start === 'running') return;
+    const end = Date.now() + START_MAX_MS;
+    let was = null;
+    let since = Date.now();
+    for (;;) {
+      const now = labelsOf(await this.screen());
+      if (!was || !now.size || !alike(was, now)) [was, since] = [now, Date.now()];
+      else if (Date.now() - since >= this.startMs) return;
+      if (Date.now() > end) return void this.log(`its first screen was still changing after ${START_MAX_MS / 1000}s: going on`);
+      await sleep(POLL_MS);
+    }
+  }
+
   async run() {
+    await this.firstScreen();
     const ended = await this.steps_(this.routine.steps, '');
-    // (`picture: true`: the screen as the routine left it, for the owner.)
-    // (After a moment: a TV's picture can follow its banner; a routine waits for what says it plays.)
-    const shot = this.routine.picture ? await sleep(END_PICTURE_WAIT_MS).then(() => this.shot('end').catch(() => null)) : null;
+    // (`picture: true`: the screen as the routine left it, for the owner, once it has stopped
+    // changing: a TV's banner going, a list filling in. One that cannot be taken says why.)
+    let shot = null;
+    let noShot = null;
+    if (this.routine.picture) {
+      await this.still(END_PICTURE_STILL_MS, END_PICTURE_MAX_MS);
+      shot = await this.shot('end').catch((e) => ((noShot = e.message), null));
+      if (noShot) this.log(`no picture at the end: ${noShot}`);
+    }
     return {
       outcome: 'finished',
       ...ended,
       ...(shot ? { shot } : {}),
+      ...(noShot ? { noShot } : {}),
       steps: this.steps,
       seconds: Math.round((Date.now() - this.started) / 1000),
     };
@@ -398,7 +479,8 @@ export class Runner {
         // The keyboard the field brought up is closed once the text is in (Back closes only the
         // keyboard): what the app shows next is not then hidden under it. ("keyboard": "keep"
         // for an app that needs it open.)
-        const closed = s.keyboard !== 'keep' && (await this.dev.hideKeyboard?.());
+        this.keepKeyboard = s.keyboard === 'keep';
+        const closed = !this.keepKeyboard && (await this.dev.hideKeyboard?.());
         done(`typed "${s.text}"${closed ? ', and closed the keyboard' : ''}`);
         break;
       }

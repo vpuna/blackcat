@@ -54,7 +54,7 @@ export const served = (spec) => !!spec.serve && modeOf(spec) === 'blackcat';
 // The hook that makes Claude Code ask about every tool call, whatever it would have let
 // through itself: its answer to "may this tool be used?" is always "ask", and asking goes
 // to blackcat (--permission-prompt-tool stdio).
-const ALWAYS_ASK = JSON.stringify({
+const ALWAYS_ASK = {
   hooks: {
     PreToolUse: [
       {
@@ -68,7 +68,10 @@ const ALWAYS_ASK = JSON.stringify({
       },
     ],
   },
-});
+};
+// Nothing of the owner's own Claude Code comes in: not their settings, hooks or plugins
+// (--setting-sources none), nor what it remembers of their sessions. Only what blackcat gives.
+const settings = (askAlways = false) => JSON.stringify({ autoMemoryEnabled: false, ...(askAlways ? ALWAYS_ASK : {}) });
 
 // What the agent is told (its rules, what is true of this installation, what it remembers), as one text
 // for Claude Code's system prompt. Nothing is left for Claude Code to find in a file.
@@ -86,6 +89,8 @@ export function conversationArgs({ tools, readDirs = [], resume, model, options,
     // Skip the claude.ai connectors (Gmail, Drive, ...): they slow startup, change the
     // prompt on every start (defeating prompt caching), and would widen what it can reach.
     '--strict-mcp-config',
+    '--setting-sources',
+    '',
     // Anything not already allowed is sent to blackcat as a request instead of being
     // refused, so blackcat's policy decides, and can ask the owner.
     '--permission-prompt-tool',
@@ -99,6 +104,8 @@ export function conversationArgs({ tools, readDirs = [], resume, model, options,
       // None of its own tools: no shell, no file access, no web, no sub-agents.
       '--tools',
       '',
+      '--settings',
+      settings(),
       // blackcat's, served over this same pipe (an "sdk" server: no port, no other process).
       '--mcp-config',
       JSON.stringify({ mcpServers: { [serve.name]: { type: 'sdk', name: serve.name } } }),
@@ -115,7 +122,8 @@ export function conversationArgs({ tools, readDirs = [], resume, model, options,
     // left to fail a permission check: no web access, no sub-agents, no scheduling.
     '--tools',
     tools.join(','),
-    ...(askAlways ? ['--settings', ALWAYS_ASK] : []),
+    '--settings',
+    settings(askAlways),
     ...readDirs.flatMap((d) => ['--add-dir', d]),
     '--append-system-prompt',
     told(instructions),
@@ -265,6 +273,10 @@ export function ask(ctx, { system, content, model, options, schema }) {
       '--tools',
       '',
       '--strict-mcp-config',
+      '--setting-sources',
+      '',
+      '--settings',
+      settings(),
       '--append-system-prompt',
       system,
       ...chosen({ model, options }),

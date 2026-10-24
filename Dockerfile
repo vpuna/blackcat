@@ -30,10 +30,11 @@ COPY package.json package-lock.json ./
 ENTRYPOINT ["tini", "--"]
 
 # ---- the compiler some libraries need when they are installed (the database library is
-#      built on the machine). Not carried into the image that is run.
+#      built on the machine), and zip, which a test makes a Word file with. Not carried
+#      into the image that is run.
 FROM base AS tools
 RUN apt-get update \
- && apt-get install -y --no-install-recommends build-essential python3 \
+ && apt-get install -y --no-install-recommends build-essential python3 zip \
  && rm -rf /var/lib/apt/lists/*
 
 # ---- everything, with the tools the tests need: `docker build --target test`, then

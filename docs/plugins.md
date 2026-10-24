@@ -317,6 +317,7 @@ Every hook receives `ctx`.
 | `ctx.fail(msg)` | Stop with a message for the person. |
 | `ctx.plugin` | Your plugin's name. |
 | `ctx.caller` | `'owner'`, `'agent'` or `'job'`. |
+| `ctx.tainted` | In an access function only: the agent's conversation has read what other people wrote, so a command that would act on it can ask. |
 | `ctx.surface` | `'terminal'`, `'chat'` or `'job'`: where the result is read. `'chat'` is the owner's chat on any channel: a command typed there, or run by the agent for it. |
 | `ctx.api` | Everything in `src/api.js`: `ctx.api.shell(…)`, `ctx.api.ymd()`. |
 
@@ -336,9 +337,9 @@ const a = await ctx.askOwner({
 if (a.answer === '✅ Book it') …
 ```
 
-It returns `{ answer, how, why }`. `answer` is the choice tapped, or null. `how` is `'answered'`, `'expired'` or `'unasked'`, with `why` when it could not ask (no channel in use, the agent service not running).
+It returns `{ answer, how, why }`. `answer` is the choice tapped, or null. `how` is `'answered'`, `'withdrawn'` (the owner wrote instead, or cancelled), `'expired'` or `'unasked'`, with `why` when it could not ask (no channel in use, the agent service not running).
 
-The question goes to the owner's chat on the channel in use, with buttons. When the owner ran the command in a terminal on this machine, it is asked there instead, with the cursor on the last choice. Only the owner's tap answers it, once, and not after it expires; a message they write instead ends it unanswered (`how: 'answered'`, `answer: null`), as Cancel would. There is no "always": the same question is asked every time. Each question and its outcome are on the activity record.
+The question goes to the owner's chat on the channel in use, with buttons. When the owner ran the command in a terminal on this machine, it is asked there instead, with the cursor on the last choice. Only the owner's tap answers it, once, and not after it expires; a message they write instead ends it unanswered (`how: 'withdrawn'`, `answer: null`), as Cancel would. There is no "always": the same question is asked every time. Each question and its outcome are on the activity record.
 
 Use it where the answer depends on something only known at that moment (a price, what a camera shows). For permission to run a command at all, use [access levels](#access-levels).
 
@@ -550,7 +551,7 @@ chat: {
 | `commands` | Added to `/help` and the channel's menu. May be `(ctx) => [{ command, description }]` when the list depends on settings, as in the shortcut plugin. After changing what it returns, call `refreshMenu()`. |
 | `install` | Called once when the agent service starts. Register handlers here. |
 | `tick` | Called every 20 seconds inside the agent service, so it must return quickly. `ui` is `null` when no channel is in use. |
-| `quick` | Offered every message, typed or transcribed, before the agent. Return `null` unless you are certain what is meant. `{ text, note }` answers directly; `note` goes to the agent with the owner's next message. `{ confirm: 'Really?', run: async () => ({ text, note }) }` asks first. |
+| `quick` | Offered every message, typed or transcribed, before the agent. Return `null` unless you are certain what is meant. `{ text, note }` answers directly; `note` goes to the agent with the owner's next message. `{ confirm: 'Really?', run: async () => ({ text, note }) }` asks first. `{ note, answer: async (c) => ({ note }) }` answers in the chat itself (several messages, files). Plugins are asked in turn and the first answer wins; those with `quickFirst: true` are asked first (the shortcut plugin: a shortcut's name comes before the name of a thing). |
 
 Code in `install` and `tick` can message the owner. The agent cannot reach it: only the owner's messages and taps reach your handlers.
 

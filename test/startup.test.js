@@ -1,6 +1,7 @@
 // Every `bc` command, every command the agent runs and every scheduled job starts a new
 // process, several hundred times a day. Starting must stay cheap: the large libraries
-// (WhatsApp, Telegram, mail, speech, calendar) are loaded only by the commands that use them.
+// (WhatsApp, Telegram, mail, speech, calendar, the TV's connection, the questions asked in a
+// terminal) are loaded only by the commands that use them.
 // This test fails if an import at the top of a file brings one of them back for everybody.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -28,6 +29,8 @@ const HEAVY = [
   'qrcode-terminal',
   'sqlite-vec',
   'pino',
+  'ws',
+  '@clack/prompts',
 ];
 function run(args) {
   const r = spawnSync(process.execPath, ['--import', hook, `${root}bin/bc.js`, ...args], {
@@ -46,7 +49,7 @@ for (const args of [
   ['--help'],
   ['--version'],
   ['plugin', 'list'],
-  ['pi', 'status'],
+  ['host', 'status'],
   ['remind', 'list', '--json'],
   ['watch', 'list', '--json'],
   ['msg', 'chats', '--json'],
@@ -54,7 +57,7 @@ for (const args of [
   ['mail', 'rules'],
   ['calendar', 'status'],
   ['shortcut', 'list'],
-  ['ssh', 'hosts'],
+  ['ssh', 'list'],
   ['voice', 'status'],
   ['backup', 'status'],
   ['ha', 'status'],
@@ -64,6 +67,10 @@ for (const args of [
 ]) {
   test(`bc ${args.join(' ')} loads none of the large libraries`, () => {
     const r = run(args);
+    // (Ran, rather than stopped at the start: with no messages yet, that one says so.)
+    if (args[0] === 'msg') assert.match(r.stderr, /There are no messages to search yet/);
+    else assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /PACKAGES /, 'what it loaded was said');
     assert.deepEqual(
       r.packages.filter((p) => HEAVY.includes(p)),
       [],

@@ -194,19 +194,25 @@ const AT_6 = `DROP TRIGGER messages_ai; DROP TRIGGER messages_ad; DROP TRIGGER m
     ALTER TABLE messages DROP COLUMN heard;
     INSERT INTO chats (ref, name, is_group) VALUES ('1@s.whatsapp.net', 'Maya', 0);
     INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('1@s.whatsapp.net', 'OLD1', '1@s.whatsapp.net', 0, 1700000000, 'text', 'the old message about dinner');
+    INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('mail:x', 'F1', 'mail:a@b', 0, 1700000001, 'document', 'scan.pdf');
+    INSERT INTO media (msg_rowid, dl_type, mimetype, file_name) VALUES (last_insert_rowid(), 'mail', 'application/octet-stream', 'scan.pdf');
+    INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('mail:x', 'F2', 'mail:a@b', 0, 1700000002, 'document', 'Photo.JPG');
+    INSERT INTO media (msg_rowid, dl_type, mimetype, file_name) VALUES (last_insert_rowid(), 'mail', 'application/octet-stream', 'Photo.JPG');
+    INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('mail:x', 'F3', 'mail:a@b', 0, 1700000003, 'document', 'sheet.xlsx');
+    INSERT INTO media (msg_rowid, dl_type, mimetype, file_name) VALUES (last_insert_rowid(), 'mail', 'application/octet-stream', 'sheet.xlsx');
     PRAGMA user_version = 6;`;
 
 test('an archive from an earlier blackcat is refused, not upgraded; a new one is made whole and marked', async () => {
   const { openWrite } = await import('../src/archive/db.js');
   const { ARCHIVE_DB } = await import('../src/archive/files.js');
   let a = openWrite();
-  assert.equal(a.pragma('user_version', { simple: true }), 8);
+  assert.equal(a.pragma('user_version', { simple: true }), 9);
   // and one from the first published version (marked 6) is given what has been added since, by whoever opens it
   a.exec(AT_6);
   a.close();
   const { openRead } = await import('../src/archive/db.js');
   const r = openRead();
-  assert.equal(r.pragma('user_version', { simple: true }), 8, 'a reader brings it up to date before reading');
+  assert.equal(r.pragma('user_version', { simple: true }), 9, 'a reader brings it up to date before reading');
   assert.equal(
     r.prepare("SELECT COUNT(*) AS n FROM messages_fts WHERE messages_fts MATCH 'dinner'").get().n,
     1,
@@ -219,6 +225,19 @@ test('an archive from an earlier blackcat is refused, not upgraded; a new one is
     "WhatsApp's ids are marked as WhatsApp's; the account is the collector's to claim",
   );
   assert.equal(r.prepare('SELECT ref FROM chats').pluck().get(), 'wa:1@s.whatsapp.net');
+  assert.deepEqual(
+    r
+      .prepare(
+        "SELECT m.id, m.type, d.mimetype FROM messages m JOIN media d ON d.msg_rowid = m.rowid WHERE m.chat_ref = 'mail:x' ORDER BY m.id",
+      )
+      .all(),
+    [
+      { id: 'F1', type: 'document', mimetype: 'application/pdf' },
+      { id: 'F2', type: 'image', mimetype: 'image/jpeg' },
+      { id: 'F3', type: 'document', mimetype: 'application/octet-stream' },
+    ],
+    'a file that said only "a file" is the kind its name says (and one of no kind that is read stays as it was)',
+  );
   r.close();
   a = openWrite();
   assert.ok(hasTable(a, 'messages') && hasTable(a, 'chat_info') && hasColumn(a, 'messages', 'link_url'));
@@ -261,8 +280,12 @@ test('an archive from the first published version, opened by several processes a
   );
   assert.deepEqual(codes, Array(12).fill(0), 'none of them failed');
   const db = openSqlite(ARCHIVE_DB, { readonly: true });
-  assert.equal(db.pragma('user_version', { simple: true }), 8);
+  assert.equal(db.pragma('user_version', { simple: true }), 9);
   assert.ok(hasColumn(db, 'messages', 'heard') && hasColumn(db, 'messages', 'account'));
-  assert.equal(db.prepare('SELECT chat_ref FROM messages').pluck().get(), 'wa:1@s.whatsapp.net', 'marked once, not twice');
+  assert.equal(
+    db.prepare("SELECT chat_ref FROM messages WHERE id = 'OLD1'").pluck().get(),
+    'wa:1@s.whatsapp.net',
+    'marked once, not twice',
+  );
   db.close();
 });

@@ -189,7 +189,8 @@ test('an installation set up before there were places keeps going where it went:
     keep: 'the last 14',
     encrypted: 'no',
   });
-  assert.match(bc('backup', 'status').stdout, /last backup .*\(5 B\)|last backup/);
+  // (the one made by the test before is newer than the one in the old settings, and is the one said)
+  assert.match(bc('backup', 'status').stdout, /^Backups: last backup \d+m ago \(\d+ KB\) · next at 03:30$/m);
   const s = load().plugins.settings.backup;
   assert.deepEqual(
     ['last' in s, 'lastError' in s, s.host],

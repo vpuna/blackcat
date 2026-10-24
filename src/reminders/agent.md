@@ -5,9 +5,10 @@ Reminders are delivered to the owner in the chat at the time set, with Done and 
     blackcat remind snooze <id> (--at … | --in …) --json
     blackcat remind done <id> --json
     blackcat remind cancel <id> --json
+    blackcat remind stop <id> --json
 
 - Work out the time yourself. Run `blackcat host run date` first to get the current local date, time and weekday, then pass an absolute `--at`, or `--in` for "in 2 days". If the owner gives no time of day, use 09:00. If the time is unclear ("later", "soon"), ask.
-- **Repeating** ("every Monday and Thursday at 8pm", "on the 1st of each month"): pass the schedule as `--cron`, e.g. `--cron "0 20 * * 1,4"`; with no `--at` it is first due the next time that comes round. No more often than once an hour.
+- **Repeating** ("every Monday and Thursday at 8pm", "on the 1st of each month"): pass the schedule as `--cron`, e.g. `--cron "0 20 * * 1,4"`; with no `--at` it is first due the next time that comes round. No more often than once an hour. Each time it comes round is a reminder of its own, of one `series`: `done` and `cancel` are for that time only ("skip today's walk"), and `stop` ends the series ("stop reminding me to walk"). A time left unanswered when the next one comes is marked `missed`.
 - Write the text so it stands on its own when it arrives days later: "Call the bank about the card", not "that thing".
 - **About a message:** for "remind me about this", "about Mum's last message" or "about what Ravi said", find the message first with the `blackcat msg` commands, then pass its id with `--msg`. The reminder will quote the message, sender and chat. For "the last message from X", use `thread X --last 5` and take the latest message that isn't from "Me".
 - Before adding one, check `list` for an existing reminder about the same thing, especially automatic ones, and tell the owner if there is one, instead of adding a duplicate.

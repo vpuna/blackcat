@@ -4,7 +4,7 @@
 // step, including blackcat's own, so a shortcut can use SSH, UniFi or any other plugin.
 import fs from 'node:fs';
 import path from 'node:path';
-import { dataPath, expandHome, plural, shell } from '../../src/api.js';
+import { dataPath, expandHome, plural, shell, triedAs } from '../../src/api.js';
 
 // Each shortcut gets a folder of its own for files it fetches: {dir} in a step or a path.
 const FILES = dataPath('shortcut-files');
@@ -89,15 +89,40 @@ export function stepName(step) {
 
 // Carry a shortcut out, one step after another; a step that fails (a check that does not
 // pass) stops it there. `onStep({ n, of, name })` as each one starts.
+// `trying` (when it is made): nothing is changed. A step runs only as it can be tried
+// without changing anything (a look, or its own --dry); from the first that cannot, the
+// rest are looked over, not run (they may need what it does). → { ..., notRun: [steps] }
 // → { ok, text, files: [paths], step? }
-export async function runShortcut(name, sc, { onStep, title = sc.description } = {}) {
+export async function runShortcut(name, sc, { onStep, title = sc.description, trying = false } = {}) {
   fs.mkdirSync(dirOf(name), { recursive: true, mode: 0o700 });
   let last = '';
+  let told = false;
   const handed = [];
   const steps = sc.run ?? [];
   for (const [k, step] of steps.entries()) {
+    let line = fill(step, name);
+    if (trying) {
+      const tried = triedAs(line);
+      if (!tried) {
+        const rest = steps.slice(k);
+        for (const [j, s] of rest.entries()) {
+          const missing = await programMissing(fill(s, name));
+          if (missing)
+            return {
+              ok: false,
+              files: [],
+              step: k + j + 1,
+              text: `"${stepName(s)}" starts with ${missing}, which is not a program on this machine`,
+            };
+        }
+        // (What it sends that is there already is still looked at: whether it may be sent.)
+        const files = (sc.send ?? []).map((f) => fill(f, name)).filter((f) => fs.existsSync(f));
+        return { ok: true, files, text: last, notRun: rest, ran: k };
+      }
+      line = tried;
+    }
     await onStep?.({ n: k + 1, of: steps.length, name: stepName(step) });
-    const r = await sh(fill(step, name).replaceAll(dirOf(name), `'${dirOf(name)}'`), !!onStep, title);
+    const r = await sh(line.replaceAll(dirOf(name), `'${dirOf(name)}'`), !!onStep, title);
     if (r.code !== 0) {
       const why = r.timedOut
         ? 'it took too long'
@@ -114,7 +139,10 @@ export async function runShortcut(name, sc, { onStep, title = sc.description } =
     // A picture a step hands on (`[[send: <path>]]`, a routine's screen at the end): sent with
     // the shortcut's own files, after its last step. Only one blackcat took itself.
     for (const [, f] of r.out.matchAll(HANDED)) if (isTaken(f.trim())) handed.push(f.trim());
-    last = r.out.replace(HANDED, '').trim();
+    // (`[[told]]`: what the step ran has sent the owner its result already. In a chat it is not
+    // said again; a command that ran the shortcut, the agent's, still gets it.)
+    told = TOLD.test(r.out);
+    last = r.out.replace(HANDED, '').replace(new RegExp(TOLD.source, 'g'), '').trim();
   }
   const files = [...handed];
   for (const f of sc.send ?? []) {
@@ -123,10 +151,27 @@ export async function runShortcut(name, sc, { onStep, title = sc.description } =
     files.push(file);
   }
   const text = sc.reply === 'none' || (files.length && !sc.reply) ? '' : last;
-  return { ok: true, files, text, caption: sc.caption ?? null };
+  return { ok: true, files, text, caption: sc.caption ?? null, told };
+}
+
+// A shortcut tried when it was made, where a step changes something: what was run, what not.
+function notRunText(t) {
+  const first = stepName(t.notRun[0]);
+  const rest = t.notRun.length > 1 ? ` (and ${plural(t.notRun.length - 1, 'step')} after it)` : '';
+  return t.ran
+    ? `Tried now: ${t.ran === 1 ? 'the first step works' : `the first ${t.ran} steps work`}. "${first}"${rest} changes something, so it was not run now: it runs when the shortcut is used.`
+    : `Not run now: "${first}"${rest} changes something, so it runs when the shortcut is used. Its programs are there.`;
+}
+
+// The program a step starts with, when it is not on this machine (a step looked over, not run).
+async function programMissing(step) {
+  const first = step.trim().split(/\s+/)[0];
+  if (!first || first === 'blackcat' || first === 'bc') return null;
+  return (await shell(`command -v ${JSON.stringify(first)}`)).code === 0 ? null : first;
 }
 
 const HANDED = /\[\[send: ([^\]\n]+)\]\]\n?/g;
+const TOLD = /\[\[told\]\]\n?/;
 // (A file blackcat itself made: in one of its own folders of pictures and media.)
 const isTaken = (f) => {
   const real = path.resolve(f);
@@ -216,6 +261,75 @@ const recipe = {
   describe: 'create or change a shortcut: a command you can then run with one tap, which runs these steps as you',
 };
 
+// The chat the shortcuts were put in, for one asked for in words (the quick route).
+let chatUi = null;
+
+// What a shortcut, or one of its actions, did: said in the chat.
+// One with several steps shows them in one message changed as it goes, as a routine does:
+// each in its own words, ticked when done, and then how it ended. → what runShortcut gave
+async function carryOut(ui, ctx, c, name, sc, part, label) {
+  ctx.log(`/${label} (shortcut)`);
+  // (Shown for as long as it runs: the channel's "typing…" lasts a few seconds, and a routine a minute or two.)
+  const kind = part.send?.length ? 'photo' : 'typing';
+  c.working(kind);
+  const typing = setInterval(() => c.working(kind), 4000);
+  try {
+    return await carryingOut(ui, c, name, sc, part, label);
+  } finally {
+    clearInterval(typing);
+  }
+}
+
+async function carryingOut(ui, c, name, sc, part, label) {
+  const t0 = Date.now();
+  let shown = null;
+  const lines = [];
+  const list = (...end) => [`▶ /${label}`, ...lines.slice(-10), ...end].join('\n');
+  const tick = (mark) => lines.length && (lines[lines.length - 1] = lines.at(-1).replace(/^⏳/, mark));
+  const onStep =
+    (part.run ?? []).length >= PROGRESS_FROM
+      ? async ({ n, name: what }) => {
+          tick('✓');
+          lines.push(`⏳ ${n}. ${what}`);
+          if (shown) await ui.edit(c.chat, shown, list()).catch(() => {});
+          else shown = await c.reply(list());
+        }
+      : undefined;
+  const r = await runShortcut(name, part, { onStep, title: part.description ?? sc.description });
+  const say = (text) => (shown ? ui.edit(c.chat, shown, text).catch(() => c.reply(text)) : c.reply(text));
+  if (!r.ok) {
+    tick('✖');
+    await say(shown ? list('', `😿 ${r.text}`) : `😿 /${label}: ${r.text}`);
+    return r;
+  }
+  tick('✓');
+  const secs = shown ? ` · ${Math.round((Date.now() - t0) / 1000)}s` : '';
+  const text = r.told ? '' : r.text;
+  if (shown) await say(list(`✓ Done${secs}`, ...(text ? ['', text] : [])).slice(0, 4000));
+  else if (text) await say(text.slice(0, 4000));
+  for (const f of r.files)
+    await c.sendFile(
+      f,
+      r.caption ??
+        `${part.description ?? sc.description} · ${fs.statSync(f).mtime.toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`,
+    );
+  // (`--reply none`: nothing at all when it went well; what it ran has said what it did.)
+  if (!shown && !r.text && !r.files.length && part.reply !== 'none' && !r.told)
+    await say(`✅ /${label}: ${part.description ?? sc.description}`);
+  return r;
+}
+
+// Its actions, as buttons to tap.
+async function menu(c, name, sc, said) {
+  const { actions } = await import('../../src/api.js');
+  const kb = actions();
+  Object.keys(actionsOf(sc)).forEach((a, n) => {
+    kb.add(a, `sc:${name}:${a}`);
+    if (n % 3 === 2) kb.row();
+  });
+  return c.reply(`${said ? `${said}\n` : ''}/${name}: ${sc.description}\n${menuOf(name, sc).join(' · ')}`, { actions: kb });
+}
+
 export default {
   api: 1,
   name: 'shortcut',
@@ -270,7 +384,7 @@ first that fails. In the bot, a shortcut is /<its name>.`,
         const { sendable } = await import('../../src/api.js');
         let tested = null;
         if (i.test !== false) {
-          tested = await runShortcut(i.name, sc);
+          tested = await runShortcut(i.name, sc, { trying: true });
           const outside = tested.ok ? tested.files.find((f) => !sendable(f)) : null;
           if (outside)
             tested = {
@@ -283,9 +397,11 @@ first that fails. In the bot, a shortcut is /<its name>.`,
         await (await import('../../src/api.js')).refreshMenu();
         const result = !tested
           ? 'Not tested.'
-          : tested.ok
-            ? `Tested now: it works${tested.files.length ? ` (${tested.files.map((f) => path.basename(f)).join(', ')})` : tested.text ? `:\n${tested.text.split('\n').slice(0, 6).join('\n')}` : ''}.`
-            : `Tested now: it FAILED. ${tested.text}\nIt is saved; correct it by adding it again.`;
+          : tested.notRun?.length
+            ? notRunText(tested)
+            : tested.ok
+              ? `Tested now: it works${tested.files.length ? ` (${tested.files.map((f) => path.basename(f)).join(', ')})` : tested.text ? `:\n${tested.text.split('\n').slice(0, 6).join('\n')}` : ''}.`
+              : `Tested now: it FAILED. ${tested.text}\nIt is saved; correct it by adding it again.`;
         return {
           text: `Saved.\n${describe(i.name, sc, await whenText(sc))}\n\n${result}\nUse it: /${i.name} in the bot, or bc shortcut run ${i.name}`,
           data: { name: i.name, shortcut: sc, tested: tested ? { ok: tested.ok, detail: tested.text } : null },
@@ -419,7 +535,7 @@ first that fails. In the bot, a shortcut is /<its name>.`,
         };
         let tested = null;
         if (i.test !== false) {
-          tested = await runShortcut(i.name, part);
+          tested = await runShortcut(i.name, part, { trying: true });
           const outside = tested.ok ? tested.files.find((f) => !sendable(f)) : null;
           if (outside)
             tested = {
@@ -431,9 +547,11 @@ first that fails. In the bot, a shortcut is /<its name>.`,
         const sc = { ...(was ?? { description: i.description ?? `Run ${i.name}` }), actions: { ...was?.actions, [i.action]: part } };
         const result = !tested
           ? 'Not tested.'
-          : tested.ok
-            ? `Tested now: it works${tested.files.length ? ` (${tested.files.map((f) => path.basename(f)).join(', ')})` : tested.text ? `:\n${tested.text.split('\n').slice(0, 6).join('\n')}` : '.'}`
-            : `Tested now: it did NOT work.\n${tested.text}`;
+          : tested.notRun?.length
+            ? notRunText(tested)
+            : tested.ok
+              ? `Tested now: it works${tested.files.length ? ` (${tested.files.map((f) => path.basename(f)).join(', ')})` : tested.text ? `:\n${tested.text.split('\n').slice(0, 6).join('\n')}` : '.'}`
+              : `Tested now: it did NOT work.\n${tested.text}`;
         const out = await keep(sc, 'Saved.', { tested: tested ? { ok: tested.ok, detail: tested.text } : null });
         return { ...out, text: `${out.text}\n\n${result}\nUse it: /${i.name} ${i.action} in the bot, or bc ${i.name} ${i.action}` };
       },
@@ -546,7 +664,7 @@ first that fails. In the bot, a shortcut is /<its name>.`,
             return ui.send(chat, `😿 /${t.label}, which you asked me to send by itself, did not work.\n${r.text}`.slice(0, 4000), {
               what: `that /${t.label} did not work`,
             });
-          if (r.text) await ui.send(chat, `${t.description}\n${r.text}`.slice(0, 4000), { what });
+          if (r.text && !r.told) await ui.send(chat, `${t.description}\n${r.text}`.slice(0, 4000), { what });
           for (const f of r.files)
             if (!(await ui.sendFile(chat, f, { caption: r.caption ?? t.description, what })))
               await ui.send(chat, `😿 /${t.label}: I could not send ${path.basename(f)}.`);
@@ -578,58 +696,32 @@ first that fails. In the bot, a shortcut is /<its name>.`,
         send(t);
       }
     },
+    // A shortcut asked for in words, by its name ("turn tv on" is /tv_on): run at once, as
+    // if its name was typed. Tried before other plugins' quick routes, which match the names
+    // of things: the owner's own name for something comes first. See quick.js.
+    quickFirst: true,
+    quick: async (text, { ctx }) => {
+      if (!chatUi) return null;
+      const { named } = await import('./quick.js');
+      const t = named(text, everyPart(all(ctx)));
+      if (!t) return null;
+      const sc = all(ctx)[t.name];
+      if (!t.action && !hasOwn(sc)) return { note: `showed /${t.name}'s actions`, answer: async (c) => void (await menu(c, t.name, sc)) };
+      return {
+        note: `ran /${t.label} (${t.description})`,
+        answer: async (c) => {
+          const r = await carryOut(chatUi, ctx, c, t.name, sc, t.part, t.label);
+          return {
+            note: r.ok
+              ? `/${t.label} worked${r.text ? `: ${r.text.slice(0, 300)}` : ''}`
+              : `/${t.label} did not work: ${r.text.slice(0, 300)}`,
+          };
+        },
+      };
+    },
     install: (ui, { ctx }) => {
       // Shortcuts can be added while the agent runs, so they are looked up on every message.
-      // What a shortcut, or one of its actions, did: said in the chat.
-      // One with several steps shows them in one message changed as it goes, as a routine does:
-      // each in its own words, ticked when done, and then how it ended.
-      const carryOut = async (c, name, sc, part, label) => {
-        ctx.log(`/${label} (shortcut)`);
-        c.working(part.send?.length ? 'photo' : 'typing');
-        const t0 = Date.now();
-        let shown = null;
-        const lines = [];
-        const list = (...end) => [`▶ /${label}`, ...lines.slice(-10), ...end].join('\n');
-        const tick = (mark) => lines.length && (lines[lines.length - 1] = lines.at(-1).replace(/^⏳/, mark));
-        const onStep =
-          (part.run ?? []).length >= PROGRESS_FROM
-            ? async ({ n, name: what }) => {
-                tick('✓');
-                lines.push(`⏳ ${n}. ${what}`);
-                if (shown) await ui.edit(c.chat, shown, list()).catch(() => {});
-                else shown = await c.reply(list());
-              }
-            : undefined;
-        const r = await runShortcut(name, part, { onStep, title: part.description ?? sc.description });
-        const say = (text) => (shown ? ui.edit(c.chat, shown, text).catch(() => c.reply(text)) : c.reply(text));
-        if (!r.ok) {
-          tick('✖');
-          return say(shown ? list('', `😿 ${r.text}`) : `😿 /${label}: ${r.text}`);
-        }
-        tick('✓');
-        const secs = shown ? ` · ${Math.round((Date.now() - t0) / 1000)}s` : '';
-        if (shown) await say(list(`✓ Done${secs}`, ...(r.text ? ['', r.text] : [])).slice(0, 4000));
-        else if (r.text) await say(r.text.slice(0, 4000));
-        for (const f of r.files)
-          await c.sendFile(
-            f,
-            r.caption ??
-              `${part.description ?? sc.description} · ${fs.statSync(f).mtime.toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`,
-          );
-        // (`--reply none`: nothing at all when it went well; what it ran has said what it did.)
-        if (!shown && !r.text && !r.files.length && part.reply !== 'none') await say(`✅ /${label}: ${part.description ?? sc.description}`);
-        return undefined;
-      };
-      // Its actions, as buttons to tap.
-      const menu = async (c, name, sc, said) => {
-        const { actions } = await import('../../src/api.js');
-        const kb = actions();
-        Object.keys(actionsOf(sc)).forEach((a, n) => {
-          kb.add(a, `sc:${name}:${a}`);
-          if (n % 3 === 2) kb.row();
-        });
-        return c.reply(`${said ? `${said}\n` : ''}/${name}: ${sc.description}\n${menuOf(name, sc).join(' · ')}`, { actions: kb });
-      };
+      chatUi = ui;
       ui.text(async (c, next) => {
         const m = /^\/([a-z0-9_]+)(?:@\w+)?(?:\s+(.*\S))?\s*$/.exec(c.text ?? '');
         const sc = m && all(ctx)[m[1]];
@@ -639,7 +731,7 @@ first that fails. In the bot, a shortcut is /<its name>.`,
         const what = choose(sc, m[2]);
         if (what.unknown) return menu(c, m[1], sc, `/${m[1]} has no "${what.unknown.slice(0, 40)}".`);
         if (what.menu) return menu(c, m[1], sc);
-        return carryOut(c, m[1], sc, what.run, what.action ? `${m[1]} ${what.action}` : m[1]);
+        return carryOut(ui, ctx, c, m[1], sc, what.run, what.action ? `${m[1]} ${what.action}` : m[1]);
       });
       ui.action(/^sc:([a-z0-9_]+):([a-z0-9_]+)$/, async (c) => {
         const [, name, action] = c.match;
@@ -647,7 +739,7 @@ first that fails. In the bot, a shortcut is /<its name>.`,
         const part = sc && actionsOf(sc)[action];
         if (!part) return c.gone('That is no longer there.');
         await c.toast(`/${name} ${action}`);
-        return carryOut(c, name, sc, part, `${name} ${action}`);
+        return carryOut(ui, ctx, c, name, sc, part, `${name} ${action}`);
       });
     },
   },

@@ -311,7 +311,10 @@ test('watches: "all chats" leaves email out; the to-do watch reads kept email un
   // Once read, nothing is read again: with email on and another watch taking some senders
   // (which makes the condition span lines), a look past the newest message reads nothing.
   const newest = rows('SELECT MAX(rowid) AS n FROM messages')[0].n;
-  wdb.updateWatch(w, todo.id, { sources: { everywhere: 'all', mine: true, mailSince: now - 3600 }, lastRowid: newest });
+  // (A look here is a dry run, which keeps no place: the place a real one keeps is set as it would be.)
+  wdb.updateWatch(w, todo.id, { sources: { everywhere: 'all', mine: true, mailSince: now - 3600 } });
+  assert.ok((await looked(wdb.findWatch(w, 'todo'))) > 0, 'without a place kept, there is something to read');
+  wdb.updateWatch(w, todo.id, { lastRowid: newest });
   assert.equal(await looked(wdb.findWatch(w, 'todo')), 0, 'what was read before is not read again');
   store.archive(
     'personal',
@@ -363,6 +366,9 @@ test('a mail attachment is fetched through the mail plugin, and a failure is rep
   );
   const d = db.openRead();
   // No mail server is reachable in a test, so the fetch fails: it must say so, not crash.
-  await assert.rejects(fetchMedia(d, 'mail:personal:10:1'), /could not be fetched from the mail server|no thumbnail|mail/i);
+  await assert.rejects(
+    fetchMedia(d, 'mail:personal:10:1'),
+    /^Error: It could not be fetched from Email \(the mail server could not be found/,
+  );
   d.close();
 });

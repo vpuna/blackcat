@@ -21,6 +21,7 @@ export default {
   bc remind add Reply to Mum about Saturday --at 18:30 --msg <message-id>
   bc remind add Take out the bins --at 20:00 --repeat weekly
   bc remind snooze 4 --in 1h
+  bc remind stop 7             a repeating one: no more of it (done and cancel are for this time)
 
 Things to do are picked up from your messages by the built-in "Things I need to do" watch:
   bc watch setup             on or off, when it looks, which chats, email (also in the bot: /setup)
@@ -51,22 +52,29 @@ Quiet hours, when nudges wait:  bc remind setup`,
     list: {
       summary: 'upcoming reminders',
       access: 'allow',
-      options: [['--all', 'include done and cancelled ones']],
+      options: [['--all', 'include done, cancelled and missed ones']],
       run: async (_c, i) => (await cmd()).list(i, {}),
     },
     done: {
       changes: true,
-      summary: 'mark a reminder done',
+      summary: 'mark a reminder done (one that repeats: this time)',
       access: 'allow',
       usage: '<id>',
       run: async (_c, i) => (await cmd()).done(i.id, i, {}),
     },
     cancel: {
       changes: true,
-      summary: 'cancel a reminder',
+      summary: 'cancel a reminder (one that repeats: this time only)',
       access: 'allow',
       usage: '<id>',
       run: async (_c, i) => (await cmd()).cancel(i.id, i, {}),
+    },
+    stop: {
+      changes: true,
+      summary: 'stop a reminder that repeats: no more of it',
+      access: 'allow',
+      usage: '<id>',
+      run: async (_c, i) => (await cmd()).stop(i.id, i, {}),
     },
     snooze: {
       changes: true,

@@ -185,27 +185,19 @@ export function findProblems(db, nowS, { from = 0 } = {}) {
     }
   }
 
-  // How often scheduled work ran: from the daily totals, which count every run (one that
-  // found nothing to do is counted there, not listed: a check that is not working is listed
-  // each time, and would seem to run more), for yesterday against the seven days before.
-  // What is scheduled work is told by the record: what a schedule set off (not a message
-  // coming in, which is how many were sent).
+  // How often scheduled work ran: from the daily totals, which count every run a schedule set
+  // off (one that found nothing to do is counted there, not listed: a check that is not working
+  // is listed each time, and would seem to run more), for yesterday against the seven days
+  // before. Only what a schedule set off: a message coming in is how many were sent.
   const midnight = new Date(nowS * 1000).setHours(0, 0, 0, 0) / 1000;
   if (from < midnight) {
-    const scheduled = new Set(
-      all(
-        `SELECT DISTINCT kind, category FROM activity a WHERE ts > ? AND ts < ? AND ${NOT_MINE} AND surface = 'job' AND kind IN ('job', 'event') AND lead = 1`,
-        midnight - 8 * DAY,
-        midnight,
-      ).map((r) => `${r.kind}\n${r.category}`),
-    );
     const runs = Map.groupBy(
       all(
-        `SELECT category, kind, day, SUM(n) AS n FROM activity_daily
-          WHERE day >= ? AND day < ? AND kind IN ('job', 'event') AND who = 'blackcat' GROUP BY category, kind, day`,
+        `SELECT category, kind, day, SUM(scheduled) AS n FROM activity_daily
+          WHERE day >= ? AND day < ? AND kind IN ('job', 'event') AND who = 'blackcat' AND scheduled > 0 GROUP BY category, kind, day`,
         dayOf(midnight - 8 * DAY),
         dayOf(midnight),
-      ).filter((r) => scheduled.has(`${r.kind}\n${r.category}`)),
+      ),
       (r) => `${r.kind}\n${r.category}`,
     );
     const yesterday = dayOf(midnight - DAY);

@@ -444,7 +444,7 @@ Mail: reads your email accounts (Gmail and others, over IMAP), read-only; keeps 
 - `bc mail remove <name>`  
   disconnect an account and forget its mail [agent must ask you first]
 - `bc mail history <name> <days>`  
-  how far back an account's mail is fetched: 7, 30, 90 or 180 days (what is stored is kept) [depends on the arguments]
+  how far back an account's mail is fetched, what arrived and what you sent: 7, 30, 90 or 180 days (what is stored is kept) [depends on the arguments]
 - `bc mail rename <name> <newName>`  
   give an account another name [you only]
 - `bc mail list`  
@@ -991,6 +991,7 @@ Checks: have something looked at on a schedule: you are told when it stops worki
   - `--alert <when>`: when you are told: now (default), briefing (only in the daily briefing), "after 3" (looks in a row), "after 15m" (down that long)
   - `--quiet <from-to>`: a time of day when it tells you nothing, e.g. 03:00-03:30 (it still looks and fixes)
   - `--remind <duration>`: tell you again this often while it is not working and not snoozed, e.g. 1h
+  - `--no-working-again`: say nothing when it is fine again, and tell you each time it happens: for a check that watches for something (a TV that turns itself on), not for an outage
   - `--measure <figures>`: figures to keep from what --run prints, e.g. "temp,load": JSON with those fields, one number alone, or lines of name=value
   - `--limit <limits>`: past one of these it is not working, e.g. "temp>75" or "temp>75,free<10" (the figures are kept too)
   - `--context <command>`: when it is not working, what this prints is kept with the time (and its picture, with --file): bc check history
@@ -1013,6 +1014,7 @@ Checks: have something looked at on a schedule: you are told when it stops worki
   - `--alert <when>`: when you are told: now (default), briefing (only in the daily briefing), "after 3" (looks in a row), "after 15m" (down that long)
   - `--quiet <from-to>`: a time of day when it tells you nothing, e.g. 03:00-03:30 (it still looks and fixes)
   - `--remind <duration>`: tell you again this often while it is not working and not snoozed, e.g. 1h
+  - `--no-working-again`: say nothing when it is fine again, and tell you each time it happens: for a check that watches for something (a TV that turns itself on), not for an outage
   - `--measure <figures>`: figures to keep from what --run prints, e.g. "temp,load": JSON with those fields, one number alone, or lines of name=value
   - `--limit <limits>`: past one of these it is not working, e.g. "temp>75" or "temp>75,free<10" (the figures are kept too)
   - `--context <command>`: when it is not working, what this prints is kept with the time (and its picture, with --file): bc check history
@@ -1021,6 +1023,7 @@ Checks: have something looked at on a schedule: you are told when it stops worki
   - `--no-look-for`: drop the description, so only the plain rules decide
   - `--no-quiet`: no quiet time
   - `--no-remind`: no reminders
+  - `--working-again`: say again when it is fine again (the usual)
   - `--no-measure`: keep no figures
   - `--no-limit`: no limits
   - `--no-context`: keep nothing of what was going on
@@ -1074,7 +1077,8 @@ Examples:
 
 What is wrong is kept one row an outage, from when it was first found until it works again:
 found again meanwhile, that row is brought up to date. You are told when it starts (or as
---alert says), when a snooze runs out, and when it works again.
+--alert says), when a snooze runs out, and when it works again (not with --no-working-again:
+then each time it happens is told, and kept, on its own).
 
 A check asks; what it asks is usually a plugin's own "check" command, which knows how to
 tell whether its system is well (bc ha check, bc unifi check, and so on).
@@ -1291,11 +1295,13 @@ Reminders: reminders and nudges delivered here: ones you set, and ones from your
   - `--anyway`: set it even though it looks like something already on a list or set as a reminder
 - `bc remind list`  
   upcoming reminders [agent may run it]
-  - `--all`: include done and cancelled ones
+  - `--all`: include done, cancelled and missed ones
 - `bc remind done <id>`  
-  mark a reminder done [agent may run it]
+  mark a reminder done (one that repeats: this time) [agent may run it]
 - `bc remind cancel <id>`  
-  cancel a reminder [agent may run it]
+  cancel a reminder (one that repeats: this time only) [agent may run it]
+- `bc remind stop <id>`  
+  stop a reminder that repeats: no more of it [agent may run it]
 - `bc remind snooze <id>`  
   move a reminder to a later time [agent may run it]
   - `--at <time>`: "YYYY-MM-DD HH:MM", "YYYY-MM-DD" (9:00) or "HH:MM" (next time it comes round)
@@ -1314,6 +1320,7 @@ Examples:
   bc remind add Reply to Mum about Saturday --at 18:30 --msg <message-id>
   bc remind add Take out the bins --at 20:00 --repeat weekly
   bc remind snooze 4 --in 1h
+  bc remind stop 7             a repeating one: no more of it (done and cancel are for this time)
 
 Things to do are picked up from your messages by the built-in "Things I need to do" watch:
   bc watch setup             on or off, when it looks, which chats, email (also in the bot: /setup)

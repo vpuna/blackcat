@@ -241,7 +241,8 @@ function standing(cmd) {
 }
 
 // → { action: 'allow' } | { action: 'deny', reason } | { action: 'ask', title, detail, why, root }
-export function decide(tool, input = {}) {
+// `tainted`: the conversation has read what other people wrote (a command may then ask).
+export function decide(tool, input = {}, { tainted = false } = {}) {
   const deny = (reason) => ({
     action: 'deny',
     reason: `Refused by blackcat's policy without asking the owner: ${reason}. Don't retry or work around it; tell the owner it isn't allowed.`,
@@ -258,7 +259,7 @@ export function decide(tool, input = {}) {
           'Not run: blackcat commands are run on their own, written as `blackcat <plugin> <command> …`, not through another program or by a path.',
       };
     // A plugin command: its manifest says whether the agent may run it, must ask, or may not.
-    const pa = pluginAccess(cmd);
+    const pa = pluginAccess(cmd, { tainted });
     if (pa) {
       if (pa.level === 'allow') return { action: 'allow' };
       if (pa.level === 'ask') {

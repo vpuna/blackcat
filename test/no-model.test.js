@@ -136,4 +136,11 @@ test('a check that only runs a command works; one that asks a model to judge say
   const add = bc('check', 'add', 'Plain', '--run', 'true', '--every', '1h');
   assert.equal(add.status, 0, add.stdout + add.stderr);
   assert.match(bc('check', 'run', 'plain', '--dry-run').stdout, /working|passed|ok/i);
+  const judged = bc('check', 'add', 'Judged', '--run', 'echo all is well', '--look-for', 'it says all is well', '--every', '1h');
+  assert.equal(judged.status, 0, judged.stdout + judged.stderr);
+  const r = bc('check', 'run', 'judged', '--dry-run');
+  assert.match(
+    r.stdout,
+    /^Judged: could not tell\. could not judge it \(No model is set up .*Commands still work without one: \/help lists them\./,
+  );
 });

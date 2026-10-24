@@ -11,28 +11,26 @@ import { archiveSent, forgetSent, setState, stateOf } from './store.js';
 //   imap    { sentHeaders, texts } (plugins/mail/imap.js)
 //   label   the name the account goes by now
 // → { fresh, stored, more }
+// As far back as the account's days, as what arrives. What was sent before it was first
+// collected is history, not news: "Things I need to do" reads mail only from the day it began
+// to, and a watch that follows people by name never reads the owner's own.
 export async function syncSent(db, client, name, me, { since, room, imap, label = name, nowS = Math.floor(Date.now() / 1000) }) {
-  let st = stateOf(db, name);
-  // The first time: from now on. What was sent before is not brought in as if it were new.
-  if (!st.sent_since) {
-    setState(db, name, { sent_since: nowS });
-    st = stateOf(db, name);
-  }
-  const from = Math.max(since, st.sent_since * 1000);
+  const st = stateOf(db, name);
+  if (!st.sent_since) setState(db, name, { sent_since: nowS });
   const have = () => new Set(db.prepare('SELECT uid FROM sent WHERE account = ?').pluck().all(name));
-  let h = await imap.sentHeaders(client, { sinceMs: from, have: have() });
+  let h = await imap.sentHeaders(client, { sinceMs: since, have: have() });
   if (!h) return { fresh: 0, stored: 0, more: 0 }; // this server names no Sent folder
   // The server renumbered the folder (rare): what was stored no longer lines up.
   if (st.sent_validity && st.sent_validity !== h.uidValidity) {
     forgetSent(db, name);
-    h = await imap.sentHeaders(client, { sinceMs: from, have: new Set() });
+    h = await imap.sentHeaders(client, { sinceMs: since, have: new Set() });
   }
   // (The server answers "since" by whole days: what was sent earlier that day is left out here.)
-  const fresh = h.fresh.filter((m) => m.ts >= st.sent_since);
+  const fresh = h.fresh.filter((m) => m.ts * 1000 >= since);
   const ins = db.prepare(
-    'INSERT OR IGNORE INTO sent (account, uid, ts, to_addr, to_name, others, subject) VALUES (@account, @uid, @ts, @to, @toName, @others, @subject)',
+    'INSERT OR IGNORE INTO sent (account, uid, ts, to_addr, to_name, others, subject, files) VALUES (@account, @uid, @ts, @to, @toName, @others, @subject, @files)',
   );
-  db.transaction(() => fresh.forEach((m) => ins.run({ account: name, ...m })))();
+  db.transaction(() => fresh.forEach((m) => ins.run({ account: name, ...m, files: JSON.stringify(m.files ?? []) })))();
   setState(db, name, { sent_validity: h.uidValidity });
 
   const waiting = db.prepare('SELECT * FROM sent WHERE account = ? AND stored = 0 ORDER BY ts DESC').all(name);

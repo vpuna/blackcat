@@ -23,6 +23,9 @@ export function nameIn(tokens) {
   }
   return undefined;
 }
+// And after the conversation has read what other people wrote, anything saved is put to the
+// owner first: a memory reaches every later conversation as what the owner said, so a message
+// must not be able to plant one.
 function losing(ctx, tokens, how) {
   if (ctx.caller !== 'agent') return 'allow';
   const name = nameIn(tokens);
@@ -30,9 +33,9 @@ function losing(ctx, tokens, how) {
   if (how === 'forget')
     return { level: 'ask', describe: was ? `forget what I remember as "${name}" (${was.summary})` : 'forget something I remember' };
   const rewrites = tokens.some((t) => t === '--text' || t.startsWith('--text=')) && !tokens.includes('--append');
-  return was && rewrites
-    ? { level: 'ask', describe: `replace what I remember as "${name}" (${was.summary}) with something else` }
-    : 'allow';
+  if (was && rewrites) return { level: 'ask', describe: `replace what I remember as "${name}" (${was.summary}) with something else` };
+  if (ctx.tainted) return { level: 'ask', describe: `remember${was ? ', adding to' : ''} "${name ?? 'something'}"` };
+  return 'allow';
 }
 
 export default {

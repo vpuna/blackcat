@@ -5,8 +5,8 @@
 //   npm test -- watch bot     only the test files with these words in their names
 //   npm run test:changed      lint, format check, and the test files a change touches
 //
-// Options: --jobs N (test files at once; default: one per core), --no-lint, --list (say
-// what would run, and run nothing).
+// Options: --jobs N (test files at once; default: one and a half per core, as many of them
+// spend their time waiting), --no-lint, --list (say what would run, and run nothing).
 //
 // Each test file is a process of its own with its own empty installation, so files can run
 // side by side. The slowest are started first (from how long each took last time), which is
@@ -22,7 +22,7 @@ const args = process.argv.slice(2);
 const flag = (name) => args.includes(name);
 const valueOf = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : null);
 const words = args.filter((a, i) => !a.startsWith('--') && args[i - 1] !== '--jobs');
-const jobs = Math.max(1, Number(valueOf('--jobs')) || os.availableParallelism());
+const jobs = Math.max(1, Number(valueOf('--jobs')) || Math.ceil(os.availableParallelism() * 1.5));
 const TIMES = path.join(root, 'node_modules/.cache/blackcat-test-times.json');
 const KEPT = path.join(root, 'node_modules/.cache/blackcat-test-failures');
 const times = (() => {
@@ -159,9 +159,18 @@ async function main() {
   const tasks = [
     ...(lint
       ? [
-          { name: 'lint', cmd: path.join(root, 'node_modules/.bin/eslint'), argv: ['.'] },
-          { name: 'format', cmd: path.join(root, 'node_modules/.bin/prettier'), argv: ['--check', '.'] },
-        ].filter((t) => fs.existsSync(t.cmd) || (console.log(`- ${t.name}: not installed here (npm install)`), false))
+          // (Each keeps what it found per file, by content, and looks again only at what changed.)
+          {
+            name: 'lint',
+            cmd: path.join(root, 'node_modules/.bin/eslint'),
+            argv: ['--cache', '--cache-strategy', 'content', '--cache-location', 'node_modules/.cache/eslint/', '.'],
+          },
+          {
+            name: 'format',
+            cmd: path.join(root, 'node_modules/.bin/prettier'),
+            argv: ['--check', '--cache', '--cache-strategy', 'content', '.'],
+          },
+        ].map((t) => (fs.existsSync(t.cmd) ? t : { ...t, missing: true }))
       : []),
     ...files.map((f) => ({ name: nameOf(f), file: f, cmd: process.execPath, argv: ['--test', '--test-reporter=tap', f] })),
   ];
@@ -181,16 +190,21 @@ async function main() {
   const worker = async () => {
     while (next < tasks.length) {
       const t = tasks[next++];
-      const r = await run(t.cmd, t.argv);
+      // (Not there is not passed: npm install, or --no-lint to leave them out on purpose.)
+      const r = t.missing ? { code: 1, out: `${t.name} is not installed here: npm install`, ms: 0 } : await run(t.cmd, t.argv);
       const n = (re) => Number(new RegExp(`^# ${re} (\\d+)`, 'm').exec(r.out)?.[1] ?? 0);
+      // A file that ran no test at all checked nothing (a test left out by mistake, say). Node
+      // then reports the file itself as the one test, passed.
+      const empty = !!t.file && r.code === 0 && r.out.split('\n').includes(`ok 1 - ${t.file}`) && n('tests') === 1;
+      if (empty) r.out += '\nnot ok - it ran no tests\n';
       if (t.file) {
         times[t.file] = r.ms;
-        pass += n('pass');
+        if (!empty) pass += n('pass');
         fail += n('fail');
       }
-      const ok = r.code === 0;
+      const ok = r.code === 0 && !empty;
       console.log(
-        `${ok ? '✓' : '✗'} ${t.name.padEnd(24)} ${secs(r.ms).padStart(7)}${t.file ? `  ${n('pass')} passed${n('fail') ? `, ${n('fail')} failed` : ''}` : ''}`,
+        `${ok ? '✓' : '✗'} ${t.name.padEnd(24)} ${secs(r.ms).padStart(7)}${empty ? '  no tests in it' : t.file ? `  ${n('pass')} passed${n('fail') ? `, ${n('fail')} failed` : ''}` : ''}`,
       );
       if (!ok) failed.push({ ...t, said: t.file ? failures(r.out).join('\n') || r.out.slice(-2000) : r.out.slice(0, 3000) });
       // The whole of what a failing file printed is kept, for a failure that will not happen again when asked to.

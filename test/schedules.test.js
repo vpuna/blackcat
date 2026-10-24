@@ -23,6 +23,12 @@ function bc(...args) {
   const r = spawnSync(process.execPath, [`${root}bin/bc.js`, ...args], { encoding: 'utf8', env: process.env, timeout: 60_000 });
   return { ok: r.status === 0, out: r.stdout.trim(), err: r.stderr.trim(), json: () => JSON.parse(r.stdout) };
 }
+// Refused, and said why in a sentence: not a crash, and not a silent failure.
+function refused(x, what) {
+  assert.equal(x.ok, false, what);
+  assert.match(x.err, /\w/, `${what}: said why`);
+  assert.doesNotMatch(x.err, /\n\s+at |TypeError|ReferenceError|SyntaxError/, `${what}: not a crash`);
+}
 
 test('the briefing: set as cron, as times and days, and refused when wrong', () => {
   assert.match(bc('watch', 'briefing', '--show').out, /At 06:30/);
@@ -48,8 +54,7 @@ test('the briefing: set as cron, as times and days, and refused when wrong', () 
     ['--at', '25:00'],
     ['--days', 'weekdays'],
   ]) {
-    const x = bc('watch', 'briefing', ...bad);
-    assert.equal(x.ok, false, bad.join(' '));
+    refused(bc('watch', 'briefing', ...bad), bad.join(' '));
   }
   assert.deepEqual(load().plugins.settings.watch.briefing.cron, ['0 7 * * 1-5', '30 18 * * 1-5'], 'a refused change leaves it as it was');
 });
@@ -85,7 +90,7 @@ test('a watch: its report and when it looks are cron, however they were said', (
     ['--cron', '0 18 * * 9'],
     ['--at', '18:00'],
   ]) {
-    assert.equal(bc('watch', 'edit', 'Plain', ...bad).ok, false, bad.join(' '));
+    refused(bc('watch', 'edit', 'Plain', ...bad), bad.join(' '));
   }
 });
 
@@ -112,7 +117,7 @@ test('a shortcut: its schedule is cron, however it was said', () => {
   assert.deepEqual([sc.cron, sc.at, sc.days], [['0 19 * * 6,0'], undefined, undefined]);
   r = bc('shortcut', 'schedule', 'old', '--at', '08:00', '--days', 'weekdays', '--json').json();
   assert.deepEqual(r.cron, ['0 8 * * 1-5']);
-  assert.equal(bc('shortcut', 'schedule', 'old', '--cron', 'nonsense').ok, false);
+  refused(bc('shortcut', 'schedule', 'old', '--cron', 'nonsense'), 'nonsense');
   assert.deepEqual(load().plugins.settings.shortcut.shortcuts.old.cron, ['0 8 * * 1-5']);
   bc('shortcut', 'schedule', 'old', '--off');
   assert.equal(load().plugins.settings.shortcut.shortcuts.old.cron, undefined);
@@ -132,7 +137,7 @@ test('a repeating reminder is cron, and comes round when the cron says', async (
     ['--repeat', 'fortnightly', '--at', '2027-03-02 07:00'],
     ['--cron', '0 7 * * *', '--repeat', 'daily'],
   ]) {
-    assert.equal(bc('remind', 'add', 'Nope', ...bad).ok, false, bad.join(' '));
+    refused(bc('remind', 'add', 'Nope', ...bad), bad.join(' '));
   }
   const { nextRepeat, repeatCron } = await import('../src/util/when.js');
   const ts = (y, mo, d, h, mi = 0) => Math.floor(new Date(y, mo - 1, d, h, mi).getTime() / 1000);

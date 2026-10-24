@@ -116,7 +116,7 @@ const SHAPE = {
   },
   service: { id: 'string', summary: 'string', command: 'string', ready: 'fn', health: 'fn' },
   job: { id: 'string', summary: 'string', run: 'fn', when: 'sync', cron: 'any', every: 'any', at: 'any' },
-  chat: { commands: 'any', install: 'fn', tick: 'fn', quick: 'fn' },
+  chat: { commands: 'any', install: 'fn', tick: 'fn', quick: 'fn', quickFirst: 'boolean' },
   // Something that reads a kind of file on this machine (see src/archive/reading.js).
   reader: { kind: 'string', read: 'fn', stop: 'fn', ready: 'sync' },
   agent: { fill: 'sync', readDirs: 'sync', listCommands: 'boolean', notes: 'any' },
@@ -786,13 +786,15 @@ function secretsFor(name) {
 }
 
 // `caller` is who started the command: 'owner' (terminal or /setup), 'agent', or 'job'.
-export function makeCtx(plugin, { caller = 'owner', surface = 'terminal' } = {}) {
+export function makeCtx(plugin, { caller = 'owner', surface = 'terminal', tainted = false } = {}) {
   const name = plugin.name;
   const dataDir = path.join(PLUGIN_DATA, name);
   return {
     plugin: name,
     caller,
     surface,
+    // (Deciding access only: whether the agent's conversation has read what other people wrote.)
+    tainted,
     // Everything in src/api.js. A bundled plugin imports that file; a plugin kept outside
     // the repository (user-plugins/, or installed with `bc plugin add`) can't rely on where
     // blackcat's code is, so it reaches the same functions here: `ctx.api.shell(…)`.

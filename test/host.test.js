@@ -87,6 +87,8 @@ test('and by the command itself when the path is hidden behind a wildcard, a var
     `cat ${dir}/data/inbox-note.txt`,
     `tar cf - ${dir}/data`,
     `cp ${dir}/data/config.json /tmp/x`,
+    `p=${dir}/data; cat $p/config.json`,
+    `cat ${d}/dat*/config.json`,
   ];
   for (const c of cases) {
     const r = asAgent(c);
@@ -94,7 +96,6 @@ test('and by the command itself when the path is hidden behind a wildcard, a var
     assert.match(r.stderr, /private files or folders/, c);
     assert.doesNotMatch(r.stdout + r.stderr, /SECRET-(BOT-TOKEN|MAIL-PASSWORD|IN-DATA-ROOT)/, `leaked: ${c}`);
   }
-  assert.ok(d);
 });
 
 test('ordinary files and the folders the agent may read are not affected', () => {

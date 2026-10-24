@@ -67,7 +67,8 @@ const atTerminal = () =>
   !!process.stdin.isTTY && !!process.stdout.isTTY && process.env.BLACKCAT_CALLER !== 'agent' && !process.env.BLACKCAT_CHAT_ID;
 
 // The last choice is the one that leaves things as they are ("Cancel").
-// → { answer: one of the choices, or null; how: 'answered' | 'expired' | 'unasked'; why? }
+// → { answer: one of the choices, or null; how: 'answered' | 'withdrawn' (the owner wrote
+//   instead, or cancelled) | 'expired' | 'unasked'; why? }
 export async function askOwner(part, title, q, { signal } = {}) {
   const wrong = problems(q);
   if (wrong.length) throw new Error(`askOwner: ${wrong.join('; ')}`);
@@ -77,7 +78,7 @@ export async function askOwner(part, title, q, { signal } = {}) {
   record({
     kind: 'event',
     category: part,
-    summary: `asked the owner: ${result.answer ? `"${result.answer}"` : result.how === 'expired' ? 'no answer in time' : 'could not ask'}`,
+    summary: `asked the owner: ${result.answer ? `"${result.answer}"` : ({ expired: 'no answer in time', withdrawn: 'not answered: they wrote instead' }[result.how] ?? 'could not ask')}`,
     ok: result.how !== 'unasked',
     data: { how: result.how, ...(result.why ? { why: result.why } : {}) },
   });
@@ -95,7 +96,7 @@ async function inTerminal(q, expiresIn) {
     // (The last choice is the one that does nothing: a stray Enter chooses it.)
     initialValue: q.choices.at(-1),
   });
-  if (p.isCancel(v)) return { answer: null, how: 'answered', why: 'cancelled' };
+  if (p.isCancel(v)) return { answer: null, how: 'withdrawn', why: 'cancelled' };
   if (Date.now() - t > expiresIn * 1000) {
     p.log.warn('That came after the question expired, so it does not count.');
     return { answer: null, how: 'expired' };
@@ -127,7 +128,7 @@ async function onChannel(part, title, q, expiresIn, signal) {
       const row = get();
       if (row.state === 'answered') return { answer: row.answer, how: 'answered' };
       if (row.state === 'expired') return { answer: null, how: 'expired' };
-      if (row.state === 'withdrawn') return { answer: null, how: 'answered', why: 'the owner wrote instead of answering' };
+      if (row.state === 'withdrawn') return { answer: null, how: 'withdrawn', why: 'the owner wrote instead of answering' };
       if (row.state === 'unsent') return { answer: null, how: 'unasked', why: 'it could not be sent' };
       if (row.state === 'new' && now() - t > SEND_WAIT_S && end('unsent', "'new'"))
         return { answer: null, how: 'unasked', why: 'the agent service is not running, so nothing could be sent' };
@@ -148,6 +149,10 @@ const chatOf = (s) => (/^-?\d+$/.test(s) ? Number(s) : s);
 
 // Send new questions, take taps, and close the messages of those that ended. → { stop() }
 export function installAsks({ everyMs = 1000 } = {}) {
+  // ("typing…" is not shown over a question waiting for the owner's tap: it is their turn.)
+  ui.holdWorking(
+    (chat) => !!use((db) => db.prepare("SELECT 1 FROM asks WHERE chat = ? AND state = 'sent' AND expires_ts > ?").get(String(chat), now())),
+  );
   ui.action(/^ak:([0-9a-f]{12}):(\d)$/, async (c) => {
     const [, id, n] = c.match;
     const row = use((db) => db.prepare('SELECT * FROM asks WHERE id = ?').get(id));

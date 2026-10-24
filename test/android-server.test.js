@@ -25,9 +25,13 @@ const server = http.createServer((req, res) => {
     .on('end', () =>
       res.end(
         JSON.stringify(
-          device.stuck
+          // stuck: nothing works (until it is stopped); broken: nothing ever works; failing: one
+          // method's own error, the server otherwise well
+          device.stuck || device.broken
             ? { jsonrpc: '2.0', id: 1, error: { code: -32001, message: 'java.lang.RuntimeException' } }
-            : { jsonrpc: '2.0', id: 1, result: { displayWidth: 1080 } },
+            : device.failing?.[JSON.parse(body || '{}').method]
+              ? { jsonrpc: '2.0', id: 1, error: { code: -32001, message: device.failing[JSON.parse(body).method] } }
+              : { jsonrpc: '2.0', id: 1, result: { displayWidth: 1080 } },
         ),
       ),
     );
@@ -87,7 +91,10 @@ test('one already running with its key is left as it is; a key changed elsewhere
   const { setServerKey } = await import('../plugins/android/routines.js');
   device.key = 'e'.repeat(64);
   setServerKey(ctx, 'phone1', device.key);
+  const startsBefore = device.shell.filter((l) => l.includes(' -t ')).length;
   assert.equal((await dev.call('deviceInfo')).displayWidth, 1080);
+  assert.equal(device.shell.filter((l) => l.includes(' -t ')).length, startsBefore, 'not started again: the key kept is the one it has');
+  assert.equal(device.key, 'e'.repeat(64));
   // Started again with a key no blackcat process has (some other way): the request that met it
   // starts it again with a new key, and goes through, with nothing said to whoever asked.
   device.key = 'f'.repeat(64);
@@ -120,4 +127,25 @@ test('stopping the server is written so that it cannot stop the shell it runs in
 test('the server comes with the plugin and is the pinned one', () => {
   assert.equal(serverFile(), SERVER.file);
   assert.equal(fs.statSync(SERVER.file).size, SERVER.bytes);
+});
+
+test('an error of the request itself, with the server well, is said as it is: nothing is started again', async () => {
+  const dev = new Device(ctx, 'phone1');
+  device.failing = { click: 'java.lang.RuntimeException: UiObjectNotFoundException' };
+  const starts = device.shell.filter((l) => l.includes(' -t ')).length;
+  await assert.rejects(dev.call('click', [10, 10]), /could not click: java\.lang\.RuntimeException: UiObjectNotFoundException/);
+  assert.equal(device.shell.filter((l) => l.includes(' -t ')).length, starts, 'not started again');
+  device.failing = null;
+});
+
+test('one that never comes to look at the screen says why it did not start', async () => {
+  const dev = new Device(ctx, 'phone1');
+  device.broken = true;
+  await assert.rejects(dev.call('dumpWindowHierarchy'), /did not start: it answered, but could not look at the screen: .*RuntimeException/);
+  const { recent } = await import('../src/activity/log.js');
+  assert.match(
+    recent({ category: 'android' })[0].summary,
+    /^screen server did not start on the phone1 \(.*\): it answered, but could not look at the screen/,
+  );
+  device.broken = false;
 });

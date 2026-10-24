@@ -35,6 +35,7 @@ export default {
       ui.action('demo:clear', (c) => c.clearActions());
     },
     quick: async (text) => {
+      if (/^(turn tv on|turn on the tv)\\.?$/i.test(text)) return { text: 'the demo turned a tv on' };
       if (text === 'demo quick') return { text: 'done quickly', note: 'the demo did something quick' };
       if (text === 'demo careful') return { confirm: 'Really do the careful thing?', run: async () => ({ text: 'did the careful thing' }) };
       return null;
@@ -86,6 +87,7 @@ readline.createInterface({ input: process.stdin }).on('line', async (line) => {
     return done(allowed ? 'It is deleted.' : 'I did not delete it.');
   }
   if (/send it back/.test(last)) return done('Here it is.\\n[[send: ' + (/^- (\\S+) \\(/m.exec(text)?.[1] ?? '/nowhere') + ']]');
+  if (/send the hostname/.test(last)) return done('Here.\\n[[send: /etc/hostname]]');
   if (/long please/.test(last)) return done(Array.from({ length: 90 }, (_, i) => 'line ' + i + ' ' + 'x'.repeat(90)).join('\\n'));
   done('echo: ' + last);
 });`;

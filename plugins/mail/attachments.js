@@ -3,12 +3,13 @@
 // `source.fetchMedia`.
 import { download, withMailbox } from './imap.js';
 
-// id: "mail:<account>:<uid>:<n>"; part: where in the mail the file is.
+// id: "mail:<account>:<uid>:<n>", or "mail:<account>:s<uid>:<n>" for one the owner sent;
+// part: where in the mail the file is.
 export async function fetchAttachment(ctx, id, part, dest) {
-  const m = /^mail:([a-z0-9_-]+):(\d+):\d+$/.exec(id);
+  const m = /^mail:([a-z0-9_-]+):(s?)(\d+):\d+$/.exec(id);
   const acct = m && ctx.config.get().accounts?.[m[1]];
   if (!acct) throw new Error('its mail account is no longer connected');
   await withMailbox({ host: acct.host, port: acct.port ?? 993, user: acct.address, pass: ctx.secrets.get(`password:${m[1]}`) }, (c) =>
-    download(c, Number(m[2]), part, dest),
+    download(c, Number(m[3]), part, dest, { sent: m[2] === 's' }),
   );
 }

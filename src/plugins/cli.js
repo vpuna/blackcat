@@ -85,7 +85,7 @@ export async function execute(plugin, name, input, { json = false, tokens = [], 
           2,
         )
       : text !== ''
-        ? (text ?? JSON.stringify(data ?? rest, null, 2))
+        ? (text ?? JSON.stringify(shown(data ?? rest), null, 2))
         : null;
     // The agent is given only what it can take in at once: more, and its engine would keep the
     // whole of it in a file of its own, outside blackcat, and go looking through that.

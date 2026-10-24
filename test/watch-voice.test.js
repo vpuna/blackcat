@@ -176,8 +176,6 @@ test('what was said is kept with the message: a search finds it, and the chat sh
   assert.equal(hit.heard, 'lets talk to him tonight about the school trip');
   assert.equal(hit.text ?? null, null, 'its text is still what was typed: nothing');
   assert.match(bc('msg', 'thread', 'Maya').stdout, /\[voice[^\]]*\] 🎙 “lets talk to him tonight about the school trip”/);
-  // one that has not been listened to says nothing
-  assert.doesNotMatch(bc('msg', 'search', 'lecture').said, /🎙/);
 });
 
 test('where a message is background, one with no words is shown as what it was, a voice note with what was heard', async () => {
@@ -207,6 +205,8 @@ test('one that is too long, silent or cannot be read is not listened to twice ov
   const m = say('see you at 8');
   assert.deepEqual(await readNow(), { done: 0, failed: 2, left: 0 });
   assert.deepEqual(await readNow(), { done: 0, failed: 0, left: 0 }, 'neither is tried again');
+  // what was not listened to is not there to be found
+  assert.doesNotMatch(bc('msg', 'search', 'lecture').said, /🎙|lecture/);
   queue({ data: { items: [] } });
   await look();
   const shown = calls().at(-1).input;

@@ -126,6 +126,11 @@ export async function fakeTelegram({ owner = { id: 42, first_name: 'Ana' } } = {
       return ok(true); // sendChatAction, answerCallbackQuery, setMyCommands, deleteWebhook, …
     });
   });
+  // (Connections are kept open as Telegram's are, well past Node's 5 s: a server closing an idle
+  // one just as the bot sends on it again, which a busy machine makes likely, is a reset that
+  // Telegram does not give.)
+  server.keepAliveTimeout = 120_000;
+  server.headersTimeout = 125_000;
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 
   const push = (u) => {

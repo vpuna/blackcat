@@ -2,18 +2,14 @@
 // reach another's settings and secrets, change what the agent is allowed, or get at
 // blackcat's own files is not in it. The core's own parts use src/internal.js.
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
-import { home } from './helpers.js';
+import { codeFiles, home } from './helpers.js';
 
 const dir = home();
 const root = new URL('..', import.meta.url).pathname;
-const files = (...where) =>
-  spawnSync('git', ['ls-files', ...where], { cwd: root, encoding: 'utf8' })
-    .stdout.split('\n')
-    .filter((f) => /\.m?js$/.test(f));
+const files = codeFiles;
 const { save } = await import('../src/config.js');
 save({ plugins: { settings: { wa: { days: 30 }, tg: { days: 7 }, voice: { model: 'small' }, mail: { accounts: { home: {} } } } } });
 const api = await import('../src/api.js');

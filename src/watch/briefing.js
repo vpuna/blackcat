@@ -6,13 +6,30 @@ import { isQuiet } from './lists.js';
 import { COMING, WAITING } from './shape.js';
 import { pendingNudge, wasNudged } from '../reminders/nudges.js';
 import { expirePast, listItems, listWatches, openWatchDb, sameAsText, setItemStatus } from './db.js';
-import { actions, errMsg, esc, hm, listReminders, loaded, log, makeCtx, ymd } from '../internal.js';
+import { actions, errMsg, esc, hm, listReminders, loaded, log, makeCtx, oneOfEachSeries, repeatText, ymd } from '../internal.js';
 import { withDb } from '../db.js';
 import { dateLabel, numbered } from './chat.js';
 
 // What the other parts of blackcat, and plugins, have for the briefing: each may offer
 // `briefing` in its manifest, giving { problems: [html], fine: html | null, buttons?: [{ label, id }],
 // note?: html } (a note is shown at the end, every time: what the model used).
+// One message's length, as a chat takes it.
+const LIMIT = 4000;
+// The lines that fit in `room` characters, whole, with `more` said in place of the rest.
+// → { lines, dropped }
+export function fitLines(lines, room, more) {
+  const len = (ls) => ls.join('\n').length;
+  if (len(lines) <= room) return { lines, dropped: 0 };
+  const kept = [];
+  for (const l of lines) {
+    if (len([...kept, l, '', more]) > room) break;
+    kept.push(l);
+  }
+  // (nor a heading left with nothing under it)
+  while (kept.length && (kept.at(-1) === '' || /^<b>[^<]*<\/b>$/.test(kept.at(-1)))) kept.pop();
+  return { lines: [...kept, '', more], dropped: lines.length - kept.length };
+}
+
 export async function fromOthers() {
   const out = [];
   for (const p of loaded()) {
@@ -100,8 +117,9 @@ export async function composeBriefing(db, chatId, { terminal = false } = {}) {
     const tomorrow = ymd(now + 86400000);
     const weekEnd = ymd(now + 7 * 86400000);
     // Reminders you set yourself (nudges are shown through their items). One that was sent
-    // and never marked done stays under Today until you deal with it.
-    const own = listReminders(db, { chatId }).filter((r) => !r.item_id);
+    // and never marked done stays under Today until you deal with it. One that repeats is
+    // there once: the time that went and is not answered, or else the next.
+    const own = oneOfEachSeries(listReminders(db, { chatId }).filter((r) => !r.item_id));
 
     const listed = [];
     const out = [`☀️ <b>${esc(new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }))}</b>`];
@@ -123,7 +141,7 @@ export async function composeBriefing(db, chatId, { terminal = false } = {}) {
         const when =
           r.status === 'sent' ? 'due earlier, not marked done' : due > tomorrow ? `${dateLabel(due)}, ${hm(r.due_ts)}` : hm(r.due_ts);
         out.push(
-          `${listed.length}. ⏰ <b>${esc(r.text)}</b> · <i>${esc(when)}</i>${r.file ? ' 📎' : ''}${terminal ? ` [reminder ${r.id}]` : ''}`,
+          `${listed.length}. ⏰ <b>${esc(r.text)}</b> · <i>${esc(when)}</i>${r.repeat ? ` · 🔁 <i>${esc(repeatText(r.repeat))}</i>` : ''}${r.file ? ' 📎' : ''}${terminal ? ` [reminder ${r.id}]` : ''}`,
         );
       }
       for (const r of rows) {
@@ -226,7 +244,7 @@ export async function composeBriefing(db, chatId, { terminal = false } = {}) {
       out.push(
         '',
         terminal
-          ? 'To deal with one: bc watch item &lt;id&gt; done|keep|drop · bc remind done|cancel|snooze &lt;id&gt;. Or just tell me.'
+          ? 'To deal with one: bc watch item &lt;id&gt; done|keep|drop · bc remind done|cancel|snooze|stop &lt;id&gt;. Or just tell me.'
           : 'Tap a number to open it, and to mark it done, keep it or drop it.',
       );
 
@@ -234,14 +252,18 @@ export async function composeBriefing(db, chatId, { terminal = false } = {}) {
       .filter((x) => x.note)
       .map((x) => `\n\n${x.note}`)
       .join('');
+    // Too long for one message: the lists are cut at a line (never inside one, which would
+    // break its formatting), the notes at the end kept whole, and what is not shown is not
+    // numbered nor counted as told (it comes again next time).
+    const cut = fitLines(out, LIMIT - notes.length, `<i>… more than fits here: ${terminal ? 'bc watch list' : '/watch'}</i>`);
+    if (cut.dropped) listed.splice(Math.max(0, ...cut.lines.map((l) => Number(/^(\d+)\. /.exec(l)?.[1] ?? 0))));
     const kb = actions();
     numbered(kb, listed, (it) => (it.reminder ? `rm:${it.reminder.id}:o` : `wi:${it.id}:o`));
     for (const i of done) kb.row().add(`↩ Not done: ${i.title.slice(0, 40)}`, `wi:${i.id}:k`);
     // And what the other parts offer to act on (a check that is not working: snooze it, say it is fixed).
     for (const b of said.flatMap((x) => x.buttons ?? [])) kb.row().add(b.label, b.id);
     return {
-      // (The notes at the end are kept whole: what is cut, when it is too long, is the lists.)
-      html: [out.join('\n').slice(0, 4000 - notes.length), notes].join('').trim(),
+      html: [cut.lines.join('\n'), notes].join('').trim(),
       keyboard: kb,
       listed,
       // New items have now been reported: they stay on the list as "kept" until dealt with.

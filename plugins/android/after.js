@@ -70,6 +70,6 @@ export async function judgeResult(ctx, { routine, button, els, shot, imageBlock 
     return null;
   }
   const sign = d.final && d.shows != null ? steady(targetOf(els[d.shows] ?? {})) : null;
-  const read = readSpec(d.read, els);
+  const read = readSpec(d.read, els, (n) => ctx.log(`the screen after the press: ${n}`));
   return { ...d, result: sign ? { shows: sign, ...(Object.keys(read).length ? { read } : {}) } : null };
 }

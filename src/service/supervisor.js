@@ -39,11 +39,20 @@ const FAST = !!process.env.BLACKCAT_SUPERVISOR_FAST;
 const T = {
   tick: FAST ? 200 : 5000, // how often what should be running is looked at again
   backoff: FAST ? [100, 200, 400, 800] : [1000, 2000, 5000, 15_000, 30_000, 60_000],
-  settled: FAST ? 8000 : 60_000, // up this long: the next death starts from the short wait again
+  settled: FAST ? 30_000 : 60_000, // up this long: the next death starts from the short wait again
+  // (In tests, well over what a start takes on a busy machine.)
   grace: FAST ? 700 : 15_000, // asked to stop: how long before it is killed
   logMax: FAST ? 20_000 : 5 * 1024 ** 2,
 };
 const stamp = () => new Date().toISOString();
+
+// A service that ended by itself after running `ranMs`, having ended `fails` times in a row
+// before: how long until it is started again, and how many times in a row it has now ended.
+// Up long enough (settled), it starts again from the shortest wait.
+export function backoff(fails, ranMs, t = T) {
+  const n = ranMs >= t.settled ? 0 : fails;
+  return { wait: t.backoff[Math.min(n, t.backoff.length - 1)], fails: n + 1 };
+}
 
 // What a service prints, into its file: each line with the time if it has none of its own,
 // the file started afresh (the one before kept beside it) when it has grown large.
@@ -179,9 +188,9 @@ export async function run() {
         note(id, 'stopped, and needs you (see its log)', false);
         return set(k, 'needs you', 'it needs you: see its log, put it right, then bc start ' + id);
       }
-      if (ran >= T.settled) k.fails = 0;
-      const wait = T.backoff[Math.min(k.fails, T.backoff.length - 1)];
-      k.fails += 1;
+      const next = backoff(k.fails, ran);
+      const wait = next.wait;
+      k.fails = next.fails;
       k.restarts += 1;
       const how = signal ? `was ended by ${signal}` : `ended with code ${code}`;
       k.log.note(`${how} after ${Math.round(ran / 1000)} s: starting it again in ${Math.round(wait / 100) / 10} s`);
