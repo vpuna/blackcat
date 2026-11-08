@@ -14,6 +14,21 @@ export function findingButtons(id, fix) {
   if (fix) kb.row().add('🔁 Try the fix again', `cf:${id}:r`);
   return kb;
 }
+// What one run of a check has to say, as one message: several things with one cause (the
+// engine for chat and for readers) are one notification. The buttons are for a single thing;
+// with several, /check has each.
+export async function tellOwner(ui, c, log) {
+  const notices = c.notices ?? [];
+  for (const n of notices) log(`"${c.name}": ${n.text}`);
+  if (!notices.length || !ui || c.chatId == null) return;
+  const [one] = notices;
+  await ui
+    .send(c.chatId, notices.map((n) => n.text).join('\n\n'), {
+      what: `about the check "${c.name}"`,
+      ...(notices.length === 1 && one.finding ? { actions: findingButtons(one.finding, one.fix) } : {}),
+    })
+    .catch((e) => log(`could not send: ${e.message}`));
+}
 const SNOOZES = [
   ['1 hour', 's1', { for: '1h' }],
   ['4 hours', 's4', { for: '4h' }],
@@ -100,10 +115,17 @@ export function installChecks(ui) {
         await c.toast('Looking…');
         await c.clearActions().catch(() => {});
         await c.working().catch(() => {});
+        // (Snoozed already: one look, and it stays snoozed.)
+        const snoozed = what === 'x' && f.state === 'snoozed';
         const r =
           what === 'r'
             ? await fixNow(db, k)
-            : await lookAgain(db, k, { fixed: [f], onWait: (s) => c.reply(`⏳ Still not working; looking again in ${lasted(s)}…`) });
+            : await lookAgain(db, k, {
+                fixed: [f],
+                ...(snoozed ? { waits: [] } : { onWait: (s) => c.reply(`⏳ Still not working; looking again in ${lasted(s)}…`) }),
+              });
+        if (r.result.ok === false && snoozed)
+          return c.reply(`✗ ${k.name}: still not working. ${r.result.reason}\nIt stays snoozed ${untilText(f.snoozed_until)}.`);
         if (r.result.ok === false) {
           const still = currentFindings(db, k.id)[0];
           return c.reply(
@@ -174,9 +196,27 @@ export function installChecks(ui) {
 // For the daily briefing: what is not working (snoozed or not), a button for each that is
 // not snoozed, and one line to say so when all is well.
 // → { problems: [html], fine: html | null, buttons: [{ label, id }] }
-export function forBriefing() {
+// On Mondays, what went wrong in the seven days before, in one line: "Last week: This machine:
+// not working 3 times, 5h in all · …". null when nothing did.
+const WEEKLY_DAY = 1; // Monday
+export function lastWeek(db, nowMs = Date.now()) {
+  const t = Math.floor(nowMs / 1000);
+  const bits = [];
+  for (const c of listChecks(db, { activeOnly: true })) {
+    const found = db
+      .prepare('SELECT first_seen, resolved_ts FROM check_findings WHERE check_id = ? AND first_seen >= ?')
+      .all(c.id, t - 7 * 86400);
+    if (!found.length) continue;
+    const down = found.reduce((s, f) => s + ((f.resolved_ts ?? t) - f.first_seen), 0);
+    bits.push(`${esc(c.name)}: not working ${found.length === 1 ? 'once' : `${found.length} times`}, ${lasted(down)} in all`);
+  }
+  return bits.length ? `🗓 Last week: ${bits.join(' · ')}` : null;
+}
+
+export function forBriefing({ nowMs = Date.now() } = {}) {
   return withDb(openChecksDb, (db) => {
     const all = listChecks(db, { activeOnly: true });
+    const note = new Date(nowMs).getDay() === WEEKLY_DAY ? lastWeek(db, nowMs) : null;
     const problems = [];
     const buttons = [];
     for (const c of all.filter((x) => x.wrong))
@@ -191,6 +231,7 @@ export function forBriefing() {
       problems,
       fine: all.length && !problems.length ? `✅ ${all.length === 1 ? esc(all[0].name) : `All ${all.length} checks`}: fine` : null,
       buttons,
+      ...(note ? { note } : {}),
     };
   });
 }

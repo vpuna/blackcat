@@ -21,9 +21,11 @@ import { hm, now } from '../util/time.js';
 import { sleep } from '../util/wait.js';
 import { can, ui } from './desk.js';
 import { actions } from './kit.js';
+import { alive } from '../service/holds.js';
 
 const STEPS = [
   // state: new → sent → answered | expired | unsent (nobody sent it) | withdrawn (whoever asked stopped waiting)
+  //   | stopped (whoever asked has gone: killed before it could close it)
   (db) =>
     db.exec(`
       CREATE TABLE asks (id TEXT PRIMARY KEY, part TEXT NOT NULL, title TEXT NOT NULL, chat TEXT NOT NULL, text TEXT NOT NULL,
@@ -31,6 +33,8 @@ const STEPS = [
         ref TEXT, answer TEXT, answered_ts INTEGER, shown INTEGER NOT NULL DEFAULT 0);
       CREATE INDEX asks_open ON asks (state, shown);
     `),
+  // The process that asked: gone (killed, or stopped with the agent), and the question is closed.
+  (db) => db.exec('ALTER TABLE asks ADD COLUMN pid INTEGER'),
 ];
 const open = () => {
   const db = openSqlite(AGENT_DB);
@@ -112,8 +116,8 @@ async function onChannel(part, title, q, expiresIn, signal) {
   use((db) => {
     db.prepare('DELETE FROM asks WHERE asked_ts < ?').run(t - KEEP_S);
     db.prepare(
-      `INSERT INTO asks (id, part, title, chat, text, picture, choices, asked_ts, expires_ts, state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'new')`,
-    ).run(id, part, title, String(chat), q.text, q.picture ?? null, JSON.stringify(q.choices), t, t + expiresIn);
+      `INSERT INTO asks (id, part, title, chat, text, picture, choices, asked_ts, expires_ts, state, pid) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)`,
+    ).run(id, part, title, String(chat), q.text, q.picture ?? null, JSON.stringify(q.choices), t, t + expiresIn, process.pid);
   });
   const get = () => use((db) => db.prepare('SELECT state, answer, expires_ts FROM asks WHERE id = ?').get(id));
   // (Ended by whoever asks only where nothing else has: a tap that came first stands.)
@@ -130,6 +134,7 @@ async function onChannel(part, title, q, expiresIn, signal) {
       if (row.state === 'expired') return { answer: null, how: 'expired' };
       if (row.state === 'withdrawn') return { answer: null, how: 'withdrawn', why: 'the owner wrote instead of answering' };
       if (row.state === 'unsent') return { answer: null, how: 'unasked', why: 'it could not be sent' };
+      if (row.state === 'stopped') return { answer: null, how: 'unasked', why: 'stopped' };
       if (row.state === 'new' && now() - t > SEND_WAIT_S && end('unsent', "'new'"))
         return { answer: null, how: 'unasked', why: 'the agent service is not running, so nothing could be sent' };
       if (now() >= row.expires_ts && end('expired', "'new', 'sent'")) return { answer: null, how: 'expired' };
@@ -156,6 +161,11 @@ export function installAsks({ everyMs = 1000 } = {}) {
   ui.action(/^ak:([0-9a-f]{12}):(\d)$/, async (c) => {
     const [, id, n] = c.match;
     const row = use((db) => db.prepare('SELECT * FROM asks WHERE id = ?').get(id));
+    if (row?.state === 'sent' && gone(row)) {
+      use((db) => db.prepare("UPDATE asks SET state = 'stopped' WHERE id = ? AND state = 'sent'").run(id));
+      await close({ ...row, state: 'stopped' });
+    }
+    if (row && (row.state === 'stopped' || (row.state === 'sent' && gone(row)))) return c.gone(STOPPED);
     if (!row || row.state !== 'sent' || now() >= row.expires_ts) return c.gone('This question is no longer waiting.');
     if (String(c.conversation) !== row.chat) return c.toast("This isn't your question.");
     const choice = JSON.parse(row.choices)[Number(n)];
@@ -192,7 +202,15 @@ export function installAsks({ everyMs = 1000 } = {}) {
           )
           .all(now()),
       );
-      for (const row of rows) await (row.state === 'new' ? send(row) : close(row));
+      for (const row of rows)
+        if (row.state === 'new' && gone(row))
+          use((db) => db.prepare("UPDATE asks SET state = 'stopped', shown = 1 WHERE id = ?").run(row.id));
+        else await (row.state === 'new' ? send(row) : close(row));
+      // (Whoever asked has gone without closing it: killed. Nobody would take the answer.)
+      const orphans = use((db) => db.prepare("SELECT * FROM asks WHERE state = 'sent' AND pid IS NOT NULL").all()).filter(gone);
+      for (const row of orphans)
+        if (use((db) => db.prepare("UPDATE asks SET state = 'stopped' WHERE id = ? AND state = 'sent'").run(row.id).changes))
+          await close({ ...row, state: 'stopped' });
     } catch (e) {
       log(`questions to the owner: ${errMsg(e)}`);
     } finally {
@@ -223,8 +241,15 @@ async function send(row) {
   }
 }
 
+const STOPPED = 'What asked this was stopped before your answer: nothing was done.';
+const gone = (row) => row.pid != null && !alive(row.pid);
+
 async function close(row) {
-  const said = row.state === 'withdrawn' ? '<b>✖ Not answered: nothing was done</b>' : '<b>⌛ Expired, nothing was done</b>';
+  const said =
+    {
+      withdrawn: '<b>✖ Not answered: nothing was done</b>',
+      stopped: `<b>■ ${STOPPED}</b>`,
+    }[row.state] ?? '<b>⌛ Expired, nothing was done</b>';
   use((db) =>
     db.prepare(`UPDATE asks SET shown = 1, state = CASE state WHEN 'sent' THEN 'expired' ELSE state END WHERE id = ?`).run(row.id),
   );

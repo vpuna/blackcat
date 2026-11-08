@@ -180,3 +180,25 @@ export const ANSWERED = {
     },
   },
 };
+
+// Whether each pair of entries shown is one thing (readers/same.md).
+export const SAME = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['answers'],
+  properties: {
+    answers: {
+      type: 'array',
+      description: 'One answer for each pair shown.',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['pair', 'same'],
+        properties: {
+          pair: { type: 'integer', description: 'The number of the pair, as shown in square brackets.' },
+          same: { type: 'boolean', description: 'true when the two are one thing; false when they are two, or you cannot tell.' },
+        },
+      },
+    },
+  },
+};

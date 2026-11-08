@@ -3,6 +3,7 @@
 // (they already have a title, a day and a time), so they are copied onto the watch's list
 // as they are, and kept in step with the calendar. No model is involved here.
 import { TODO, addItem, findWatch, removeItem, setItemStatus, updateItem } from './db.js';
+import { noteCalendarTwins } from './same.js';
 import { hm, loaded, makeCtx, optIn, ymd } from '../internal.js';
 
 const AHEAD_DAYS = 7;
@@ -52,7 +53,7 @@ async function agenda(fromMs, toMs) {
 export async function syncAgenda(db) {
   const w = findWatch(db, TODO);
   if (!w) return { added: 0, removed: 0 };
-  const mine = db.prepare("SELECT * FROM watch_items WHERE watch_id = ? AND msg_id LIKE 'cal:%'").all(w.id);
+  const mine = db.prepare("SELECT * FROM watch_items WHERE list_id = ? AND msg_id LIKE 'cal:%'").all(w.list_id);
   const open = (it) => it.status === 'new' || it.status === 'kept';
   if (!w.active || !reads(w).calendar) {
     mine.filter(open).forEach((it) => removeItem(db, it.id));
@@ -79,7 +80,7 @@ export async function syncAgenda(db) {
     const had = byKey.get(key);
     if (!had) {
       const it = addItem(db, {
-        watchId: w.id,
+        listId: w.list_id,
         ...fields,
         msgId: key,
         msgChat: `Calendar: ${e.sourceName ?? e.source}`,
@@ -103,8 +104,8 @@ export async function syncAgenda(db) {
   }
   // Gone from the calendar (cancelled, or moved to another day): gone from the list. Not
   // when a calendar could not be read: then nothing is taken off, and what the others had is still added above.
-  if (!whole) return { added, removed: 0 };
-  const gone = mine.filter((it) => open(it) && !seen.has(it.msg_id) && (it.event_date ?? today) >= today);
+  const gone = whole ? mine.filter((it) => open(it) && !seen.has(it.msg_id) && (it.event_date ?? today) >= today) : [];
   gone.forEach((it) => removeItem(db, it.id));
+  await noteCalendarTwins(db, w.list_id);
   return { added, removed: gone.length };
 }

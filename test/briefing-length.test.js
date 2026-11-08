@@ -36,7 +36,7 @@ test('a briefing too long for one message: whole lines, its notes, and only what
   for (let k = 1; k <= 24; k++)
     ids.push(
       addItem(db, {
-        watchId: school.id,
+        listId: school.list_id,
         title: `Entry ${k}: Tom & Jerry's ${'long words of a title '.repeat(9)}`,
         msgId: `m${k}`,
       }).id,

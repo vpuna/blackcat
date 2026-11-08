@@ -26,7 +26,18 @@ const ago = (ms) =>
       : ms < 36 * 3600_000
         ? `${Math.round(ms / 3600_000)} h`
         : `${Math.round(ms / 86400_000)} days`;
-const LATEST = '/current/tmp/image.jpg';
+// Where the latest picture is: /current/image.jpg since Allsky v2026.10, /current/tmp/image.jpg before.
+const LATEST = ['/current/image.jpg', '/current/tmp/image.jpg'];
+// The latest picture's path on this camera, and what its header says. → { path, modified }
+async function latest(c, ms) {
+  for (const p of LATEST) {
+    try {
+      return { path: p, ...(await c.head(p, ms)) };
+    } catch (e) {
+      if (!e.missing || p === LATEST.at(-1)) throw e;
+    }
+  }
+}
 
 // Fetch something to the media folder. → { path, bytes }
 async function fetchTo(ctx, c, from, name) {
@@ -39,7 +50,7 @@ async function fetchTo(ctx, c, from, name) {
 // How the camera is doing: reachable, and how old its latest picture is.
 async function health(ctx, ms = 20_000) {
   const s = settings(ctx);
-  const h = await api(ctx).head(LATEST, ms);
+  const h = await latest(api(ctx), ms);
   const ageMs = h.modified ? Date.now() - h.modified.getTime() : null;
   return { ageMs, stale: ageMs != null && ageMs > s.staleMin * 60_000, modified: h.modified };
 }
@@ -136,7 +147,7 @@ In the bot the same commands send the picture: /allsky now, /allsky startrails.`
         const password = user ? a.password || ctx.secrets.get('password') : undefined; // left empty: the one that is saved
         // Try it before anything is saved.
         const c = client({ url, user, password });
-        const h = await c.head(LATEST);
+        const h = await latest(c);
         const have = await nights(c).catch((e) => (e.missing ? [] : Promise.reject(e)));
         ctx.config.set({ url, user: user || undefined, maxMb: Number(a.maxMb), staleMin: Number(a.staleMin) });
         if (user) ctx.secrets.set('password', password);
@@ -159,8 +170,8 @@ In the bot the same commands send the picture: /allsky now, /allsky startrails.`
       sends: true,
       run: async (ctx) => {
         const c = api(ctx);
-        const h = await c.head(LATEST).catch(() => ({}));
-        const got = await fetchTo(ctx, c, LATEST, 'now.jpg');
+        const h = await latest(c);
+        const got = await fetchTo(ctx, c, h.path, 'now.jpg');
         const age = h.modified ? Date.now() - h.modified.getTime() : null;
         const stale = age != null && age > settings(ctx).staleMin * 60_000;
         const caption =

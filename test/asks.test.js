@@ -18,7 +18,7 @@ function channel() {
     label: 'a test',
     send: async (chat, m) => (did.push({ send: chat, text: m.text, ids: m.actions?.flat().map((a) => a.id) ?? [] }), ++n),
     edit: async (chat, ref, m) => void did.push({ edit: ref, text: m.text, buttons: !!m.actions }),
-    toast: async () => {},
+    toast: async (_ev, text) => void did.push({ toast: text }),
     sendFile: async (chat, file) => void did.push({ file }),
   });
   return did;
@@ -66,6 +66,28 @@ test('a tap from another chat does not answer it, and nothing answers it after i
   await tap(ids[0]);
   await until(() => did.some((d) => d.edit));
   assert.match(did.find((d) => d.edit).text, /Expired, nothing was done/);
+  asks.stop();
+});
+
+test('whoever asked was killed before the tap (a restart): the question is closed, and a tap says nothing was done', async () => {
+  const did = channel();
+  const asks = installAsks({ everyMs: 20 });
+  const answer = askOwner('android', 'Android', { text: 'Press "Book"?', choices: ['✅ Press it', '✖ Cancel'] });
+  await until(() => did.some((d) => d.send));
+  const ids = did.find((d) => d.send).ids;
+  // (As if it had been asked by a process that is gone now: one that has ended.)
+  const { spawnSync } = await import('node:child_process');
+  const dead = spawnSync('true').pid;
+  const { openSqlite } = await import('../src/db.js');
+  const { AGENT_DB } = await import('../src/agentdb.js');
+  const db = openSqlite(AGENT_DB);
+  db.prepare("UPDATE asks SET pid = ? WHERE state = 'sent'").run(dead);
+  db.close();
+  await until(() => did.some((d) => d.edit));
+  assert.match(did.find((d) => d.edit).text, /■ What asked this was stopped before your answer: nothing was done\./);
+  await tap(ids[0]);
+  assert.equal(did.at(-1).toast, 'What asked this was stopped before your answer: nothing was done.', 'the tap is not taken');
+  assert.deepEqual(await answer, { answer: null, how: 'unasked', why: 'stopped' });
   asks.stop();
 });
 

@@ -119,7 +119,7 @@ export function leaveWork(db, table, args) {
 // returns as often as it should look (it does nothing while one is going, or while `ready()`
 // says the service cannot do it now). `recover(args, onProgress)` → { recovered, looked, … }.
 // `say(result, args)`: how it ended, in words, for work whose end the owner is sent.
-export function serveRecovery({ db, table, source, label, recover, say, log, ready = () => true }) {
+export function serveRecovery({ db, table, source, label, again, recover, say, log, ready = () => true }) {
   // What was being done when the service stopped will not be finished.
   db.prepare(`UPDATE ${table} SET status = 'error', result = ? WHERE status = 'running'`).run(
     `the ${label} service was restarted before it finished`,
@@ -164,8 +164,7 @@ export function serveRecovery({ db, table, source, label, recover, say, log, rea
     } catch (e) {
       set.run('error', null, e.message, r.id);
       log?.(`recovering stopped: ${e.message}`);
-      if (wantsTelling(r.id))
-        await tell(`${label}: fetching history stopped: ${e.message}. Try again: bc ${source === 'tg' ? 'tg account' : source} recover`);
+      if (wantsTelling(r.id)) await tell(`${label}: fetching history stopped: ${e.message}.${again ? ` Try again: ${again}` : ''}`);
     } finally {
       busy = false;
       db.prepare(`DELETE FROM ${table} WHERE created_ts < ?`).run(now() - KEEP_DAYS * 86400);

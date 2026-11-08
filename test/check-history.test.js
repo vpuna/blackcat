@@ -91,7 +91,7 @@ test('a check with a limit: each look kept; past it, not working, with which way
   assert.equal(r.result.ok, false);
   assert.match(
     r.notices[0].text,
-    /^⚠️ Server heat: temp 80, above 75\. Rising: it was 70 45m ago\. Last time \(.+\) it lasted 40m\. What was going on is kept: bc check history 1$/,
+    /^⚠️ Server heat: temp 80, above 75\. Rising: it was 70 45m ago\. Last time \(.+\) it lasted 40m\. What was going on: nothing to report\. What was going on is kept: bc check history 1$/,
   );
   r = await look();
   assert.deepEqual(r.notices, [], 'nothing more is said while it stays so');

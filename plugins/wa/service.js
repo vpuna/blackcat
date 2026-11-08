@@ -15,9 +15,11 @@ import makeWASocket, {
 } from 'baileys';
 import pino from 'pino';
 import {
+  sourceChanges,
   archiveMeta as getMeta,
   accountFor,
   archiveStatements,
+  callText,
   claimRows,
   now,
   openArchiveForWriting as openWrite,
@@ -30,7 +32,7 @@ import {
 import { hushSessions } from './hush.js';
 import { openRequestsDb } from './requests.js';
 import { AUTH_DIR } from './paired.js';
-import { describe, protocolChange, toNum, unkept } from './message.js';
+import { describe, missedCall, protocolChange, toNum, unkept } from './message.js';
 import { collects, cutoff, waSettings } from './settings.js';
 import { say } from './recover.js';
 
@@ -52,6 +54,9 @@ const skipJid = (ref) => !ref || isJidBroadcast(ref) || isJidNewsletter(ref);
 const toRef = (jid) => (jid ? `wa:${jid}` : jid);
 const toJid = (ref) => (ref?.startsWith('wa:') ? ref.slice(3) : ref);
 
+// On stop: how long what is still being written is waited for, at most.
+const STOP_WAIT_MS = 2000;
+
 export function startService({
   log,
   logLevel = 'warn',
@@ -70,30 +75,24 @@ export function startService({
   hushSessions();
   const db = openWrite();
   const lidMap = new Map(
-    db
-      .prepare('SELECT lid, pn FROM lid_map')
-      .all()
-      .map((r) => [toJid(r.lid), toJid(r.pn)]),
+    sourceChanges(db)
+      .aliases('wa')
+      .map((r) => [toJid(r.ref), toJid(r.sameAs)]),
   );
   // The owner's account this is linked as (src/archive/db.js, accountFor): known once connected.
   let account = null;
   let sock;
+  // Writes still to come from what was asked of WhatsApp (group names): waited for on stop,
+  // before the databases close.
+  const pending = new Set();
+  const track = (p) => (pending.add(p), p.finally(() => pending.delete(p)));
+  let closed = false; // (the databases, once stopped)
   let stopped = false;
   let retry = 0;
   let dropped = null; // when the connection was lost, until it is back
 
-  const q = {
-    lid: db.prepare('INSERT OR REPLACE INTO lid_map (lid, pn) VALUES (?, ?)'),
-    moveChatMsgs: db.prepare('UPDATE OR IGNORE messages SET chat_ref = ? WHERE chat_ref = ?'),
-    moveSender: db.prepare('UPDATE messages SET sender_ref = ? WHERE sender_ref = ?'),
-    mergeChat:
-      db.prepare(`INSERT INTO chats (ref, name, is_group, last_ts, account) SELECT ?, name, is_group, last_ts, account FROM chats WHERE ref = ?
-      ON CONFLICT (ref) DO UPDATE SET name = COALESCE(chats.name, excluded.name), last_ts = MAX(COALESCE(chats.last_ts, 0), COALESCE(excluded.last_ts, 0))`),
-    dropChat: db.prepare('DELETE FROM chats WHERE ref = ?'),
-    ...archiveStatements(db, () => account),
-    thumb: db.prepare('INSERT OR IGNORE INTO link_thumbs (msg_rowid, jpeg, width, height) VALUES (?, ?, ?, ?)'),
-    raw: db.prepare('INSERT OR IGNORE INTO raw (msg_rowid, proto) VALUES (?, ?)'),
-  };
+  const q = archiveStatements(db, () => account);
+  const changes = sourceChanges(db);
 
   // Once we learn a hidden ID's phone number, fold anything stored under the hidden ID into it,
   // so one person or chat never shows up twice.
@@ -103,11 +102,7 @@ export function startService({
     pn = jidNormalizedUser(pn);
     if (lidMap.get(lid) === pn) return;
     lidMap.set(lid, pn);
-    q.lid.run(toRef(lid), toRef(pn));
-    q.mergeChat.run(toRef(pn), toRef(lid));
-    q.dropChat.run(toRef(lid));
-    q.moveChatMsgs.run(toRef(pn), toRef(lid));
-    q.moveSender.run(toRef(pn), toRef(lid));
+    changes.sameAs(toRef(lid), toRef(pn));
   }
 
   function canon(ref, alt) {
@@ -181,7 +176,8 @@ export function startService({
         continue;
       }
 
-      const d = describe(m.message);
+      // (Baileys' own notice of a call that rang out says "missed" of one the owner made too: that one is kept as a call, below.)
+      const d = describe(m.message) ?? (outgoing.has(k.id) ? null : missedCall(m));
       const ts = toNum(m.messageTimestamp);
       if (!d) {
         // A kind of message nothing here reads: said once in the log (the kind, not what it
@@ -217,10 +213,10 @@ export function startService({
         linkDesc: l?.description ?? null,
       });
       const { rowid } = had ?? q.exists.get(toRef(chat), k.id);
-      if (l?.thumb) q.thumb.run(rowid, l.thumb, l.width, l.height);
+      if (l?.thumb) q.linkThumb.run(rowid, l.thumb, l.width, l.height);
       const gotMedia = d.media ? q.media.run({ rowid, ...d.media }).changes : 0;
       try {
-        q.raw.run(rowid, Buffer.from(proto.WebMessageInfo.encode(m).finish()));
+        q.keepRaw.run(rowid, Buffer.from(proto.WebMessageInfo.encode(m).finish()));
       } catch {
         // An odd message we can't re-encode still has its extracted fields.
       }
@@ -229,6 +225,62 @@ export function startService({
     }
     return { stored, filled };
   });
+
+  // Calls. WhatsApp gives a linked device no call as a message (the call log stays on the
+  // phone), only word of a call as it goes: offered, accepted, rejected, rang out ("timeout"),
+  // ended. What is heard of each is put together here and kept as one message when it ends,
+  // under the call's own id: one accepted, with how long it went on from then. One to the owner
+  // that rang out is Baileys' own missed-call notice, a message already. Ended with no word of
+  // it being accepted could be either (hung up while ringing, or answered on the phone, if the
+  // phone does not say so), so it is not kept. Each call's steps are logged, never with whom.
+  const calls = new Map(); // call id → what has been heard of it
+  const outgoing = new Set(); // ids of calls the owner made
+  const ENDS = ['reject', 'timeout', 'terminate'];
+  const keepCall = db.transaction(({ chat, id, mine, ts, text }) => {
+    if (!wanted(waSettings(), chat, ts)) return;
+    q.chat.run({ ref: toRef(chat), name: null, isGroup: 0, ts });
+    q.msgFill.run({
+      chat: toRef(chat),
+      id,
+      sender: mine ? null : toRef(chat),
+      fromMe: mine ? 1 : 0,
+      ts,
+      type: 'call',
+      text,
+      quoted: null,
+      linkUrl: null,
+      linkTitle: null,
+      linkDesc: null,
+    });
+  });
+  function heardCall(c) {
+    if (!c?.id || c.isGroup) return;
+    const me = [sock?.user?.id, sock?.user?.lid].filter(Boolean).map((j) => jidNormalizedUser(j));
+    const at = Math.floor(new Date(c.date ?? Date.now()).getTime() / 1000);
+    let k = calls.get(c.id);
+    if (!k) {
+      const mine = !!c.from && me.includes(jidNormalizedUser(c.from));
+      const other = [c.chatId, c.from].filter(Boolean).find((j) => !me.includes(jidNormalizedUser(j)));
+      k = { mine, chat: other ? canon(other, c.callerPn) : null, video: false, steps: [], started: at, accepted: null };
+      calls.set(c.id, k);
+      if (mine) outgoing.add(c.id);
+    }
+    k.steps.push(c.status);
+    k.video ||= !!c.isVideo;
+    if (c.status === 'accept') k.accepted ??= at;
+    if (!ENDS.includes(c.status)) return;
+    calls.delete(c.id);
+    log?.(`a call ${k.mine ? 'you made' : 'to you'}${k.video ? ' (video)' : ''}: ${k.steps.join(', ')}`);
+    const text =
+      k.accepted != null && c.status === 'terminate'
+        ? callText({ video: k.video, seconds: Math.max(1, at - k.accepted), mine: k.mine })
+        : k.mine && c.status !== 'terminate'
+          ? callText({ video: k.video, mine: true })
+          : !k.mine && c.status === 'reject'
+            ? callText({ video: k.video })
+            : null;
+    if (text && k.chat) keepCall({ chat: k.chat, id: c.id, mine: k.mine, ts: k.started, text });
+  }
 
   async function connect() {
     if (stopped) return;
@@ -277,10 +329,12 @@ export function startService({
         dropped = null;
         onOpen?.(sock.user);
         // Group names aren't always in the history sync. This only reads group info.
-        sock
-          .groupFetchAllParticipating()
-          .then((groups) => ingestChats(Object.values(groups).map((g) => ({ id: g.id, name: g.subject }))))
-          .catch(() => {});
+        track(
+          sock
+            .groupFetchAllParticipating()
+            .then((groups) => closed || ingestChats(Object.values(groups).map((g) => ({ id: g.id, name: g.subject }))))
+            .catch((e) => closed || log?.(`group names not fetched: ${e.message}`)),
+        );
       }
       if (u.connection === 'close') {
         dropped ??= Date.now();
@@ -313,8 +367,10 @@ export function startService({
     // What arrives is written to the archive, which the Telegram and mail sources write to
     // as well. A write that finds it busy is tried again; one that still fails is logged and
     // skipped, instead of ending the service (and the WhatsApp connection with it).
+    // (Once the databases are closed, what still arrives is not written.)
     const on = (event, handler) =>
       sock.ev.on(event, (arg) => {
+        if (closed) return undefined;
         for (let attempt = 1; ; attempt++) {
           try {
             return handler(arg);
@@ -353,6 +409,7 @@ export function startService({
     on('groups.upsert', (gs) => ingestChats(gs.map((g) => ({ id: g.id, name: g.subject }))));
     on('groups.update', (gs) => ingestChats(gs.filter((g) => g.subject).map((g) => ({ id: g.id, name: g.subject }))));
     on('lid-mapping.update', ({ lid, pn }) => addLid(lid, pn));
+    on('call', (list) => list?.forEach(heardCall));
   }
 
   // ---------- recovering what is missing ----------
@@ -481,6 +538,7 @@ export function startService({
     table: 'wa_requests',
     source: 'wa',
     label: 'WhatsApp',
+    again: 'bc wa recover',
     recover,
     say,
     log,
@@ -502,7 +560,10 @@ export function startService({
         sock?.end(undefined);
       } catch {}
       setMeta(db, { state: 'stopped' });
-      await sleep(500);
+      // (What is still being written is waited for, a little at most: a socket that has ended
+      // makes what was asked of it fail soon.)
+      await Promise.race([Promise.allSettled([...pending]), sleep(STOP_WAIT_MS)]);
+      closed = true;
       db.close();
       rdb.close();
     },

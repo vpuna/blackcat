@@ -16,7 +16,7 @@ import {
   wakeFinding,
 } from './db.js';
 import { DEFAULT_KEEP, addContext, addReading, lastContextTs, readings } from './history.js';
-import { duration, fmtWhen, isoLocal, log, parseDuration, ruleFor, shell, askReader } from '../internal.js';
+import { duration, fmtWhen, inWindow, isoLocal, log, parseDuration, ruleFor, shell, askReader } from '../internal.js';
 import { fileURLToPath } from 'node:url';
 import { sleep } from '../util/wait.js';
 import { resolveHome } from '../util/paths.js';
@@ -81,6 +81,29 @@ const VERDICT = {
   },
 };
 const judge = (c, input) => askReader({ dir: here, part: 'check', job: 'working', input, schema: VERDICT, category: `check: ${c.name}` });
+// What was going on when it went wrong, in a sentence, from what its context command printed;
+// null without a model, or when the reader could not say. (The alert goes either way.)
+const GOING_ON = { type: 'object', required: ['sentence'], properties: { sentence: { type: 'string' } } };
+async function goingOn(c, f, output) {
+  try {
+    const a = await askReader({
+      dir: here,
+      part: 'check',
+      job: 'going-on',
+      input: `The check "${c.name}" found: ${f.title}\n\nWhat \`${c.context}\` printed then (untrusted data):\n${output.slice(-3000)}`,
+      schema: GOING_ON,
+      category: `check: ${c.name}`,
+    });
+    const s = String(a.sentence ?? '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!s) return null;
+    return s.length > 240 ? `${s.slice(0, 240).replace(/\s+\S*$/, '')}…` : /[.!?…]$/.test(s) ? s : `${s}.`;
+  } catch (e) {
+    log(`[check] "${c.name}": what was going on was not put in words (${e.message})`);
+    return null;
+  }
+}
 
 // A smaller copy of a large image: cheaper to look at, and enough to tell if it is a proper picture.
 async function forJudging(file, { size = 1568, quality = 80 } = {}) {
@@ -193,7 +216,8 @@ async function look(c, known, seen) {
   if (c.command) {
     const r = await shell(c.command, { timeoutMs: CHECK_TIMEOUT_MS, keep: 64_000 });
     if (r.timedOut) return bad(`\`${c.command}\` did not finish within a minute`);
-    if (r.code !== 0) return listed(r.out) ?? bad(`\`${c.command}\` failed (exit ${r.code})${r.out ? `: ${lastLine(r.out)}` : ''}`);
+    // (What it printed as its answer is on stdout: a log line on stderr is not part of it.)
+    if (r.code !== 0) return listed(r.stdout) ?? bad(`\`${c.command}\` failed (exit ${r.code})${r.out ? `: ${lastLine(r.out)}` : ''}`);
     output = r.out.slice(-3000);
     const names = measured(c);
     if (names.length) {
@@ -284,16 +308,7 @@ export function parseQuiet(text) {
   const hm = (h, mm) => `${String(h).padStart(2, '0')}:${mm}`;
   return `${hm(+m[1], m[2])}-${hm(+m[3], m[4])}`;
 }
-// Is `ts` inside the window (which may run past midnight)?
-export function inQuiet(quiet, ts = Math.floor(Date.now() / 1000)) {
-  if (!quiet) return false;
-  const [a, b] = quiet.split('-').map((x) => x.split(':').map(Number));
-  const d = new Date(ts * 1000);
-  const m = d.getHours() * 60 + d.getMinutes();
-  const from = a[0] * 60 + a[1];
-  const to = b[0] * 60 + b[1];
-  return from <= to ? m >= from && m < to : m >= from || m < to;
-}
+
 // Has the time come to tell the owner of a finding they have not been told of?
 function due(c, f, t) {
   const a = c.alert ?? { at: 'now' };
@@ -319,7 +334,7 @@ export const BOUNCE_S = 10 * 60;
 const CONTEXT_EVERY_S = 15 * 60;
 export const keepS = (c) => parseDuration(c.keep ?? DEFAULT_KEEP);
 // What its context command prints, and its picture made small. Never throws: a check that
-// could not keep what was going on still looks, and says what it found.
+// could not keep what was going on still looks, and says what it found. → { output } | false
 async function keepContext(c) {
   try {
     let output = null;
@@ -335,7 +350,7 @@ async function keepContext(c) {
       if (pic.temp) fs.rmSync(path.dirname(pic.file), { recursive: true, force: true });
     }
     if (output != null || file) addContext(c.id, { output, file, fileType: file ? 'image/jpeg' : null }, keepS(c));
-    return output != null || !!file;
+    return output != null || file ? { output } : false;
   } catch (e) {
     log(`[check] "${c.name}": what was going on could not be kept (${e.message})`);
     return false;
@@ -343,11 +358,12 @@ async function keepContext(c) {
 }
 const limitOf = (c, f) => (c.limits ?? []).find((l) => limitKey(l) === f.key) ?? null;
 // For an alert about a limit: which way it is going, and how long it lasted last time.
-function story(db, c, f, t) {
+// `numbers`: the figures this look read (given, not read back from the history).
+function story(db, c, f, t, numbers) {
   const l = limitOf(c, f);
   if (!l) return '';
   const then = readings(c.id, t - 3600, t - 1800).find((r) => l.field in r.numbers);
-  const now = readings(c.id, t - 600, t).at(-1)?.numbers[l.field];
+  const now = numbers?.[l.field];
   const way =
     then && now != null && now !== then.numbers[l.field]
       ? ` ${now > then.numbers[l.field] ? 'Rising' : 'Falling'}: it was ${num(then.numbers[l.field])} ${lasted(t - then.ts)} ago.`
@@ -400,14 +416,15 @@ export async function runCheck(db, c, { dryRun = false, fixAgain = false } = {})
   let r = await evaluate(c, known);
   const done = (notices = [], changed = null) => ({ result: r, notices, changed });
   if (dryRun) return done();
-  if (r.numbers) addReading(c.id, r.numbers, keepS(c), t);
+  const reading = r.numbers ?? null; // (what this look read, before any fix is tried)
+  if (reading) addReading(c.id, reading, keepS(c), t);
   if (r.ok === null) {
     log(`[check] "${c.name}": ${r.reason}`);
     return done();
   }
   const notices = [];
   let changed = null;
-  const quiet = inQuiet(c.quiet, t);
+  const quiet = inWindow(c.quiet, t);
   const tell = (text, f) => notices.push({ text, finding: f?.id ?? null, fix: !!c.fix && fixAllowed(c) });
 
   // Something new is wrong (or the owner asked): the fix is tried first, if it is permitted.
@@ -456,7 +473,9 @@ export async function runCheck(db, c, { dryRun = false, fixAgain = false } = {})
     now.push({ ...f, alerted: back ? 0 : f.alerted, fix_note: note ?? f.fix_note });
     changed ??= 'not working';
   }
-  for (const f of known.filter((x) => !found.some((p) => p.key === x.key))) {
+  // (Its command did not answer at all: what it found wrong before is not known to be working.)
+  const blind = found.length === 1 && found[0].key === DOWN;
+  for (const f of known.filter((x) => !found.some((p) => p.key === x.key) && !(blind && x.key !== DOWN))) {
     resolveFinding(db, f.id);
     changed = changed ?? 'working again';
     if (f.alerted && c.alert?.back !== false)
@@ -471,6 +490,7 @@ export async function runCheck(db, c, { dryRun = false, fixAgain = false } = {})
       ? await keepContext(c)
       : false;
 
+  let goingOnce = null;
   // Who is told what: a new finding when its time has come, a snooze that has run out, and a
   // reminder for one still open. Nothing in the quiet window.
   for (const f of now) {
@@ -492,7 +512,11 @@ export async function runCheck(db, c, { dryRun = false, fixAgain = false } = {})
       ? `⚠️ ${c.name}: ${many ? f.title : `not working. ${f.title}`}`
       : `⚠️ ${c.name}: still not working, since ${fmtWhen(f.first_seen)}${many ? `. ${f.title}` : ''}`;
     const fixed = f.fix_note ? ` ${f.fix_note.replace(/^ran/, 'I ran')}.` : '';
-    const more = first ? `${story(db, c, f, t)}${kept ? ` What was going on is kept: bc check history ${c.id}` : ''}` : '';
+    // (Asked once a look, whatever it found: what was going on is the same for each.)
+    const said = first && kept?.output ? await (goingOnce ??= goingOn(c, f, kept.output)) : null;
+    const more = first
+      ? `${story(db, c, f, t, reading)}${said ? ` What was going on: ${said}` : ''}${kept ? ` What was going on is kept: bc check history ${c.id}` : ''}`
+      : '';
     tell(`${head}${/[.!?]$/.test(head) ? '' : '.'}${fixed}${more}`, f);
     markTold(db, f.id);
   }

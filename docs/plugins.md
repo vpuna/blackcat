@@ -424,15 +424,15 @@ The core calls these on every plugin that defines them.
 |---|---|---|
 | `names: (ctx, address) => 'Ana Silva'` | a plugin calls `ctx.api.nameOf(address)` or `personLabel({ name, email })` | a name you know for the address |
 | `agenda: (ctx, { from, to }) => [...]` | the briefing is built | dated items, copied onto "Things I need to do": `{ id, source, sourceName, title, start, end, allDay, day, lastDay, location, from }`. `source` is the calendar's key, `sourceName` its current name, `from` the organiser. |
-| `briefing: (ctx) => ({ problems: ['html'], fine: 'html', buttons: [{ label, id }], note: 'html' })` | the daily briefing is built | what is wrong, a line for when all is well, optional buttons to act on what is wrong, and a note shown at the end every time |
+| `briefing: (ctx, { chatId, terminal }) => ({ problems: ['html'], fine: 'html', buttons: [{ label, id }], note: 'html', entries: [{ day, line, action, kind, id, title }] })` | the daily briefing is built | what is wrong, a line for when all is well, optional buttons to act on what is wrong, a note shown at the end every time, and entries for the days: each `line` goes under its `day` (YYYY-MM-DD) among the lists' entries, numbered, and its number opens `action` |
 | `waiting: async (ctx) => ({ heading, lines: [{ text, note }] })` | the owner opens the terminal chat and no channel is in use | what you could not send, such as reminders that came due, or `null`. Handed over once. |
 | `inboxKeeps: async (ctx) => [paths]` | files the owner sent are tidied (they are kept a month) | the ones you still need |
 | `ownerMoved: async (ctx, { from, to }) => n` | another channel is put in use | move what you were going to send; return how many |
 | `chatRenamed: async (ctx, { ref, name }) => n` | a plugin calls `chatRenamed(ref, name)` (a mail account was renamed) | use the new name where you keep the old one; return how many changed |
 | `mentions: (ctx, regex) => ['shortcut /porch']` | an account is renamed | what of yours still says the old name, for the owner to change |
-| `keptToDo: (ctx) => [{ kind, id, title, where }]` | something to do is added (a reminder, a list entry) | what you keep to be done. blackcat compares the words, with no model, so the same thing is not kept twice. |
+| `keptToDo: (ctx) => [{ kind, id, title, where, due? }]` | something to do is added (a reminder, a list entry), and a watch reads new messages | what you keep to be done (`due`: when, in Unix seconds). blackcat compares the words, with no model, so the same thing is not kept twice, and a watch is told what is kept already. |
 | `nudgeDone: (ctx, { db, itemId }) => {}` | the owner marks done a nudge set through `src/reminders/nudges.js` (core parts only) | update your item |
-| `selftest: (ctx) => [probes]` | `bc selftest` runs | one probe per thing you have set up |
+| `selftest: (ctx) => [probes]` | `bc selftest` and `bc health` run | one probe per thing you have set up |
 
 ### Self-test probes
 
@@ -446,7 +446,7 @@ selftest: (ctx) => Object.entries(ctx.config.get().servers ?? {}).map(([name, s]
 })),
 ```
 
-A probe only reads. It never changes, sends, fetches to keep, or runs something the owner defined. Return `{ skip: 'why' }` when there is nothing to test, such as an unlinked account. A probe fails after 30 seconds (`timeoutMs`), and an answer after 15 seconds is marked slow (`slowMs`).
+A probe only reads. It never changes, sends, fetches to keep, or runs something the owner defined. Return `{ skip: 'why' }` when there is nothing to test, such as an unlinked account. A probe fails after 30 seconds (`timeoutMs`), and an answer after 15 seconds is marked slow (`slowMs`). `local: true` says it only looks at this machine (a tool installed, something kept here), not at something it reaches: `bc health` counts those on one line unless one fails. `told: true` says the owner hears of its failure already (a check alerts by itself): `bc health` leaves it out.
 
 ## Storage
 
@@ -550,6 +550,7 @@ chat: {
 |---|---|
 | `commands` | Added to `/help` and the channel's menu. May be `(ctx) => [{ command, description }]` when the list depends on settings, as in the shortcut plugin. After changing what it returns, call `refreshMenu()`. |
 | `install` | Called once when the agent service starts. Register handlers here. |
+| `learn` | `async (command, tokens, { ctx }) => words \| 'look' \| null`. When the agent ran one of your commands for the owner's words, the words your `quick` takes for the same thing; `'look'` for a command that changes nothing. The owner's words are then done by your `quick` next time, without the agent. |
 | `tick` | Called every 20 seconds inside the agent service, so it must return quickly. `ui` is `null` when no channel is in use. |
 | `quick` | Offered every message, typed or transcribed, before the agent. Return `null` unless you are certain what is meant. `{ text, note }` answers directly; `note` goes to the agent with the owner's next message. `{ confirm: 'Really?', run: async () => ({ text, note }) }` asks first. `{ note, answer: async (c) => ({ note }) }` answers in the chat itself (several messages, files). Plugins are asked in turn and the first answer wins; those with `quickFirst: true` are asked first (the shortcut plugin: a shortcut's name comes before the name of a thing). |
 
@@ -580,7 +581,7 @@ All plugins share one space of action ids. Start yours with your plugin's name (
 | `c.edit(text, opts)`, `c.setActions(a)`, `c.clearActions()` | Change the message whose button was tapped. |
 | `c.toast(text)` | Acknowledge a tap. If you do not, blackcat does. |
 | `c.gone(text)` | The same, when what the button was about no longer exists. The activity record notes that the tap did nothing. |
-| `c.working()`, `c.remove()`, `c.sendFile(path, caption)` | Show "typing…"; delete the owner's message (a secret); send a file. |
+| `c.working()`, `c.whileWorking(fn, kind)`, `c.remove()`, `c.sendFile(path, caption)` | Show "typing…" once, or for as long as `fn` runs (not while a question waits for the owner's tap); delete the owner's message (a secret); send a file. |
 
 `s`, passed to `tick`:
 
@@ -693,7 +694,7 @@ Everything a plugin may import from `src/api.js` (or reach as `ctx.api` outside 
 | The chat | `actions`, `refreshMenu`, `chatCommands`, `directCommands`, `sendable`, `hasBot`, `notifyOwner` |
 | Reading the archive | `openArchive`, `searchMessages`, `readThread`, `listChats`, `countChats`, `archiveStats`, `formatMessage`, `archiveMeta`, `sourceSql`, `QueryError`, `await semantic()` for search by meaning |
 | Message files | `mediaPaths`, `downloadedPath`, `MEDIA_DIR`, `ARCHIVE_DB`, `reading`, `setReading` |
-| Writing the archive (a source) | `openArchiveForWriting`, `archiveStatements`, `messageRow`, `mediaRow`, `setArchiveMeta`, `ownRefs` |
+| Writing the archive (a source) | `openArchiveForWriting`, `archiveStatements`, `sourceChanges`, `messageRow`, `mediaRow`, `setArchiveMeta`, `ownRefs` |
 | Going back over a source's days of history (`bc wa recover`); work whose end the owner is sent | `recoverCommand`, `recoveredText`, `serveRecovery`, `workTable`, `leaveWork` |
 | A database of your own | `openSqlite`, `upgrade`, `withDb`, `hasTable`, `hasColumn`, `addColumns` |
 | A model with no tools | `askModel`; `ctx.ask` and `ctx.reader` are the same with your plugin's name on them |
@@ -712,22 +713,26 @@ source: {
   id: 'sms', label: 'Text messages',
   optIn: true,                       // not part of "all chats"; a watch must name one of its chats
   textLimit: 3000, todoLimit: 1500,  // characters of one message a reader is shown
+  messageId: /^sms\d+$/,             // only if its message ids do not begin "sms:"
   connected: (ctx) => true,          // is anything set up to collect from it?
   collects: (ctx, ref, db) => true,  // is this chat still being collected? (shown in the list of chats)
-  fetchMedia: async (ctx, { row, dest, id }) => { … },  // save a message's file to dest
+  fetchMedia: async (ctx, { row, dest, id }) => { … },  // save a message's file to dest (row.fetch: what you kept)
+  historyDays: (ctx, id) => 30,      // how far back its history is fetched, for this message; null: all of it
 },
 ```
 
 | Key | Purpose |
 |---|---|
-| `id`, `label` | Required. The id is a short lowercase word (letters and digits, 2 to 16). It is the prefix of every chat and sender ref you write (`sms:…`) and the value of `--source`. One plugin per id. |
+| `id`, `label` | Required. The id is a short lowercase word (letters and digits, 2 to 16). It is the prefix of every chat and sender ref you write (`sms:…`) and the value of `--source`. One plugin per id: of two that claim the same id, neither is loaded, whether or not the other is switched on (its messages are still in the archive), and `bc selftest` names both; switching one on that would clash is refused. |
+| `messageId` | A pattern for your message ids, only if they do not begin with your id and a colon. WhatsApp's are WhatsApp's own (letters and digits), Telegram's `tg<chat>_<n>`. |
 | `optIn` | `true` keeps the source out of "all chats": a watch reads it only when it names one of its chats. |
 | `textLimit`, `todoLimit` | Characters of one message shown to a watch's reader (default 400) and to the to-do reader (default 500). |
 | `todoText`, `todoQuestion` | What the to-do watch calls the source when it says what it covers (`'kept email'`), and the question `bc watch setup` asks about including it. |
 | `connected`, `collects` | Whether anything is set up to collect; whether a given chat is still being collected. Must not be async. |
-| `fetchMedia` | Fetch a message's file on demand, for `bc msg media`, the reading of files as they arrive, and watches that read documents. |
+| `historyDays` | How many days back you fetch history, for this message (a mail account's own setting, WhatsApp's): what the owner chose as worth reading. An undated list entry from it expires that long after the last message about it. `null` or absent: never. Must not be async. |
+| `fetchMedia` | Fetch a message's file on demand, for `bc msg media`, the reading of files as they arrive, and watches that read documents. `row.fetch` is what you kept for it when you stored the file (`mediaRow({ …, fetch: { … } })`, any JSON: WhatsApp keeps a server path and keys, mail the part of the mail); a file whose `fetch` is null is shown as one that cannot be fetched. |
 
-Write with `openArchiveForWriting()` and `archiveStatements(db)` from the API, which give you prepared statements for chats, contacts and messages. `messageRow` and `mediaRow` build the rows.
+Write with `openArchiveForWriting()` and `archiveStatements(db)` from the API, which give you prepared statements for chats, contacts and messages, and what a chat is (`chatInfo`, `setCutoff`), a link's picture, a message as you got it, a rename, taking a chat's messages out. `sourceChanges(db)` does what spans your whole source: `sameAs(from, to)` (one chat known by two names; `aliases(src)` gives them back), `refetchAll(src)`, `deletedAnywhere(src, idLike, except)`, and `forget(src)` when it is unlinked. `messageRow` and `mediaRow` build the rows. Do not write the archive's tables with SQL of your own: a test holds every plugin to it.
 
 A chat that is blackcat itself (its bot, as the owner's account sees it) is never collected, or the agent would react to its own replies. `archiveStatements` leaves such chats out. Call `ownRefs()` so that your setup does not offer them.
 
@@ -902,6 +907,7 @@ export default {
 | Member | Arguments | Returns | When it is called |
 |---|---|---|---|
 | `label` | | string | Shown by `bc engine status`. |
+| `default` | | boolean | Optional. The engine used until the owner chooses another (Claude Code says so). Without one that says so, the only engine there is. |
 | `choices` | `(ctx)` | `{ models, options, defaults }`, not a promise | When the core lists or resolves what can be chosen. Required. |
 | `ready` | `(ctx)` | promise of `{ ok, why, detail }` | By `bc engine status` and `bc selftest`: is the engine installed and signed in? Required. |
 | `converse` | `(ctx, spec, on)` | promise of `{ send(text), stop(), closed }` | When a chat conversation starts or resumes. Required. |
@@ -912,6 +918,7 @@ export default {
 | `where` | `(ctx)` | string | Optional. Where the model is hosted, for `bc engine status` and the check report. |
 | `takes` | `()` | array, not a promise | Optional. The kinds of file the model can be given: `['pictures', 'documents']`. See [Reading files](#reading-files). |
 | `process` | | string | Optional. The name of the engine's processes, so `bc status` can count the conversations held. |
+| `pace` | `(ctx)` | `{ atOnce, caseMs }`, not a promise | Optional. How `bc engine check` paces itself: at most `atOnce` requests at a time (3 otherwise), each given `caseMs` (150 s otherwise). For a model that answers one request at a time, slowly. |
 | `shapes` | | boolean | Optional. Set it if `ask` can hold an answer to a JSON schema; `ask` then receives `schema`. Otherwise the core appends the schema to `system`. |
 
 `choices` returns:

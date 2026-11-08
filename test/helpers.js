@@ -16,6 +16,8 @@ const FAKES = {
   systemctl: '#!/bin/sh\necho "fake systemctl $*" >&2\nexit 0\n',
   loginctl: '#!/bin/sh\necho Linger=yes\nexit 0\n',
   sudo: '#!/bin/sh\necho "a test may not use sudo" >&2\nexit 1\n',
+  // (Never the real one: it talks to whatever phone or TV box this machine has connected.)
+  adb: '#!/bin/sh\necho "a test may not use the real adb" >&2\nexit 1\n',
   claude: `#!/bin/sh\n${SIGNED_IN}exec ${process.execPath} ${new URL('./support/fake-reader.mjs', import.meta.url).pathname} "$@"\n`,
   journalctl: '#!/bin/sh\nexit 0\n',
   // (What a check runs as `blackcat …` is the code under test, never the installed one.)

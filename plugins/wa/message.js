@@ -1,4 +1,4 @@
-import { getContentType, normalizeMessageContent, proto } from 'baileys';
+import { getContentType, normalizeMessageContent, proto, WAMessageStubType as STUB } from 'baileys';
 
 const { REVOKE, MESSAGE_EDIT } = proto.Message.ProtocolMessage.Type;
 
@@ -32,10 +32,13 @@ const DL_TYPE = {
   stickerMessage: 'sticker',
 };
 const buf = (b) => (b?.length ? Buffer.from(b) : null);
+const hex = (b) => buf(b)?.toString('hex') ?? null;
 
 // Everything needed to describe a media file and fetch it later: where it sits on
-// WhatsApp's servers, the key to decrypt it, and the small thumbnail embedded in the message.
+// WhatsApp's servers, the key to decrypt it (kept in `fetch`, in hex: see media.js), and the
+// small thumbnail embedded in the message.
 function mediaOf(kind, m) {
+  const where = { directPath: m.directPath || null, url: m.url || null, mediaKey: hex(m.mediaKey), encSha256: hex(m.fileEncSha256) };
   return {
     dlType: kind === 'audioMessage' && m.ptt ? 'ptt' : kind === 'videoMessage' && m.gifPlayback ? 'gif' : DL_TYPE[kind],
     mimetype: m.mimetype || null,
@@ -44,11 +47,8 @@ function mediaOf(kind, m) {
     height: m.height ?? null,
     seconds: m.seconds ?? null,
     fileName: m.fileName || m.title || null,
-    directPath: m.directPath || null,
-    url: m.url || null,
-    mediaKey: buf(m.mediaKey),
     sha256: buf(m.fileSha256),
-    encSha256: buf(m.fileEncSha256),
+    fetch: where.mediaKey && (where.directPath || where.url) ? where : null,
     thumb: buf(m.jpegThumbnail) ?? buf(m.pngThumbnail),
   };
 }
@@ -87,6 +87,15 @@ const flowButton = (b) => {
     return null;
   }
 };
+
+// A call that was not answered comes as a notice with no message in it.
+const MISSED = {
+  [STUB.CALL_MISSED_VOICE]: 'Missed voice call',
+  [STUB.CALL_MISSED_VIDEO]: 'Missed video call',
+  [STUB.CALL_MISSED_GROUP_VOICE]: 'Missed group voice call',
+  [STUB.CALL_MISSED_GROUP_VIDEO]: 'Missed group video call',
+};
+export const missedCall = (m) => (MISSED[m?.messageStubType] ? { type: 'call', text: MISSED[m.messageStubType], quoted: null } : null);
 
 // Kinds that say nothing to read: answers to them are no message of their own.
 const SILENT = new Set([

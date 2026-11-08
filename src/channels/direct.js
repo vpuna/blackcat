@@ -54,10 +54,7 @@ const run = (argv, chatId, { started } = {}) =>
 // star trails) is asked for its result as data, and the file is sent with its caption.
 async function runAndSend(c, argv) {
   log(`← ${c.who} ran: bc ${argv.join(' ')}`);
-  const typing = setInterval(() => c.working().catch(() => {}), 4000);
-  c.working().catch(() => {});
-  const r = await run([...argv, '--json'], c.chat);
-  clearInterval(typing);
+  const r = await c.whileWorking(() => run([...argv, '--json'], c.chat));
   let d = null;
   try {
     d = JSON.parse(r.out.slice(r.out.indexOf('{')));
@@ -69,10 +66,7 @@ async function runAndSend(c, argv) {
 
 async function runAndReply(c, argv) {
   log(`← ${c.who} ran: bc ${argv.join(' ')}`);
-  const typing = setInterval(() => c.working().catch(() => {}), 4000);
-  c.working().catch(() => {});
-  const r = await run(argv, c.chat);
-  clearInterval(typing);
+  const r = await c.whileWorking(() => run(argv, c.chat));
   // Terminal output: strip colour codes and cursor movement, keep the layout.
   const text =
     r.out

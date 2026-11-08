@@ -195,15 +195,15 @@ test('setup by answering questions, with a secret that cannot be taken back here
 });
 
 test("a plugin's own screens, a typed command, the quick route, and a note from another process", async () => {
-  await ask('/watch add Ideas');
-  await ask("/watch add-item 2 --title 'Try the new cafe'");
+  await ask('/watch add Ideas --self --look-for ideas');
+  await ask("/list add Ideas --title 'Try the new cafe'");
   const [watches] = await ask('/watch');
   assert.equal(
     watches,
     '👁 Your watches\n\n1. Things I need to do · 0 on the list\n    in the daily briefing\n2. Ideas · 1 on the list\n    in the daily briefing\n\n1. 1. Things I need to do\n2. 2. Ideas\n(Answer with a number.)',
   );
   const [card] = await ask('2');
-  assert.match(card, /^👁 Ideas\nLooks for: Ideas\n/);
+  assert.match(card, /^👁 Ideas\nLooks for: ideas\n/);
   assert.ok(card.endsWith('\n\n1. 📋 Show list\n2. 🔄 Check for new\n3. ⏸ Pause\n4. ✅ Done ones\n(Answer with a number.)'));
   const [list] = await ask('1');
   assert.match(list, /Still on the list\n1\. Try the new cafe/);

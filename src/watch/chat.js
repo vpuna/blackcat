@@ -5,14 +5,18 @@ import { nudgeText } from './nudge.js';
 import {
   expirePast,
   getItem,
+  getList,
   getWatch,
+  isLapsed,
   itemCounts,
   listItems,
   listWatches,
   openWatchDb,
   sameAsText,
+  seeList,
   setItemStatus,
   updateWatch,
+  watchOfList,
 } from './db.js';
 import { actions, errMsg, esc, fmtWhen, log, scheduleDue } from '../internal.js';
 import { withDb } from '../db.js';
@@ -28,14 +32,10 @@ export function numbered(kb, list, data) {
 }
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
-const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-export function dateLabel(ymd) {
-  const d = new Date(`${ymd}T12:00:00`);
-  const days = Math.round((d - new Date(new Date().toDateString())) / 86400000 - 0.5);
-  if (days === 0) return 'today';
-  if (days === 1) return 'tomorrow';
-  return `${DAY_NAMES[d.getDay()]} ${d.getDate()} ${d.toLocaleString('en-GB', { month: 'short' })}`;
-}
+import { dateLabel } from '../util/time.js';
+import { valuesOf } from './fields.js';
+
+export { dateLabel };
 
 const line = (n, it) => {
   const where = [it.place, it.area].filter(Boolean).join(', ');
@@ -53,6 +53,8 @@ function card(it, { watchName, heading } = {}) {
     it.event_date ? `📅 ${dateLabel(it.event_date)}` : null,
   ].filter(Boolean);
   if (meta.length) lines.push(esc(meta.join(' · ')));
+  const own = Object.entries(valuesOf(it));
+  if (own.length) lines.push(esc(own.map(([k, v]) => `${k}: ${v}`).join(' · ')));
   if (it.summary) lines.push(esc(it.summary));
   const same = sameAsText(it);
   if (same) lines.push(`⚠️ <i>This ${esc(same)}: if it is, drop one.</i>`);
@@ -69,7 +71,12 @@ function card(it, { watchName, heading } = {}) {
   return lines.join('\n\n');
 }
 
-const itemActions = (id) => actions().add('✅ Did it', `wi:${id}:d`).add('📌 Keep', `wi:${id}:k`).add('🗑 Not interested', `wi:${id}:x`);
+// (An entry that lapsed is opened again with what is "Keep" for one still open.)
+const itemActions = (id, lapsed = false) =>
+  actions()
+    .add('✅ Did it', `wi:${id}:d`)
+    .add(lapsed ? '↩️ Open again' : '📌 Keep', `wi:${id}:k`)
+    .add('🗑 Not interested', `wi:${id}:x`);
 
 // The most recent report time that has passed since the last report (or since the watch was made), or null.
 const reportDue = (w, nowMs = Date.now()) => scheduleDue(w.report, Math.max(w.last_digest ?? 0, w.created_ts ?? 0), nowMs);
@@ -77,9 +84,9 @@ const reportDue = (w, nowMs = Date.now()) => scheduleDue(w.report, Math.max(w.la
 // The scheduled report: what's new, anything with a date coming up, and what's still on the list.
 // `peek` shows the list on demand without counting as the scheduled report.
 export async function sendDigest(ui, db, w, { force = false, peek = false } = {}) {
-  expirePast(db, w.id);
+  expirePast(db, w.list_id);
   // Quiet lists stay out of reports: they are only shown when asked for.
-  const items = listItems(db, w.id, { status: 'new,kept' }).filter((i) => !isQuiet(w, i.category));
+  const items = listItems(db, w.list_id, { status: 'new,kept' }).filter((i) => !isQuiet(w, i.category));
   const fresh = items.filter((i) => i.status === 'new');
   const kept = items.filter((i) => i.status === 'kept');
   const soon = (i) => i.event_date && (new Date(`${i.event_date}T12:00:00`) - Date.now()) / 86400000 <= 10;
@@ -161,7 +168,7 @@ export async function sendDueDigests(ui) {
 
 // One list of a watch, with a numbered button per item.
 async function sendList(ui, db, w, key) {
-  const items = listItems(db, w.id, { status: 'new,kept', list: key }).slice(0, 30);
+  const items = listItems(db, w.list_id, { status: 'new,kept', list: key }).slice(0, 30);
   if (!items.length) return ui.send(w.chat_id, `Nothing on ${esc(listLabel(key))} right now.`);
   const kb = actions();
   const out = [`📋 <b>${esc(w.name)} · ${esc(listLabel(key))}</b>${isQuiet(w, key) ? ' <i>(quiet: not in reports)</i>' : ''}`, ''];
@@ -175,7 +182,7 @@ async function sendList(ui, db, w, key) {
 
 // "Show list" on a watch with several lists: choose one.
 function listMenu(db, w) {
-  const all = listsOf(db, w).filter((l) => l.count);
+  const all = listsOf(db, w.list_id, w).filter((l) => l.count);
   const kb = actions();
   all.forEach((l, i) => {
     kb.add(`${l.label} · ${l.count}${l.quiet ? ' 🔕' : ''}`.slice(0, 40), `wl:${w.id}:${l.key}`.slice(0, 60));
@@ -186,7 +193,7 @@ function listMenu(db, w) {
 }
 
 function watchCard(db, w) {
-  const n = itemCounts(db, w.id);
+  const n = itemCounts(db, w.list_id);
   const v = view(w);
   return {
     text: [
@@ -221,7 +228,7 @@ export async function showWatches(c) {
     const kb = actions();
     const lines = ['👁 <b>Your watches</b>', ''];
     mine.forEach((w, i) => {
-      const n = itemCounts(db, w.id);
+      const n = itemCounts(db, w.list_id);
       lines.push(
         `${i + 1}. <b>${esc(w.name)}</b>${w.active ? '' : ' ⏸'} · ${(n.new ?? 0) + (n.kept ?? 0)} on the list${n.new ? `, ${n.new} new` : ''}\n    ${esc(view(w).schedule)}`,
       );
@@ -245,7 +252,8 @@ export function installWatches(ui) {
         }
         if (what === 'l') {
           await c.toast();
-          if (listsOf(db, w).filter((l) => l.count).length > 1) {
+          seeList(db, w.list_id);
+          if (listsOf(db, w.list_id, w).filter((l) => l.count).length > 1) {
             const m = listMenu(db, w);
             return c.reply(m.text, { html: true, actions: m.keyboard });
           }
@@ -253,7 +261,7 @@ export function installWatches(ui) {
         }
         if (what === 'h') {
           await c.toast();
-          const done = listItems(db, w.id, { status: 'done' });
+          const done = listItems(db, w.list_id, { status: 'done' });
           return c.reply(
             done.length
               ? [
@@ -297,6 +305,7 @@ export function installWatches(ui) {
       const w = getWatch(db, Number(c.match[1]));
       if (!w || w.chat_id !== c.chat) return c.gone('That watch no longer exists.');
       await c.toast();
+      seeList(db, w.list_id);
       return c.match[2] === '*' ? sendDigest(ui, db, w, { force: true, peek: true }) : sendList(ui, db, w, c.match[2]);
     });
   });
@@ -306,18 +315,20 @@ export function installWatches(ui) {
     const [, id, what] = c.match;
     return withDb(openWatchDb, async (db) => {
       const it = getItem(db, Number(id));
-      const w = it && getWatch(db, it.watch_id);
-      if (!it || !w || w.chat_id !== c.chat) return c.gone('That item is no longer on the list.');
+      // (An entry of a list a watch fills goes with that watch's chat; one kept by hand is the owner's, whom the ui has checked.)
+      const w = it && watchOfList(db, it.list_id);
+      const list = it && getList(db, it.list_id);
+      if (!it || !list || (w && w.chat_id !== c.chat)) return c.gone('That item is no longer on the list.');
       if (what === 'o') {
         await c.toast();
-        await c.reply(card(it, { watchName: w.name }), { html: true, actions: itemActions(it.id) });
-        if (it.file) await ui.sendFile(w.chat_id, it.file).catch(() => {});
+        await c.reply(card(it, { watchName: list.name }), { html: true, actions: itemActions(it.id, isLapsed(it)) });
+        if (it.file) await ui.sendFile(c.chat, it.file).catch((e) => log(`item ${it.id}: its file was not sent: ${e.message}`));
         return undefined;
       }
       const [status, label] = { d: ['done', '✅ Done'], k: ['kept', '📌 Kept on the list'], x: ['dropped', '🗑 Dropped'] }[what];
       setItemStatus(db, it.id, status);
       await c.toast(label);
-      await c.edit(`${card(it, { watchName: w.name })}\n\n<b>${label}</b>`, { html: true }).catch(() => {});
+      await c.edit(`${card(it, { watchName: list.name })}\n\n<b>${label}</b>`, { html: true }).catch(() => {});
     });
   });
 }

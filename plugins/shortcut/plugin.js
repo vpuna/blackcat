@@ -4,7 +4,8 @@
 // step, including blackcat's own, so a shortcut can use SSH, UniFi or any other plugin.
 import fs from 'node:fs';
 import path from 'node:path';
-import { dataPath, expandHome, plural, shell, triedAs } from '../../src/api.js';
+import os from 'node:os';
+import { dataPath, expandHome, handedOff, plural, shell, triedAs } from '../../src/api.js';
 
 // Each shortcut gets a folder of its own for files it fetches: {dir} in a step or a path.
 const FILES = dataPath('shortcut-files');
@@ -18,11 +19,16 @@ const dirOf = (name) => path.join(FILES, name);
 const fill = (s, name) => expandHome(String(s).replaceAll('{dir}', dirOf(name)));
 // (`quiet`: the shortcut shows its steps itself, so what a step runs sends no list of its own.)
 // (`title`: what the shortcut is for, in the owner's words, for what a step runs to call itself by.)
-const sh = (cmd, quiet, title) =>
+// (`handoff`: the file the step may hand a picture on in, or say the owner has been told: handoff.js.)
+const sh = (cmd, quiet, title, handoff) =>
   shell(cmd, {
     timeoutMs: STEP_TIMEOUT_MS,
     keep: 3500,
-    env: { ...(quiet ? { BLACKCAT_PROGRESS: 'off' } : {}), ...(title ? { BLACKCAT_TITLE: String(title).slice(0, 120) } : {}) },
+    env: {
+      BLACKCAT_HANDOFF: handoff,
+      ...(quiet ? { BLACKCAT_PROGRESS: 'off' } : {}),
+      ...(title ? { BLACKCAT_TITLE: String(title).slice(0, 120) } : {}),
+    },
   });
 
 // A shortcut may have actions: words of its own after its name, each with steps of its own
@@ -122,7 +128,9 @@ export async function runShortcut(name, sc, { onStep, title = sc.description, tr
       line = tried;
     }
     await onStep?.({ n: k + 1, of: steps.length, name: stepName(step) });
-    const r = await sh(line.replaceAll(dirOf(name), `'${dirOf(name)}'`), !!onStep, title);
+    const handoff = path.join(os.tmpdir(), `blackcat-handoff-${process.pid}-${Date.now()}-${k}.jsonl`);
+    const r = await sh(line.replaceAll(dirOf(name), `'${dirOf(name)}'`), !!onStep, title, handoff);
+    const given = handedOff(handoff);
     if (r.code !== 0) {
       const why = r.timedOut
         ? 'it took too long'
@@ -136,13 +144,13 @@ export async function runShortcut(name, sc, { onStep, title = sc.description, tr
         text: `${steps.length > 1 ? `Stopped at step ${k + 1} of ${steps.length} (${stepName(step)})` : `"${stepName(step)}" did not work`}: ${why}`,
       };
     }
-    // A picture a step hands on (`[[send: <path>]]`, a routine's screen at the end): sent with
-    // the shortcut's own files, after its last step. Only one blackcat took itself.
-    for (const [, f] of r.out.matchAll(HANDED)) if (isTaken(f.trim())) handed.push(f.trim());
-    // (`[[told]]`: what the step ran has sent the owner its result already. In a chat it is not
-    // said again; a command that ran the shortcut, the agent's, still gets it.)
-    told = TOLD.test(r.out);
-    last = r.out.replace(HANDED, '').replace(new RegExp(TOLD.source, 'g'), '').trim();
+    // A picture a step hands on (a routine's screen at the end): sent with the shortcut's own
+    // files, after its last step. Only one blackcat took itself.
+    for (const f of given.pictures) if (isTaken(f)) handed.push(f);
+    // (Told: what the step ran has sent the owner its result already. In a chat it is not said
+    // again; a command that ran the shortcut, the agent's, still gets it.)
+    told = given.told;
+    last = r.out.trim();
   }
   const files = [...handed];
   for (const f of sc.send ?? []) {
@@ -170,8 +178,6 @@ async function programMissing(step) {
   return (await shell(`command -v ${JSON.stringify(first)}`)).code === 0 ? null : first;
 }
 
-const HANDED = /\[\[send: ([^\]\n]+)\]\]\n?/g;
-const TOLD = /\[\[told\]\]\n?/;
 // (A file blackcat itself made: in one of its own folders of pictures and media.)
 const isTaken = (f) => {
   const real = path.resolve(f);
@@ -219,13 +225,19 @@ async function onceTimes(ctx, once, inn) {
     return ctx.fail(e.message);
   }
 }
+// The one-off times still to come, said: "once more at 2 set times". (Those gone are kept as
+// the owner set them, and used up in the schedule's markers.)
+const onceMore = (sc) => {
+  const n = (sc.once ?? []).filter((t) => t > Date.now() / 1000).length;
+  return n ? `once more at ${n} set time${n === 1 ? '' : 's'}` : null;
+};
 const whenText = async (sc) => {
   const api = await import('../../src/api.js');
   const cron = cronOf(sc);
   const parts = [
     cron ? api.describeSchedule(cron).replace(/^./, (c) => c.toLowerCase()) : null,
     ...(sc.once ?? [])
-      .filter((t) => t > Date.now() / 1000 - LATE_S)
+      .filter((t) => t > Date.now() / 1000)
       .sort()
       .map((t) => `once, ${api.fmtWhen(t)}`),
   ].filter(Boolean);
@@ -270,14 +282,7 @@ let chatUi = null;
 async function carryOut(ui, ctx, c, name, sc, part, label) {
   ctx.log(`/${label} (shortcut)`);
   // (Shown for as long as it runs: the channel's "typing…" lasts a few seconds, and a routine a minute or two.)
-  const kind = part.send?.length ? 'photo' : 'typing';
-  c.working(kind);
-  const typing = setInterval(() => c.working(kind), 4000);
-  try {
-    return await carryingOut(ui, c, name, sc, part, label);
-  } finally {
-    clearInterval(typing);
-  }
+  return c.whileWorking(() => carryingOut(ui, c, name, sc, part, label), part.send?.length ? 'photo' : 'typing');
 }
 
 async function carryingOut(ui, c, name, sc, part, label) {
@@ -672,14 +677,12 @@ first that fails. In the bot, a shortcut is /<its name>.`,
         });
       for (const t of everyPart(all(ctx))) {
         const sc = t.part;
-        // One-off times: each is used up when it comes, sent unless it is long past.
-        const due = (sc.once ?? []).filter((x) => x <= now);
-        if (due.length) {
-          const left = sc.once.filter((x) => x > now);
-          const { once: _o, ...rest } = sc;
-          ctx.config.set({ shortcuts: withPart(all(ctx), t, { ...rest, ...(left.length ? { once: left } : {}) }) });
-          if (due.some((x) => now - x <= LATE_S)) send(t);
-        }
+        // One-off times: each is used up when it comes, sent unless it is long past. (Used up
+        // is kept with the schedule's own markers: the times stay as the owner set them, and the
+        // settings file is not written over for it.)
+        const due = (sc.once ?? []).filter((x) => x <= now && !last(`once:${t.label}:${x}`));
+        for (const x of due) mark(`once:${t.label}:${x}`, now);
+        if (due.some((x) => now - x <= LATE_S)) send(t);
         const cron = cronOf(sc);
         if (!cron) continue;
         // The marker is tied to the times, so a new or changed schedule starts from now
@@ -700,6 +703,15 @@ first that fails. In the bot, a shortcut is /<its name>.`,
     // if its name was typed. Tried before other plugins' quick routes, which match the names
     // of things: the owner's own name for something comes first. See quick.js.
     quickFirst: true,
+    // What the agent did for the owner's words, for the next time they say them (src/channels/
+    // learned.js): one shortcut run, as its name, which the quick route below takes.
+    learn: async (command, tokens, { ctx }) => {
+      if (command === 'list') return 'look';
+      if (command !== 'run' || !tokens.length || tokens.length > 2) return null;
+      const { named } = await import('./quick.js');
+      const label = tokens.join(' ');
+      return named(label, everyPart(all(ctx)))?.label === label ? label : null;
+    },
     quick: async (text, { ctx }) => {
       if (!chatUi) return null;
       const { named } = await import('./quick.js');
@@ -767,7 +779,7 @@ first that fails. In the bot, a shortcut is /<its name>.`,
           ...(sc.run ?? []).map((s) => `run: ${s}`),
           ...(sc.send ?? []).map((f) => `send: ${f}`),
           cronOf(sc) ? `by itself: ${ctx.api.describeSchedule(cronOf(sc)).replace(/^./, (c) => c.toLowerCase())}` : null,
-          sc.once?.length ? `once more at ${sc.once.length} set time${sc.once.length === 1 ? '' : 's'}` : null,
+          onceMore(sc),
         ]
           .filter(Boolean)
           .join(' · '),
@@ -804,6 +816,7 @@ first that fails. In the bot, a shortcut is /<its name>.`,
         ...Object.entries(actionsOf(sc)).map(([a, part]) => [`/${name} ${a}`, part]),
       ].map(([label, part]) => ({
         name: label,
+        local: true,
         run: async () => {
           const { sendable } = await import('../../src/api.js');
           const todo = part.run ?? [];

@@ -8,6 +8,7 @@ import { home } from './helpers.js';
 home();
 const { save } = await import('../src/config.js');
 save({ plugins: { settings: { tg: { apiId: 1, apiHash: 'x', days: 30, mode: 'all' } } } });
+await (await import('../src/plugins/registry.js')).loadPlugins(); // (the sources are the plugins')
 const db = await import('../src/archive/db.js');
 const now = Math.floor(Date.now() / 1000);
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));

@@ -4,7 +4,7 @@ Read it as one conversation and say where it stands at the end. It may take the 
 
 It is one of three things.
 
-- **answered**: the owner now has what they were waiting for (the decision, the information, the thing itself), or has been told clearly that it will not happen.
+- **answered**: the owner now has what they were waiting for (the decision, the information, the thing itself), or has been told clearly that it will not happen. The owner saying so counts: "I just got it, thank you" after a promised delivery is answered.
 - **later**: it has been put off or promised for a later time that was named. "Give me until Tuesday", "I will have an answer by Friday", "delivered on Tuesday", "I will send it tomorrow morning". Also when the owner themselves agreed to wait longer ("fine, Tuesday is the limit"). The owner is still waiting, but until that time and no longer until the one first expected. Give the new time. A promise of the thing is not the thing: when what the owner wants is a delivery, a payment, a document or a decision, being told when it will come is "later", not "answered".
 - **waiting**: neither. They wrote about something else, only said they would come back to it with no time named ("I will check", "let me get back to you"), or the exchange ends with a question the owner has still to answer. When you cannot tell, it is this.
 

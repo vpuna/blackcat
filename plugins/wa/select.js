@@ -1,4 +1,5 @@
 import {
+  archiveStatements,
   agoShort as ago,
   countChats,
   listChats,
@@ -170,6 +171,8 @@ export function countOutside(db, w, was) {
 
 export function deleteOutside(db, w, was) {
   const c = outsideClause(w, was);
-  db.prepare(`DELETE FROM messages WHERE ${c.sql}`).run(c.params);
+  const q = archiveStatements(db);
+  for (const ref of db.prepare(`SELECT DISTINCT chat_ref FROM messages WHERE ${c.sql}`).pluck().all(c.params))
+    q.removeChatMessages.run(ref);
   db.pragma('wal_checkpoint(TRUNCATE)');
 }

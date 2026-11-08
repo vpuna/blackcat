@@ -60,3 +60,17 @@ test('an unreachable thing with a longer name does not stand in the way of the o
     ['light.hall'],
   );
 });
+
+// What the agent did for the owner's words is learned as words this route takes
+// (src/channels/learned.js): one thing switched, only when the words name just that one.
+test('learned from the agent: one thing switched, as the words that switch it; looks are looks', async () => {
+  const { default: m } = await import('../plugins/ha/plugin.js');
+  const c = cat([E('light.kitchen', 'Kitchen Light Switch', 'kitchen'), E('light.dining', 'Dining Room Light Switch', 'dining')]);
+  const ctx = { store: { get: () => c }, config: { get: () => ({}) } };
+  const learn = (command, tokens) => m.chat.learn(command, tokens, { ctx });
+  assert.equal(await learn('on', ['kitchen light']), 'turn on kitchen light');
+  assert.equal(await learn('off', ['Dining Room Light Switch']), 'turn off Dining Room Light Switch');
+  assert.equal(await learn('on', ['light']), null, 'two lights: not one thing');
+  assert.equal(await learn('state', ['kitchen']), 'look');
+  assert.equal(await learn('set', ['kitchen light']), null, 'a brightness is not learned');
+});

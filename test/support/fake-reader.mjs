@@ -1,6 +1,7 @@
 // A stand-in for `claude` asked one question with no tools (a reader). It answers with
 // nothing found: text "[]", and, when an answer of a given shape was asked for
-// (--json-schema), the emptiest object that fits it. Each call is noted in FAKE_READER_LOG.
+// (--json-schema), the emptiest object that fits it, or FAKE_READER_REPLY when that is set.
+// Each call is noted in FAKE_READER_LOG.
 import fs from 'node:fs';
 const args = process.argv.slice(2);
 const i = args.indexOf('--json-schema');
@@ -19,6 +20,7 @@ process.stdin.on('data', () => {});
 process.stdin.on('end', () => {
   if (process.env.FAKE_READER_LOG) fs.appendFileSync(process.env.FAKE_READER_LOG, 'x\n');
   const out = { type: 'result', is_error: false, result: '[]' };
-  if (i >= 0) out.structured_output = empty(JSON.parse(args[i + 1]));
+  if (i >= 0)
+    out.structured_output = process.env.FAKE_READER_REPLY ? JSON.parse(process.env.FAKE_READER_REPLY) : empty(JSON.parse(args[i + 1]));
   console.log(JSON.stringify(out));
 });

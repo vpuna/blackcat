@@ -2,8 +2,9 @@
 //   devices   each one paired, by the name the owner gave it ("phone", "tv"): its serial, its
 //             address when it is reached on the network, what it is
 //   routines  a goal in one app: its steps, what it asks for, where it stops; and whether
-//             the owner approved it, with a fingerprint of the steps then, so an edited
-//             routine is a draft again until it is tried and approved
+//             the owner approved it, with a fingerprint of the steps then (and of what its app
+//             clears and guards), so an edited routine is a draft again until it is tried and
+//             approved
 //   apps      what an app's routines share: pop-ups to clear, the buttons that book, pay or
 //             send, notes. Added to as pop-ups are met.
 //   runs      each run: on which device, when, how it ended, at which step, how long, what was read
@@ -88,6 +89,24 @@ const SHAPE = [
   (db) => db.exec('ALTER TABLE runs ADD COLUMN recoveries TEXT'),
   // The key the server on each device was last started with (by what adb knows it as).
   (db) => db.exec('CREATE TABLE server_keys (target TEXT PRIMARY KEY, key TEXT NOT NULL, started_ts INTEGER NOT NULL)'),
+  // The fingerprint takes in the app's pop-ups and its words that book, pay or send. An approval
+  // of the routine as it is, and the runs of it as it is, are moved to the new one: nothing the
+  // owner approved becomes a draft by this.
+  (db) => {
+    const apps = new Map(
+      db
+        .prepare('SELECT package, body FROM apps')
+        .all()
+        .map((a) => [a.package, JSON.parse(a.body)]),
+    );
+    for (const row of db.prepare('SELECT name, app, body, approved_fp FROM routines').all()) {
+      const r = JSON.parse(row.body);
+      const was = routineOnly(r);
+      const fp = fingerprint(r, apps.get(row.app));
+      if (row.approved_fp === was) db.prepare('UPDATE routines SET approved_fp = ? WHERE name = ?').run(fp, row.name);
+      db.prepare('UPDATE runs SET fingerprint = ? WHERE routine = ? AND fingerprint = ?').run(fp, row.name, was);
+    }
+  },
 ];
 const open = (ctx) => () => {
   const db = openSqlite(path.join(ctx.dataDir, 'android.db'));
@@ -102,12 +121,13 @@ const approvedPart = (r) =>
   r?.steps?.some((s) => s?.do === 'confirm' && s.result)
     ? { ...r, steps: r.steps.map((s) => (s?.do === 'confirm' && s.result ? (({ result, ...rest }) => rest)(s) : s)) }
     : r;
-export const fingerprint = (r) =>
-  crypto
-    .createHash('sha256')
-    .update(JSON.stringify(approvedPart(r)))
-    .digest('hex')
-    .slice(0, 16);
+// And what its app's routines share that changes what a run taps: the pop-ups it clears, and
+// the words of the buttons it never presses unasked. One of those changed is a change to every
+// routine of the app.
+const hash = (x) => crypto.createHash('sha256').update(JSON.stringify(x)).digest('hex').slice(0, 16);
+export const fingerprint = (r, app) => hash({ routine: approvedPart(r), popups: app?.popups ?? [], commit: app?.commit ?? [] });
+// (How it was made before the app's part was in it: only for the step that moves approvals over.)
+const routineOnly = (r) => hash(approvedPart(r));
 
 // ---------- the key of the server on a device ----------
 // A new one at each start (device.js, ensureServer); every blackcat process reads it here.
@@ -233,14 +253,16 @@ export function saveRoutine(ctx, r) {
 export const deleteRoutine = (ctx, name) => use(ctx, (db) => db.prepare('DELETE FROM routines WHERE name = ?').run(name).changes > 0);
 
 export function setApproved(ctx, name, r) {
-  use(ctx, (db) => db.prepare('UPDATE routines SET approved_fp = ?, approved_ts = ? WHERE name = ?').run(fingerprint(r), now(), name));
+  use(ctx, (db) =>
+    db.prepare('UPDATE routines SET approved_fp = ?, approved_ts = ? WHERE name = ?').run(fingerprint(r, loadApp(ctx, r.app)), now(), name),
+  );
 }
 
 // Approved, draft, or edited since it was approved.
 export function stateOf(ctx, name, r) {
   const row = rowOf(ctx, name);
   if (!row?.approved_fp) return 'draft';
-  return row.approved_fp === fingerprint(r) ? 'approved' : 'edited since it was approved';
+  return row.approved_fp === fingerprint(r, loadApp(ctx, r.app)) ? 'approved' : 'edited since it was approved';
 }
 
 // ---------- runs ----------
@@ -258,7 +280,7 @@ export function recordRun(ctx, r, x) {
         x.outcome,
         x.step ?? null,
         x.seconds ?? null,
-        fingerprint(r),
+        fingerprint(r, loadApp(ctx, r.app)),
         x.dry ? 1 : 0,
         x.values ? JSON.stringify(x.values) : null,
         x.error ?? null,
@@ -312,8 +334,6 @@ export function validate(r, app) {
         out.push(`step ${at}: "number" is pressed digit by digit: up to 6 digits, or a value such as "{{channel}}"`);
       if (s.times != null && !(s.do === 'key' && Number.isInteger(s.times) && s.times >= 1 && s.times <= 20))
         out.push(`step ${at}: "times" is how often a key is pressed, 1 to 20`);
-      if (s.retry != null && !(s.do === 'tap' && s.retry === false))
-        out.push(`step ${at}: "retry": false is for a tap that must not be repeated`);
       if (s.do === 'stop' && !(typeof s.say === 'string' && s.say.trim())) out.push(`step ${at}: "say" is why the routine stops there`);
       if (s.do === 'focus' && !(isTarget(s.target) && (s.key == null || ARROWS.includes(s.key))))
         out.push(`step ${at}: "target" names the element to move to, and "key" the arrow that moves there (${ARROWS.join(', ')})`);
@@ -359,8 +379,8 @@ export function validate(r, app) {
 // while it is still working, to wait past even when `shows` is there too (`waiting`), how long to
 // wait for it (`wait`, in seconds) and what to read there (`read`, as at the confirmation screen;
 // `next` reads the n-th text after `after`, for a value with no label of its own beside it).
+// Any number of screens may be named: the owner adds one as they find the app shows it.
 export const RESULT_WAIT = { least: 5, most: 600 };
-export const MAX_SIGNS = 4;
 export const MAX_NEXT = 6;
 export const signsOf = (shows) => (shows == null ? [] : [shows].flat());
 const isRead = (x) =>
@@ -382,14 +402,12 @@ function resultProblems(x, at) {
   for (const k of Object.keys(x))
     if (!['shows', 'waiting', 'wait', 'read'].includes(k)) out.push(`step ${at}: "result" has shows, waiting, wait and read, not ${k}`);
   const signs = signsOf(x.shows);
-  if (x.shows != null && (!signs.length || signs.length > MAX_SIGNS || !signs.every(isTarget)))
-    out.push(
-      `step ${at}: "result.shows" names an element of the screen after the press, or a list of up to ${MAX_SIGNS}, any of which will do`,
-    );
+  if (x.shows != null && (!signs.length || !signs.every(isTarget)))
+    out.push(`step ${at}: "result.shows" names an element of the screen after the press, or a list of them, any of which will do`);
   const holds = signsOf(x.waiting);
-  if (x.waiting != null && (!holds.length || holds.length > MAX_SIGNS || !holds.every(isTarget)))
+  if (x.waiting != null && (!holds.length || !holds.every(isTarget)))
     out.push(
-      `step ${at}: "result.waiting" names an element the app shows while it is still working ("Finding a driver"), or a list of up to ${MAX_SIGNS}`,
+      `step ${at}: "result.waiting" names an element the app shows while it is still working ("Finding a driver"), or a list of them`,
     );
   if (x.wait != null && !(Number.isInteger(x.wait) && x.wait >= RESULT_WAIT.least && x.wait <= RESULT_WAIT.most))
     out.push(`step ${at}: "result.wait" is how many seconds to wait, ${RESULT_WAIT.least} to ${RESULT_WAIT.most}`);

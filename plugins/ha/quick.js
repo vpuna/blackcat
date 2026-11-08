@@ -3,7 +3,6 @@
 // shapes, matched against the synced catalogue. Anything that isn't exactly one of these
 // shapes, or doesn't name exactly one thing (or one obvious group), is left to the agent.
 import { ACTIONS, areaName, levelFor, main } from './catalogue.js';
-import { sleep } from '../../src/api.js';
 
 const FILLER_START = /^(hey|hi|ok|okay|please|kindly|can you|could you|would you|will you|blackcat|black cat)\s+/;
 const FILLER_END = /\s+(please|now|for me|thanks|thank you)$/;
@@ -146,16 +145,16 @@ export async function carryOut(pl, cat, api) {
   const done = [];
   for (const e of pl.things) {
     const [domain, service] = pl.via === 'script' ? ['script', 'turn_on'] : ACTIONS[e.domain][pl.action];
-    await api.call(domain, service, { entity_id: e.id });
-  }
-  await sleep(700); // let it take effect, then say what it is now
-  for (const e of pl.things) {
-    if (pl.via === 'script') {
-      done.push(`ran ${e.name}${/onoff/i.test(e.name) ? " (it toggles, so I can't tell which way it went)" : ''}`);
+    const { changed, now } = await api.call(domain, service, { entity_id: e.id });
+    if (pl.via !== 'script') {
+      done.push(`${e.name}: ${now[e.id]?.state ?? pl.action}`);
       continue;
     }
-    const s = await api.state(e.id).catch(() => null);
-    done.push(`${e.name}: ${s?.state ?? pl.action}`);
+    // (What a script did is what changed while it ran, by name where the home has one.)
+    const did = changed
+      .filter((s) => !s.entity_id.startsWith('script.'))
+      .map((s) => `${cat.entities.find((x) => x.id === s.entity_id)?.name ?? s.attributes?.friendly_name ?? s.entity_id} ${s.state}`);
+    done.push(`ran ${e.name}${did.length ? `: ${did.join(', ')}` : ''}`);
   }
   return done.join('\n');
 }

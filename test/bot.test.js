@@ -121,7 +121,8 @@ test('its own commands: start, help, new, the menu', async () => {
   for (const once of ['remind', 'watch', 'check']) assert.equal(menu.filter((c) => c === once).length, 1, `${once} is listed once`);
   assert.equal(help.split('\n').filter((l) => l.startsWith('/watch ')).length, 1);
   assert.match(help, /\n\/watch – Your watches: open one, see its list, check for new \(\/watch help: its commands\)\n/);
-  assert.match((await tg.ask('/status')).text, /⏱ up .*\n🌡/s);
+  // /status: is each thing that is set up working, asked now (the bot is, here: a stand-in Telegram)
+  assert.match((await tg.ask('/status')).text, /^Health at \d\d:\d\d: all working\n[^]*\n✓ Telegram bot · @\w+ answers/);
 });
 
 test('a long answer is sent in parts', async () => {
@@ -460,22 +461,25 @@ test('a command that takes minutes runs beside the conversation, says when it is
 });
 
 test('checks: how each is doing, looking now, and pausing one', async () => {
-  // (the one that is always there, paused for these tests: alone, it is shown straight away as its card)
+  // (the two that are always there, paused for these tests)
   assert.match(
     (await tg.ask('/check')).text,
-    /^🩺 <b>blackcat health<\/b> · ⏸ paused\n<b>Looks at:<\/b> runs `blackcat activity problems --json`/,
+    /^🩺 <b>Your checks<\/b>\n\n1\. ⏸ <b>blackcat health<\/b> · [^\n]*\n2\. ⏸ <b>Connections<\/b>/,
   );
   // (setting one up puts a command on a schedule: typed in the chat, it is confirmed first)
   const run = async (cmd) => {
     const ask = await tg.ask(cmd);
     return texts(await then(() => tg.tap(ask, 'Run it'))).at(-1);
   };
-  assert.match(await run('/check add Disk --run true --every 10m'), /Check 2 "Disk" created\./);
+  assert.match(await run('/check add Disk --run true --every 10m'), /Check 3 "Disk" created\./);
   // several: a list, with a button for each
   const all = await tg.ask('/check');
-  assert.match(all.text, /^🩺 <b>Your checks<\/b>\n\n1\. ⏸ <b>blackcat health<\/b> · [^\n]*\n2\. ✅ <b>Disk<\/b> · fine/);
-  assert.deepEqual(tg.buttons(all), ['1. blackcat health', '2. Disk']);
-  const card = (await then(() => tg.tap(all, '2. Disk'))).find((c) => c.method === 'sendMessage');
+  assert.match(
+    all.text,
+    /^🩺 <b>Your checks<\/b>\n\n1\. ⏸ <b>blackcat health<\/b> · [^\n]*\n2\. ⏸ <b>Connections<\/b> · [^\n]*\n3\. ✅ <b>Disk<\/b> · fine/,
+  );
+  assert.deepEqual(tg.buttons(all), ['1. blackcat health', '2. Connections', '3. Disk']);
+  const card = (await then(() => tg.tap(all, '3. Disk'))).find((c) => c.method === 'sendMessage');
   assert.match(
     card.text,
     /^🩺 <b>Disk<\/b>\n<b>Looks at:<\/b> runs `true`\n<b>Looks:<\/b> every 10 minutes\n<b>State:<\/b> fine \(checked [^)]*: all checks passed\)\nTells you when it stops working, is fixed, or recovers\.$/,
@@ -491,8 +495,11 @@ test('checks: how each is doing, looking now, and pausing one', async () => {
 });
 
 test('watches: the list of them, a report with its items, and the briefing', async () => {
-  assert.match((await tg.ask('/watch add Ideas')).text, /^<pre>👁 Watch 2 "Ideas" created\./);
-  assert.match((await tg.ask("/watch add-item 2 --title 'Try the new cafe'")).text, /Try the new cafe/);
+  assert.match(
+    (await tg.ask('/watch add Ideas --self --look-for ideas')).text,
+    /^<pre>👁 Watch 2 "Ideas" created, filling the list "Ideas"\./,
+  );
+  assert.match((await tg.ask("/list add Ideas --title 'Try the new cafe'")).text, /Try the new cafe/);
   const watches = await tg.ask('/watch');
   assert.match(
     watches.text,
@@ -504,7 +511,7 @@ test('watches: the list of them, a report with its items, and the briefing', asy
   const card = opened.find((c) => c.method === 'sendMessage');
   assert.equal(
     card.text,
-    '👁 <b>Ideas</b>\n<b>Looks for:</b> Ideas\n<b>Watching:</b> nothing: a list you add to by hand\n<b>Looks:</b> every 15 minutes\n<b>Reports:</b> in the daily briefing · a nudge 2 days before, at 18:00\n<b>List:</b> 1 to do (0 new since the last report) · 0 done · 0 dropped',
+    '👁 <b>Ideas</b>\n<b>Looks for:</b> ideas\n<b>Watching:</b> messages you send yourself\n<b>Looks:</b> every 15 minutes\n<b>Reports:</b> in the daily briefing · a nudge 2 days before, at 18:00\n<b>List:</b> 1 to do (0 new since the last report) · 0 done · 0 dropped',
   );
   assert.deepEqual(tg.buttons(card), ['📋 Show list', '🔄 Check for new', '⏸ Pause', '✅ Done ones']);
   const paused = await then(() => tg.tap(card, 'Pause'), { until: 'editMessageText' });
@@ -532,7 +539,7 @@ test('watches: the list of them, a report with its items, and the briefing', asy
     true,
   );
   // the same report, asked for by command: sent as a message of its own, then the command's answer
-  await tg.ask("/watch add-item 2 --title 'Book the dentist'");
+  await tg.ask("/list add Ideas --title 'Book the dentist'");
   const digest = await then(() => tg.say('/watch digest 2'), { until: (c) => /Report for/.test(c.text ?? '') });
   assert.match(texts(digest)[0], /^🗓 <b>Ideas<\/b>\n\n/);
   assert.match(texts(digest)[0], /Book the dentist/);

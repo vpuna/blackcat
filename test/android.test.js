@@ -297,8 +297,12 @@ test('the agent runs only an approved routine, without asking first, since its c
   saveRoutine(ctx, ROUTINE);
   assert.equal(access(['ride']).level, 'never', 'a draft');
   assert.equal(access(['nothing']).level, 'never');
-  assert.equal(access(['ride', '--dry']).level, 'allow', 'trying one to its confirmation screen');
-  assert.equal(access(['--on', 'phone', 'ride', '--dry']).level, 'allow', 'the device named is not taken for the routine');
+  // (S4 of the audit of 2026-10-24: a draft's try was allowed outright, and it acts on the device
+  // by steps nobody has looked over.)
+  const tryIt = access(['ride', '--dry']);
+  assert.deepEqual([tryIt.level, tryIt.once], ['ask', true], 'trying a draft is put to the owner');
+  assert.match(tryIt.describe, /try the draft routine "ride" .*stops at its confirmation screen and presses nothing/);
+  assert.equal(access(['--on', 'phone', 'ride', '--dry']).level, 'ask', 'the device named is not taken for the routine');
   assert.throws(() => manifest.commands.approve.run(ctx, { name: 'ride' }), /Run it to its confirmation screen first/);
   recordRun(ctx, ROUTINE, { outcome: 'failed', step: '3', dry: true });
   assert.throws(
@@ -309,6 +313,7 @@ test('the agent runs only an approved routine, without asking first, since its c
   recordRun(ctx, ROUTINE, { outcome: 'declined', seconds: 18, dry: true, values: { Price: 'AED 61' } });
   manifest.commands.approve.run(ctx, { name: 'ride' });
   assert.equal(access(['ride', '--set', 'to=Central Station']).level, 'allow');
+  assert.equal(access(['ride', '--dry']).level, 'allow', 'approved, and it stops at its confirmation: a try as well');
   // Replaced from a file with a change only to what is looked at after the press: still approved, and said so.
   const looked = path.join(dir, 'looked.json');
   const confirm = ROUTINE.steps.at(-1);
@@ -328,6 +333,28 @@ test('the agent runs only an approved routine, without asking first, since its c
   assert.equal(manifest.commands.list.run(ctx).data[0].state, 'edited since it was approved');
 });
 
+test("an approved routine is a draft again when its app's pop-ups or booking words change; approvals from before are kept", async () => {
+  const { setApproved, stateOf } = await import('../plugins/android/routines.js');
+  const r = { ...ROUTINE, name: 'shared' };
+  saveApp(ctx, APP);
+  saveRoutine(ctx, r);
+  setApproved(ctx, 'shared', r);
+  assert.equal(stateOf(ctx, 'shared', r), 'approved');
+  saveApp(ctx, { ...APP, popups: [...APP.popups, { when: { text: 'Rate us' }, tap: { resourceId: 'android:id/button1' } }] });
+  assert.equal(stateOf(ctx, 'shared', r), 'edited since it was approved', 'a new pop-up to tap changes what it does');
+  saveApp(ctx, APP);
+  assert.equal(stateOf(ctx, 'shared', r), 'approved', 'as it was when approved');
+  // Approved before the app's part was in the fingerprint: moved over, not made a draft.
+  const crypto = await import('node:crypto');
+  const before = crypto.createHash('sha256').update(JSON.stringify(r)).digest('hex').slice(0, 16);
+  const { openSqlite } = await import('../src/db.js');
+  const raw = openSqlite(path.join(ctx.dataDir, 'android.db'));
+  raw.prepare("UPDATE shapes SET step = 4 WHERE part = 'android'").run();
+  raw.prepare("UPDATE routines SET approved_fp = ? WHERE name = 'shared'").run(before);
+  raw.close();
+  assert.equal(stateOf(ctx, 'shared', r), 'approved');
+});
+
 test('a routine with nothing to confirm is asked about each time', () => {
   const plain = { name: 'wifi', app: 'com.example.rides', steps: [{ do: 'tap', target: { text: 'Rides' } }] };
   saveApp(ctx, { ...APP, commit: [] });
@@ -337,6 +364,7 @@ test('a routine with nothing to confirm is asked about each time', () => {
   recordRun(ctx, plain, { outcome: 'finished', dry: true });
   manifest.commands.approve.run(ctx, { name: 'wifi' });
   assert.deepEqual(access(['wifi']), { level: 'ask', once: true, describe: 'go through "wifi" on the device' });
+  assert.equal(access(['wifi', '--dry']).level, 'ask', 'a try goes to its end too: asked the same');
 });
 
 test("routines are kept in the plugin's own database, and what is saved is checked first", () => {
@@ -503,7 +531,7 @@ test('the keyboard a field brought up is closed once the text is in, unless the 
 });
 
 test('trouble that was got past is on the activity record, and sent only when the run failed or there is a fix to keep', async () => {
-  const { tellAndKeep } = await import('../plugins/android/plugin.js');
+  const { tellAndKeep } = await import('../plugins/android/running.js');
   const sent = [];
   const tell = { ...ctx, notify: async (text) => sent.push(text), askOwner: async () => ({ answer: '✖ No' }) };
   process.env.BLACKCAT_CHAT_ID = 'me'; // (not at this terminal)
@@ -614,9 +642,21 @@ test("the device's own screen setting is put back, also after a run that was cut
   const left = device({ stay_on_while_plugged_in: '7', blackcat_stay_on_while_plugged_in: '0' });
   await session(left, r, async () => {});
   assert.deepEqual(left.settings, { stay_on_while_plugged_in: '0' });
+  // (W8 of the audit of 2026-10-24: one that cannot be put back is said, not passed over.)
+  const stuck = device({ stay_on_while_plugged_in: '0' });
+  const said = [];
+  const set = stuck.setting;
+  stuck.setting = async (ns, k, v) =>
+    k === 'stay_on_while_plugged_in' && v === '0' ? Promise.reject(new Error('device offline')) : set(ns, k, v);
+  stuck.sleep = async () => Promise.reject(new Error('device offline'));
+  await session(stuck, r, async () => {}, { log: (l) => said.push(l) });
+  assert.ok(said.includes('could not put back "stay awake while charging": device offline'), said.join('\n'));
+  assert.ok(said.includes('could not turn the screen off: device offline'), said.join('\n'));
 });
 
-test('a tap that did nothing, on an app still starting, is made again; one marked not to be is not', async () => {
+// (W3 of the audit of 2026-10-24: a tap the app ignored used to be made again, up to three
+// times; the cause, an app swapping its first screen for its real one, is waited out instead.)
+test('a tap is made once: one the app ignored is not made again, and what was waited for is said', async () => {
   const r = {
     name: 'r',
     app: APP.package,
@@ -626,55 +666,8 @@ test('a tap that did nothing, on an app still starting, is made again; one marke
     ],
   };
   const dev = Object.assign(new FakeDevice(), { lose: 1 });
-  assert.equal((await runWith(dev, 'cancel', r)).outcome, 'finished');
-  assert.deepEqual(dev.taps, ['Rides', 'Rides']);
-  // A home screen that keeps changing as it loads (a balance, offers): still made once more.
-  const busy = Object.assign(new FakeDevice(), { lose: 1, n: 0 });
-  const dump = busy.dump.bind(busy);
-  busy.dump = async () => (await dump()).replace('</hierarchy>', `<node text="offer ${busy.n++}" bounds="[0,900][100,950]" /></hierarchy>`);
-  assert.equal((await runWith(busy, 'cancel', r)).outcome, 'finished');
-  assert.deepEqual(busy.taps, ['Rides', 'Rides']);
-  // The home screen still loading: an offer comes in above, and "Rides" moves down. Still the same screen.
-  const loading = Object.assign(new FakeDevice('home', structuredClone(SCREENS)), { lose: 1 });
-  const tap = loading.tap.bind(loading);
-  loading.tap = async (x, y) => {
-    await tap(x, y);
-    if (loading.taps.length === 1) loading.screens.home.els.unshift({ text: 'Offer of the day', tap: false });
-  };
-  assert.equal((await runWith(loading, 'cancel', r)).outcome, 'finished');
-  assert.deepEqual(loading.taps, ['Rides', 'Rides'], 'tapped again where it is now');
-  // An app that ignores taps for longer (just started, busy after a ride): up to three more.
-  const slow = Object.assign(new FakeDevice(), { lose: 3 });
-  const out = await runWith(slow, 'cancel', { ...r, steps: [r.steps[0], { ...r.steps[1], wait: 15 }] });
-  assert.equal(out.outcome, 'finished');
-  assert.deepEqual(slow.taps, ['Rides', 'Rides', 'Rides', 'Rides']);
-  assert.match(out.steps[0].text, /\(tapped 4 times: nothing came of the first\)$/);
-  // The first tap worked, slowly, and the next screen has a "Rides" in the same place: that is
-  // another screen, and nothing is tapped on it.
-  const moved = new FakeDevice('home', {
-    home: { els: [{ text: 'Rides' }, { text: 'Food' }, { text: 'Shops' }, { text: 'Pay' }, { text: 'Balance' }], go: { Rides: 'promo' } },
-    promo: { els: [{ text: 'Rides' }, { text: 'Offers for you' }, { text: 'Today only' }, { text: 'Book a trip' }, { text: 'Later' }] },
-  });
-  await assert.rejects(
-    runWith(moved, 'cancel', r),
-    /never showed\. "Rides" was not tapped again: the screen changed \(4 of 5 things on it are gone: "Food", "Shops", "Pay", "Balance"\)/,
-  );
-  assert.deepEqual(moved.taps, ['Rides'], 'not tapped again on a screen it was not tapped on');
-  // What the target finds when it is tapped again is held to what every tap is: the button,
-  // found by its id, now says "Book now" (the app moved on while the tap seemed lost): not tapped.
-  const screens = structuredClone(SCREENS);
-  screens.home.els[0] = { id: 'cta', text: 'Next' };
-  const booking = Object.assign(new FakeDevice('home', screens), { lose: 1 });
-  const first = booking.tap.bind(booking);
-  booking.tap = async (x, y) => {
-    await first(x, y);
-    if (booking.taps.length === 1) booking.screens.home.els[0] = { id: 'cta', text: 'Book now' };
-  };
-  await assert.rejects(
-    runWith(booking, 'cancel', { ...r, steps: [{ do: 'tap', target: { resourceId: 'cta' } }, r.steps[1]] }),
-    /was not tapped again: "Book now" books, pays or sends/,
-  );
-  assert.deepEqual(booking.taps, ['Next'], 'never the booking button');
+  await assert.rejects(runWith(dev, 'cancel', r), /Step 2 failed: .*never showed$/);
+  assert.deepEqual(dev.taps, ['Rides']);
   const homeEls = [
     { text: 'Rides', at: [40, 100] },
     { text: 'Food', at: [40, 250] },
@@ -692,6 +685,27 @@ test('a tap that did nothing, on an app still starting, is made again; one marke
   });
   assert.equal((await runWith(rated, 'cancel', r)).outcome, 'finished');
   assert.deepEqual(rated.taps, ['Skip', 'Rides'], 'the pop-up first, then what the step is for');
+  // (S5 of the audit of 2026-10-24: a pop-up's button was tapped without the book/pay/send check.)
+  // A pop-up whose button, found by its generic id, says what books: never tapped.
+  const offer = new FakeDevice('offer', {
+    offer: {
+      els: [{ text: 'How was your trip?', tap: false, at: [40, 700] }, { id: 'button1', text: 'Book now', at: [40, 850] }, ...homeEls],
+      go: { 'Book now': 'booked' },
+    },
+    booked: { els: [{ text: 'Booked!' }] },
+  });
+  const guarded = new Runner(
+    offer,
+    r,
+    { ...APP, popups: [{ when: { text: 'How was your trip?' }, tap: { resourceId: 'button1' } }] },
+    {
+      answer: async () => 'cancel',
+      media,
+      startMs: 200,
+    },
+  ).run();
+  await assert.rejects(guarded, /Step 2 failed/);
+  assert.ok(!offer.taps.includes('Book now'), `never the booking button: ${offer.taps.join(', ')}`);
   // An app just opened draws a first home screen and then swaps it for its real one, with
   // "Rides" in the same place: a tap on the first is lost, and on the real one most of what
   // was there has gone. The first step waits for the screen to settle. (A real case: 53 of 74
@@ -725,10 +739,42 @@ test('a tap that did nothing, on an app still starting, is made again; one marke
   const t0 = Date.now();
   await runWith(showing, 'cancel', { ...r, start: 'running' }, { startMs: 2000 });
   assert.ok(Date.now() - t0 < 1500, 'not waited for');
-  const once = Object.assign(new FakeDevice(), { lose: 1 });
-  r.steps[0].retry = false;
-  await assert.rejects(runWith(once, 'cancel', r), /never showed/);
-  assert.deepEqual(once.taps, ['Rides']);
+});
+
+// (W1 of the audit of 2026-10-24: whether a step was skipped was told by matching its words, and
+// "did not show (…, of a later step, did): skipped" and "not needed: …" were ticked as done.)
+test('a step that was not needed is said so by the runner, whatever the words: never ticked as done', async () => {
+  const r = {
+    name: 'r',
+    app: APP.package,
+    values: {},
+    steps: [
+      { do: 'if_shown', target: { text: 'Today only' }, wait: 1, then: [{ do: 'tap', target: { text: 'Later' } }] },
+      { do: 'tap', target: { text: 'Food' }, only_with: 'gate' },
+      { do: 'unless_shown', target: { text: 'Rides' }, then: [{ do: 'back' }] },
+      { do: 'tap', target: { text: 'Rides' } },
+      { do: 'wait', target: { resourceId: 'field_search' }, wait: 5 },
+    ],
+  };
+  const ended = [];
+  const out = await new Runner(new FakeDevice(), r, APP, {
+    answer: async () => 'cancel',
+    media,
+    startMs: 200,
+    onDone: ({ n, skipped }) => ended.push([n, skipped]),
+  }).run();
+  assert.equal(out.outcome, 'finished');
+  assert.deepEqual(ended, [
+    ['1', true],
+    ['2', true],
+    ['3', true],
+    ['4', false],
+    ['5', false],
+  ]);
+  assert.deepEqual(
+    out.steps.map((x) => !!x.skipped),
+    [true, true, true, false, false],
+  );
 });
 
 test('a keyboard the app brings up over what a step waits for is closed; not after a step that keeps it', async () => {
@@ -1612,6 +1658,8 @@ test('what comes after the press only looks: it is checked, and changing it keep
   assert.match(bad({ wait: 2 }).join(), /result.wait/);
   assert.match(bad({ shows: 'Booked' }).join(), /result.shows/);
   assert.deepEqual(bad({ shows: [{ text: 'Booked' }, { text: 'Arrived' }] }), [], 'any of a few screens');
+  const many = ['On the way', 'Nearby', 'Arrived', 'Waiting', 'Here'].map((w) => ({ textContains: w }));
+  assert.deepEqual(bad({ shows: many, waiting: many }), [], 'as many as the owner names');
   assert.match(bad({ shows: [] }).join(), /result.shows/);
   assert.deepEqual(bad({ shows: { text: 'Booked' }, waiting: { textContains: 'Finding' } }), [], 'a screen to wait past');
   assert.match(bad({ waiting: [] }).join(), /result.waiting/);
@@ -1623,6 +1671,14 @@ test('what comes after the press only looks: it is checked, and changing it keep
   // A step that does change something is still a change to approve.
   const more = { ...r, steps: [{ do: 'back' }, ...r.steps] };
   assert.notEqual(fingerprint(more), fingerprint(r));
+  // And so is what its app's routines share that changes what is tapped (S5 of the audit of
+  // 2026-10-24): a pop-up to clear, or a word that books, pays or sends.
+  assert.equal(fingerprint(r, APP), fingerprint(r, structuredClone(APP)));
+  assert.notEqual(
+    fingerprint(r, { ...APP, popups: [...APP.popups, { when: { text: 'Rate us' }, tap: { text: 'OK' } }] }),
+    fingerprint(r, APP),
+  );
+  assert.notEqual(fingerprint(r, { ...APP, commit: [] }), fingerprint(r, APP));
 });
 
 // ---------- pictures, and changing a routine ----------
@@ -1721,4 +1777,39 @@ test("learning a change goes on from where the routine is: the app is not starte
   assert.equal(restarted, 0);
   assert.deepEqual(learner.steps, [{ do: 'tap', target: { description: 'Large' }, why: 'choose Large' }]);
   assert.ok(told[0].next, 'the model is told what comes after the new part');
+});
+
+// A deploy cut a run off before its end on 2026-10-27: the phone, left charging, kept its
+// screen on until the next run. The "tidy" job puts it back as soon as nothing runs on it.
+test('what a run cut off left on a device is put back by the tidy job, unless a run is going', async () => {
+  const { putBack } = await import('../plugins/android/runner.js');
+  saveDevice(ctx, { name: 'rides', serial: 'R9', maker: 'Maker', model: 'One', android: '12', sdk: 31, tv: false });
+  const settings = { stay_on_while_plugged_in: '7', blackcat_stay_on_while_plugged_in: '0' };
+  const withExec = {
+    ...ctx,
+    exec: async (cmd, args) => {
+      if (args[0] === 'devices') return { code: 0, stdout: 'List of devices attached\nR9 device usb:1 model:One\n', stderr: '' };
+      assert.equal(args[1], 'R9', 'only the device that is connected');
+      const [, verb, , key, value] = args
+        .slice(args.indexOf('shell') + 1)
+        .join(' ')
+        .split(' ');
+      if (verb === 'get') return { code: 0, stdout: settings[key] ?? 'null', stderr: '' };
+      if (verb === 'put') settings[key] = value;
+      if (verb === 'delete') delete settings[key];
+      return { code: 0, stdout: '', stderr: '' };
+    },
+  };
+  const job = manifest.jobs.find((j) => j.id === 'tidy');
+  const d = getDevice(ctx, 'rides');
+  // (A run in another process, which is alive: the job runs in its own.)
+  store.set(`running:${d.name}`, { pid: process.ppid, what: 'the routine "x"', at: Math.floor(Date.now() / 1000) });
+  assert.deepEqual(await job.run(withExec), { idle: true });
+  assert.equal(settings.stay_on_while_plugged_in, '7', 'a run is going: left to it');
+  store.delete(`running:${d.name}`);
+  assert.match((await job.run(withExec)).did, /put back "stay awake while charging" on the rides/);
+  assert.deepEqual(settings, { stay_on_while_plugged_in: '0' });
+  assert.deepEqual(await job.run(withExec), { idle: true }, 'nothing left: nothing to do');
+  assert.equal(await putBack({ setting: async () => 'null' }), false);
+  (await import('../plugins/android/routines.js')).deleteDevice(ctx, 'rides');
 });

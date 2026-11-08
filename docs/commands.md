@@ -6,7 +6,7 @@ In a chat channel the same commands work with a slash: `bc backup now` is `/back
 
 ## Contents
 
-[chat](#bc-chat) · [channel](#bc-channel) · [notify](#bc-notify) · [permissions](#bc-permissions) · [status](#bc-status) · [selftest](#bc-selftest) · [start](#bc-start) · [stop](#bc-stop) · [restart](#bc-restart) · [logs](#bc-logs) · [service](#bc-service) · [plugin](#bc-plugin) · [allsky](#bc-allsky) · [android](#bc-android) · [calendar](#bc-calendar) · [claude](#bc-claude) · [docs](#bc-docs) · [ha](#bc-ha) · [host](#bc-host) · [mail](#bc-mail) · [ocr](#bc-ocr) · [shortcut](#bc-shortcut) · [ssh](#bc-ssh) · [tg](#bc-tg) · [unifi](#bc-unifi) · [voice](#bc-voice) · [wa](#bc-wa) · [webos](#bc-webos) · [activity](#bc-activity) · [backup](#bc-backup) · [check](#bc-check) · [conversations](#bc-conversations) · [engine](#bc-engine) · [memory](#bc-memory) · [msg](#bc-msg) · [remind](#bc-remind) · [watch](#bc-watch)
+[chat](#bc-chat) · [channel](#bc-channel) · [notify](#bc-notify) · [permissions](#bc-permissions) · [status](#bc-status) · [selftest](#bc-selftest) · [health](#bc-health) · [start](#bc-start) · [stop](#bc-stop) · [restart](#bc-restart) · [logs](#bc-logs) · [service](#bc-service) · [plugin](#bc-plugin) · [allsky](#bc-allsky) · [android](#bc-android) · [calendar](#bc-calendar) · [claude](#bc-claude) · [docs](#bc-docs) · [ha](#bc-ha) · [host](#bc-host) · [mail](#bc-mail) · [ocr](#bc-ocr) · [openai](#bc-openai) · [shortcut](#bc-shortcut) · [ssh](#bc-ssh) · [tg](#bc-tg) · [unifi](#bc-unifi) · [voice](#bc-voice) · [wa](#bc-wa) · [webos](#bc-webos) · [activity](#bc-activity) · [backup](#bc-backup) · [check](#bc-check) · [conversations](#bc-conversations) · [engine](#bc-engine) · [learned](#bc-learned) · [list](#bc-list) · [memory](#bc-memory) · [msg](#bc-msg) · [remind](#bc-remind) · [watch](#bc-watch)
 
 ## bc chat
 
@@ -49,6 +49,11 @@ commands you told the agent it may always, or never, run without asking: list th
 - `bc selftest [part...]`  
   ask everything that is set up whether it works right now: each machine, account, calendar and device, the chat, the engine, the databases (read-only: nothing is changed)
 
+## bc health
+
+- `bc health`  
+  is each thing blackcat reaches working: one line each, and since when one is not (read-only; also /status in the chat, and the check "Connections" every 10 minutes)
+
 ## bc start
 
 - `bc start [service]`  
@@ -58,11 +63,13 @@ commands you told the agent it may always, or never, run without asking: list th
 
 - `bc stop [service]`  
   stop a service, or all of them, until started again
+  - `--now`: at once, even while work that must not be cut off is going on (a routine on a phone)
 
 ## bc restart
 
 - `bc restart [service]`  
   restart a service, or everything (after an update)
+  - `--now`: at once, even while work that must not be cut off is going on (a routine on a phone)
 
 ## bc logs
 
@@ -267,7 +274,7 @@ Read-only: the iCal address of a calendar cannot be used to change it.
 Claude Code: the engine that runs the model: Claude Code, under your own Claude plan (or pointed at a model of your choosing)
 
 - `bc claude setup`  
-  where the model is: leave empty for your Claude plan, or give the address of a model served somewhere else [you only (terminal or /setup)]
+  where the model is (your Claude plan, or a model served somewhere else), and a sign-in for your plan that lasts [you only (terminal or /setup)]
   - `--endpoint <value>`: Address of the model (empty: your Claude plan)
 - `bc claude settings`  
   how it is set up (secrets are named, never shown) [agent may run it]
@@ -278,7 +285,7 @@ Claude Code: the engine that runs the model: Claude Code, under your own Claude 
 Examples:
   bc engine status            which engine and model the agent and the readers use
   bc engine setup             choose the model and how hard it thinks
-  bc claude setup      point Claude Code at a model somewhere else (leave empty for your Claude plan)
+  bc claude setup      a sign-in that lasts (claude setup-token), or a model somewhere else
 ```
 
 ## bc docs
@@ -398,7 +405,7 @@ Examples:
 
 ## bc host
 
-This machine: the machine blackcat runs on: its health (with alerts for heat, a full disk or a weak power supply) and running commands on it
+This machine: the machine blackcat runs on: its health (a check offered for heat, a full disk or a weak power supply) and running commands on it
 
 - `bc host health`  
   temperature, load, memory, disk and power-supply warnings [agent may run it]
@@ -406,12 +413,6 @@ This machine: the machine blackcat runs on: its health (with alerts for heat, a 
   run a command on this machine: bc host run '<command>' [depends on the arguments]
 - `bc host mode [mode]`  
   what the agent may do on this machine: read, ask or full [you only]
-- `bc host setup`  
-  choose when to be alerted [depends on the arguments]
-  - `--alerts`: Send a Telegram alert when this machine runs hot, the disk fills or the power dips?
-  - `--no-alerts`: 
-  - `--temp-limit <value>`: Alert above this temperature (°C)
-  - `--disk-limit <value>`: Alert when the disk is fuller than this (%)
 - `bc host settings`  
   how it is set up (secrets are named, never shown) [agent may run it]
 - `bc host status`  
@@ -423,7 +424,7 @@ Examples:
   bc host run 'df -h'                       a command that only looks runs straight away
   bc host run 'sudo systemctl restart x'    for the agent, anything else needs your approval
   bc host mode ask                          read | ask | full: what the agent may do here
-  bc host setup                             when to be alerted
+  bc check add --from host:health           be told when it runs hot, the disk fills or the power dips
 ```
 
 ## bc mail
@@ -523,6 +524,29 @@ It needs Tesseract, a program of the system's own:   sudo apt install tesseract-
   bc ocr read <file>      read one picture and say how sure the reading is
   bc ocr setup            which languages to read
   bc msg reading          who reads the pictures that arrive: this machine, the model, both
+```
+
+## bc openai
+
+OpenAI-compatible model (beta): the engine for a model that speaks the OpenAI API: llama.cpp, Ollama, vLLM or LM Studio on your network, or a hosted one such as OpenRouter
+
+- `bc openai setup`  
+  where the model is: its address, its key, how much it can hold [you only (terminal or /setup)]
+  - `--endpoint <value>`: Address
+  - `--context <value>`: How many tokens it can hold (empty: ask the server, where it says)
+  - `--at-once <value>`: How many requests it can answer at once (1 for a model on one graphics card)
+  - `--pictures`: Can the model see pictures?
+  - `--no-pictures`: 
+- `bc openai settings`  
+  how it is set up (secrets are named, never shown) [agent may run it]
+- `bc openai status`  
+  how it is doing right now [agent may run it]
+
+```
+Examples:
+  bc openai setup                          the address of the model, and its key if it needs one
+  bc engine use openai --for readers       try it for the readers (it is checked first)
+  bc engine setup --for readers            choose the model, and whether it thinks first
 ```
 
 ## bc shortcut
@@ -1136,6 +1160,7 @@ Engine: what runs the model, for the agent you talk to and for the background re
   - `--name <value>`: with --model other: the model's name, exactly as the engine knows it
   - `--effort <value>`: How hard it thinks: low, medium, high, xhigh, max, or "(default)". Left out, it stays as it is
   - `--tools <value>`: Whose tools the agent works with, and who is in charge of each call: supervised, blackcat, engine, or "(default)" (chat only). Left out, it stays as it is
+  - `--thinking <value>`: Whether it thinks before answering (llama.cpp and vLLM; leave unset for other servers): off, on, or "(default)". Left out, it stays as it is
 - `bc engine check`  
   check what is in use for security, accuracy and speed, in a temporary copy with made-up messages; you decide whether to accept what it shows [you only]
   - `--for <which>`: chat, readers or both (default: both)
@@ -1166,6 +1191,99 @@ A change for the chat is taken up by your next message; for the readers, by the 
 they read. After a change, what was checked no longer stands: bc engine check
   bc engine check                             check what is in use: security, accuracy, speed; then you decide
   bc engine use <name>                        a different engine: checked first (in a terminal only)
+```
+
+## bc learned
+
+Learned words: your words for simple commands, learned from the agent: what each does without it, and forgetting one
+
+- `bc learned list`  
+  the words learned, what each does, and how often it was used [agent may run it]
+- `bc learned forget [number...]`  
+  forget words learned: the agent has them again next time [depends on the arguments]
+  - `--all`: every one of them
+- `bc learned settings`  
+  how it is set up (secrets are named, never shown) [agent may run it]
+- `bc learned status`  
+  how it is doing right now [agent may run it]
+
+```
+Examples:
+  bc learned list           every wording, what it does, and how often it was used
+  bc learned forget 3       the agent has those words again next time
+  bc learned forget --all
+
+A wording is learned when the agent, for what you said, switched one thing or ran one shortcut,
+without asking you anything. The same words next time are done at once.
+```
+
+## bc list
+
+Lists: lists of your own (spare electronics, groceries, a trip), with the fields you give them; and the lists your watches fill
+
+- `bc list list`  
+  every list, with when it was last used [agent may run it]
+  - `--unused <days>`: only lists not changed or looked at for this long: 90d
+- `bc list new <name...>`  
+  make a list [agent may run it]
+  - `--field <name[:kind]>`: a field of its own: text (the default), number or date, e.g. quantity:number (repeatable)
+- `bc list show <list>`  
+  what's on a list [agent may run it]
+  - `--by <field>`: group by this field (by type, when entries have one)
+  - `--type <type>`: only entries of this type
+  - `--status <which>`: open, done, dropped, expired, or all (comma-separated) (default: open)
+  - `--find <words>`: only entries that say all of these words
+- `bc list find <words...>`  
+  what every list says about something: the entries that say all of these words [agent may run it]
+  - `--status <which>`: open, done, dropped, expired, or all (comma-separated) (default: open)
+- `bc list entry <entry>`  
+  one entry with everything it has, and the messages linked to it [agent may run it]
+- `bc list add <list>`  
+  put something on a list [agent may run it]
+  - `--title <title>`: what it is
+  - `--set <name=value>`: a field: type, note, date, place, area, link, ref, or one of the list's own (repeatable)
+  - `--msg <messageId>`: a message from the archive it comes from (its link and title are used)
+  - `--file <path>`: a picture or document that belongs with it
+  - `--anyway`: add it even though it looks like something on this list already
+- `bc list edit <entry>`  
+  change an entry: its title or any field (it stays the same entry) [agent may run it]
+  - `--title <title>`: a new title
+  - `--set <name=value>`: give a field a value (repeatable)
+  - `--unset <name>`: take a field's value away (repeatable)
+  - `--file <path>`: a picture or document that belongs with it ("" takes it away)
+- `bc list mark <entry> <how>`  
+  mark an entry done, open again, or drop it [agent may run it]
+- `bc list field <list> <action> <field...>`  
+  a list's own fields: add, rename or remove one [agent may run it]
+- `bc list link <entry>`  
+  link a message or mail to an entry (or unlink it) [agent may run it]
+  - `--msg <messageId>`: a message from the archive (repeatable)
+  - `--unlink <messageId>`: take a link away (repeatable)
+- `bc list briefing <list> <onOff>`  
+  put a list's dated entries in the daily briefing on their days, or take them out (a list kept by hand is out until you say) [agent may run it]
+- `bc list rename <list> <name...>`  
+  give a list a new name [agent may run it]
+- `bc list remove <list>`  
+  delete a list and everything on it (not one a watch fills) [agent must ask you first]
+- `bc list settings`  
+  how it is set up (secrets are named, never shown) [agent may run it]
+- `bc list status`  
+  how it is doing right now [agent may run it]
+
+```
+Examples:
+  bc list new Electronics --field quantity:number --field specs --field "kept in"
+  bc list add Electronics --title "Raspberry Pi 4" --set type=pi --set quantity=2 --set "specs=4 GB"
+  bc list show Electronics --by type
+  bc list edit 12 --set quantity=3
+  bc list mark 12 done                    or open (still to do), drop
+  bc list edit 12 --set type=restaurants  move it to another type
+  bc list find dentist                    what every list says about something
+  bc list link 40 --msg <message-id>      a booking mail, on the flight of a trip
+  bc list list --unused 90d               lists nobody has touched in 90 days
+
+Every entry has a title and may have a type, note, date (YYYY-MM-DD), place, area, link and
+ref. Anything else is a field you add to the list: text, number or date.
 ```
 
 ## bc memory
@@ -1335,7 +1453,8 @@ Watches: keep a tab on certain messages: collect what fits into a list and repor
 - `bc watch add <name...>`  
   create a watch [agent may run it]
   - `--look-for <what>`: what belongs on the list, in plain words
-  - `--chat <name>`: a chat to watch (repeatable); with no chat it is a plain list you add to by hand
+  - `--chat <name>`: a chat to watch (repeatable); for a list you add to by hand, use bc list new
+  - `--list <list>`: fill this list (one of bc list list, that no other watch fills); without it the watch has a list of its own, named as the watch
   - `--from <person>`: in group chats, only messages from this person
   - `--self`: also messages you send to yourself
   - `--no-also-mine`: leave out your own messages in the watched chats (they are read unless you say so)
@@ -1356,11 +1475,6 @@ Watches: keep a tab on certain messages: collect what fits into a list and repor
   - `--status <which>`: new, kept, done, dropped, expired, or all (comma-separated) (default: new,kept)
   - `--list <name>`: only one of its lists, e.g. restaurants
   - `--find <words>`: only the entries that say all of these words
-- `bc watch find <words...>`  
-  the entries on every list that say all of these words [agent may run it]
-  - `--status <which>`: new, kept, done, dropped, expired, or all (comma-separated) (default: new,kept)
-- `bc watch lists <watch>`  
-  a watch's lists and how many items each has [agent may run it]
 - `bc watch setup`  
   "Things I need to do", the watch that is always there: on or off, when it looks, which chats, email [depends on the arguments]
   - `--auto`: Pick up things you need to do from your messages?
@@ -1409,32 +1523,9 @@ Watches: keep a tab on certain messages: collect what fits into a list and repor
   - `--resume`: start again
   - `--quiet <list>`: keep this list out of reports: it is only shown when asked for (repeatable)
   - `--unquiet <list>`: report it again (repeatable)
+  - `--list <list>`: fill another list from now on (what it filed before stays where it is)
 - `bc watch remove <watch>`  
-  delete a watch and its list [agent must ask you first]
-- `bc watch item <itemId> <action> [list...]`  
-  mark an item done, keep or drop; or move it to another list [agent may run it]
-- `bc watch add-item <watch>`  
-  put something on a list by hand [agent may run it]
-  - `--msg <messageId>`: a message from the archive (its link and preview title are used)
-  - `--title <title>`: what it is
-  - `--url <url>`: a link
-  - `--list <name>`: which of the watch's lists it goes on (a new name starts a new list)
-  - `--file <path>`: a picture or document that belongs with it
-  - `--category <category>`: same as --list (older name)
-  - `--place <place>`: venue
-  - `--area <area>`: neighbourhood or city
-  - `--date <date>`: YYYY-MM-DD, if it happens on a day
-  - `--summary <text>`: one line
-  - `--anyway`: add it even though it looks like something already on a list or set as a reminder
-- `bc watch edit-item <itemId>`  
-  change an entry that is on a list: what it is called, its day, place, link or one-line note (it stays the same entry, with the message it came from) [agent may run it]
-  - `--title <title>`: what it is
-  - `--date <date>`: YYYY-MM-DD; "" for no particular day
-  - `--summary <text>`: one line, with the details as they now are (a new time, a new place)
-  - `--place <place>`: venue
-  - `--area <area>`: neighbourhood or city
-  - `--url <url>`: a link; "" to take it away
-  - `--list <name>`: which of the watch's lists it is on
+  delete a watch (its list stays: bc list remove takes that away) [agent must ask you first]
 - `bc watch scan [watch]`  
   look now, without waiting for its turn: one watch, or all of them (each otherwise looks when its own schedule says) [agent may run it]
   - `--dry-run`: show what would be added, but don't save

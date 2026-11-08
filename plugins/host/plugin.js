@@ -1,17 +1,18 @@
 // The machine blackcat runs on: how it is doing, and running commands on it. A command that
 // only looks runs freely; anything else is asked about, the same rules as for another
 // machine over SSH. Whatever its mode, blackcat's own secrets are never read through it.
-import { globSync } from 'node:fs';
+import { existsSync, globSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import { COMMAND_MODES, commandAccess, expandHome, shell, touchesSecrets } from '../../src/api.js';
 
-const num = (min, max) => (v) =>
-  Number.isFinite(Number(v)) && Number(v) >= min && Number(v) <= max ? undefined : `A number from ${min} to ${max}`;
+const THERMAL = '/sys/class/thermal/thermal_zone0/temp';
+// (A Raspberry Pi says whether its power supply dipped: vcgencmd.)
+const hasPower = () => ['/usr/bin/vcgencmd', '/usr/local/bin/vcgencmd', '/opt/vc/bin/vcgencmd'].some((f) => existsSync(f));
 
 async function health(ctx) {
   const temp = await fs
-    .readFile('/sys/class/thermal/thermal_zone0/temp', 'utf8')
+    .readFile(THERMAL, 'utf8')
     .then((t) => Number(t) / 1000)
     .catch(() => null);
   const disk = await fs
@@ -54,8 +55,9 @@ function privatePath(cmd) {
     .split(/[\s=|;&<>()]+/)
     .filter((w) => w && !w.startsWith('-'));
   for (const w of words) {
+    // (Every word may be a path: "blackcat" is the folder of that name in the home folder,
+    // where a command runs.)
     const expanded = expandHome(w).replace(/\$\{?HOME\}?/g, os.homedir());
-    if (!/[/.~*?[]/.test(w)) continue; // not a path
     let found = [expanded];
     if (/[*?[]/.test(expanded)) {
       try {
@@ -86,13 +88,13 @@ export default {
   name: 'host',
   title: 'This machine',
   description:
-    'the machine blackcat runs on: its health (with alerts for heat, a full disk or a weak power supply) and running commands on it',
+    'the machine blackcat runs on: its health (a check offered for heat, a full disk or a weak power supply) and running commands on it',
   help: `Examples:
   bc host health
   bc host run 'df -h'                       a command that only looks runs straight away
   bc host run 'sudo systemctl restart x'    for the agent, anything else needs your approval
   bc host mode ask                          read | ask | full: what the agent may do here
-  bc host setup                             when to be alerted`,
+  bc check add --from host:health           be told when it runs hot, the disk fills or the power dips`,
 
   commands: {
     // A read-only command the agent may run without asking.
@@ -123,7 +125,7 @@ export default {
           if (hit) ctx.fail(`Not run: ${hit} is one of blackcat's own private files or folders, which can't be read through this command.`);
         }
         // Run from the home folder, so a relative path means the same thing every time.
-        const r = await shell(cmd, { timeoutMs: TIMEOUT_MS, keep: MAX_OUTPUT, cwd: os.homedir() });
+        const r = await shell(cmd, { timeoutMs: TIMEOUT_MS, keep: MAX_OUTPUT, cwd: os.homedir(), secrets: false });
         return {
           text: [r.out, r.timedOut ? '(stopped: it ran longer than the time limit)' : r.code ? `(exit code ${r.code})` : null]
             .filter(Boolean)
@@ -144,85 +146,12 @@ export default {
         return `This machine is now "${i.mode}": ${MODES[i.mode]}.`;
       },
     },
-
-    // A setup command: its questions are asked in the terminal, or in the bot's /setup.
-    setup: {
-      summary: 'choose when to be alerted',
-      // A preference, not a connection or a permission: the agent may change it when you ask, with your say each time.
-      access: () => ({ level: 'ask', describe: 'change when this machine alerts you' }),
-      form: [
-        {
-          id: 'alerts',
-          type: 'confirm',
-          message: 'Send a Telegram alert when this machine runs hot, the disk fills or the power dips?',
-          default: (_a, ctx) => ctx.config.get().alerts ?? true,
-        },
-        {
-          id: 'tempLimit',
-          type: 'text',
-          message: 'Alert above this temperature (°C)',
-          default: (_a, ctx) => ctx.config.get().tempLimit ?? 75,
-          validate: num(40, 90),
-          when: (a) => a.alerts,
-        },
-        {
-          id: 'diskLimit',
-          type: 'text',
-          message: 'Alert when the disk is fuller than this (%)',
-          default: (_a, ctx) => ctx.config.get().diskLimit ?? 90,
-          validate: num(50, 99),
-          when: (a) => a.alerts,
-        },
-      ],
-      run: (ctx, a) => {
-        // (Switched off, the limits are not asked for: the ones that were set stay.)
-        const was = ctx.config.get();
-        ctx.config.set({
-          alerts: !!a.alerts,
-          tempLimit: Number(a.tempLimit ?? was.tempLimit ?? 75),
-          diskLimit: Number(a.diskLimit ?? was.diskLimit ?? 90),
-        });
-        return a.alerts ? `Alerts on: above ${a.tempLimit}°C, disk over ${a.diskLimit}%, or a power dip.` : 'Alerts off.';
-      },
-    },
   },
 
-  // A scheduled job. It runs in its own process; ctx.notify sends the owner a Telegram message.
-  jobs: [
-    {
-      id: 'watch',
-      cron: '*/10 * * * *', // every ten minutes
-      summary: 'alert on heat, a full disk or under-voltage',
-      run: async (ctx) => {
-        const cfg = { alerts: true, tempLimit: 75, diskLimit: 90, ...ctx.config.get() };
-        if (!cfg.alerts) return { idle: true };
-        const h = await health(ctx);
-        const problems = [];
-        if (h.tempC > cfg.tempLimit) problems.push(`it is ${h.tempC.toFixed(1)}°C (limit ${cfg.tempLimit}°C)`);
-        if (h.diskUsedPercent > cfg.diskLimit) problems.push(`the disk is ${h.diskUsedPercent}% full (limit ${cfg.diskLimit}%)`);
-        if (h.underVoltageNow) problems.push('the power supply voltage is too low right now');
-        // Say it once per problem, not every ten minutes.
-        const key = problems
-          .map((p) => p.replace(/[\d.]+/g, '#'))
-          .sort()
-          .join('|');
-        if (key && key !== cfg.lastAlert) await ctx.notify(`🖥 ${os.hostname()}: ${problems.join('; ')}.`);
-        if (key !== (cfg.lastAlert ?? '')) ctx.config.set({ lastAlert: key });
-        // (For the activity record: nothing to note unless something changed.)
-        return key !== (cfg.lastAlert ?? '') ? { did: key ? `alerted: ${problems.join('; ')}` : 'back to normal' } : { idle: true };
-      },
-    },
-  ],
-
-  settings: (ctx) => {
-    const c = { alerts: true, tempLimit: 75, diskLimit: 90, ...ctx.config.get() };
-    return {
-      ...(c.alerts
-        ? { alerts: 'on', 'alert above': `${c.tempLimit}°C`, 'alert when the disk is over': `${c.diskLimit}%` }
-        : { alerts: 'off' }),
-      "the agent's mode": `${mode(ctx)}: ${MODES[mode(ctx)]}`,
-    };
-  },
+  settings: (ctx) => ({
+    alerts: 'the check offered: bc check add --from host:health',
+    "the agent's mode": `${mode(ctx)}: ${MODES[mode(ctx)]}`,
+  }),
 
   // Shown in `bc status`.
   // `bc selftest`: can the machine's own figures be read.
@@ -232,19 +161,31 @@ export default {
 
   // Added to the agent's instructions while the plugin is enabled.
   // For `bc engine check`: what the owner might say, and the command it should lead to.
-  // A check offered (bc check offered): this machine's figures kept over time, and what was
-  // using it when one went past a limit the owner gives.
-  checks: [
-    {
-      id: 'health',
-      name: 'This machine',
-      summary: "this machine's temperature, load, memory and disk, every 5 minutes; add --limit to be told",
-      run: 'blackcat host health --json',
-      measure: ['tempC', 'load.0', 'memoryUsedPercent', 'diskUsedPercent'],
-      context: 'ps -eo pcpu,pmem,comm --sort=-pcpu | head -11',
-      every: '5m',
-    },
-  ],
+  // A check offered (bc check offered): this machine's figures kept over time, what was using it
+  // when one went past a limit, and the limits it tells at: hotter than 75°C, a disk fuller than
+  // 90%, a power dip. Only what this machine can measure. (The limits once set with this
+  // plugin's own setup, before the check took its place, are kept.)
+  checks: (ctx) => {
+    const c = ctx.config.get();
+    const temp = existsSync(THERMAL);
+    const power = hasPower();
+    return [
+      {
+        id: 'health',
+        name: 'This machine',
+        summary: `this machine's temperature, load, memory and disk, every 5 minutes; tells you ${[temp && 'when it runs hot', 'when the disk fills', power && 'when the power dips'].filter(Boolean).join(', ')}`,
+        run: 'blackcat host health --json',
+        measure: [...(temp ? ['tempC'] : []), 'load.0', 'memoryUsedPercent', 'diskUsedPercent', ...(power ? ['underVoltageNow'] : [])],
+        limit: [
+          ...(temp ? [`tempC>${c.tempLimit ?? 75}`] : []),
+          `diskUsedPercent>${c.diskLimit ?? 90}`,
+          ...(power ? ['underVoltageNow>0'] : []),
+        ],
+        context: 'ps -eo pcpu,pmem,comm --sort=-pcpu | head -11',
+        every: '5m',
+      },
+    ];
+  },
   trials: [{ say: 'how hot is this machine running, and how full is its disk', expect: /blackcat host (health|status)\b/ }],
   agent: {
     fill: (ctx) => ({ hostname: os.hostname(), mode: MODES[mode(ctx)] }),

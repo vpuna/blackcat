@@ -36,9 +36,6 @@ owner.store.set('catalogue', {
     E('lock.front_door', 'Front door', null),
   ],
 });
-const mod = await import('../plugins/ha/plugin.js');
-mod.wait.settle = 0;
-mod.wait.volume = 0;
 const cmd = (name, input, ctx = owner) => plugin.manifest.commands[name].run(ctx, input);
 const fails = (p, re) => assert.rejects(p, (e) => (assert.match(e.message, re), true));
 const reset = () => {

@@ -145,7 +145,29 @@ const recording = (db) => {
 // (A name the owner gave it stays.)
 const renamed = (db) => db.prepare("UPDATE checks SET name = ? WHERE builtin = 'itself' AND name = 'blackcat itself'").run(ITSELF.name);
 
-const STEPS = [(db) => db.exec(SCHEMA), fromIncidents, itself, recording, renamed];
+// The second one there always is: whether each thing blackcat reaches is working (`bc health`).
+// Each thing that is not is a finding of its own, told once it has lasted half an hour.
+export const CONNECTIONS = {
+  builtin: 'connections',
+  name: 'Connections',
+  command: 'blackcat health --json',
+  every: ['*/10 * * * *'],
+  alert: { afterS: 1800 },
+};
+const connections = (db) =>
+  db
+    .prepare(
+      `INSERT INTO checks (name, look_for, command, every, alert, active, created_ts, builtin)
+       SELECT @name, '', @command, @every, @alert, 1, @now, @builtin WHERE NOT EXISTS (SELECT 1 FROM checks WHERE builtin = @builtin)`,
+    )
+    .run({
+      ...CONNECTIONS,
+      every: JSON.stringify(CONNECTIONS.every),
+      alert: JSON.stringify(CONNECTIONS.alert),
+      now: Math.floor(Date.now() / 1000),
+    });
+
+const STEPS = [(db) => db.exec(SCHEMA), fromIncidents, itself, recording, renamed, connections];
 
 export function openChecksDb() {
   const db = openAgentDb();

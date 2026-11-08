@@ -9,6 +9,7 @@ import { home } from './helpers.js';
 home();
 const { save } = await import('../src/config.js');
 save({ archive: { embedder: { provider: 'hash' } } });
+await (await import('../src/plugins/registry.js')).loadPlugins(); // (the sources are the plugins')
 const { accountFor, claimRows, openWrite, sourceSql } = await import('../src/archive/db.js');
 const { archiveStatements, messageRow } = await import('../src/archive/writer.js');
 const query = await import('../src/archive/query.js');

@@ -12,7 +12,7 @@ export { DATA, HOME, load, update } from './config.js';
 export { services } from './service/units.js';
 
 // ---- every plugin that is loaded, and a context for any of them
-export { loaded, makeCtx, PluginError, pluginSettings, setPluginSettings } from './plugins/registry.js';
+export { everyKnown, loaded, makeCtx, PluginError, pluginSettings, setPluginSettings } from './plugins/registry.js';
 
 // ---- blackcat's own database
 export { openAgentDb } from './agentdb.js';
@@ -21,7 +21,7 @@ export { openAgentDb } from './agentdb.js';
 export { addRule, removeRule, ruleFor } from './agent/permissions.js';
 
 // ---- times and schedules, beyond what plugins need
-export { todayAt } from './util/time.js';
+export { agoLabel, dateLabel, todayAt } from './util/time.js';
 export { REPEAT_WORDS, nextRepeat, parseWhen, repeatCron, repeatText } from './util/when.js';
 export { asText as scheduleText, nextRun, parseWhenText, shortestGap, summary as scheduleSummary } from './util/schedule.js';
 
@@ -32,7 +32,7 @@ export { INBOX } from './channels/inbox.js';
 // ---- the archive, beyond reading and writing messages
 export { CHAT_NAME, SENDER_LABEL, SENDER_NAME } from './archive/db.js';
 export { messageById, resolveChats } from './archive/query.js';
-export { SOURCES, inSourceSql, msgSource, notOptInSql, optIn, source, sourceOf } from './archive/sources.js';
+export { SOURCES, historyDays, inSourceSql, msgSource, notOptInSql, optIn, source, sourceOf } from './archive/sources.js';
 export { fetchMedia, findMedia } from './archive/media.js';
 export {
   AUDIO_SQL,
@@ -54,13 +54,15 @@ export {
   listReminders,
   openRemindersDb,
   markSent as markReminderSent,
-  reschedule as rescheduleReminder,
+  aboutReminder,
+  snooze as snoozeReminder,
+  whyNotMove as whyNotMoveReminder,
   setStatus as setReminderStatus,
   answer as answerReminder,
   oneEach as oneOfEachSeries,
   stopSeries,
 } from './reminders/db.js';
-export { QUIET_CHOICES, describeQuiet, inQuiet, outOfQuiet, quiet, setQuiet } from './quiet.js';
+export { QUIET_CHOICES, describeQuiet, inQuiet, inWindow, outOfQuiet, quiet, setQuiet } from './quiet.js';
 
 // ---- models with no tools, the readers, and what the owner said about themself
 export { askReader, readerInstructions, readerModel } from './readers.js';
@@ -71,4 +73,4 @@ export { ui } from './channels/desk.js';
 export { ensureCarrier } from './channels/registry.js';
 export { tellChat } from './channels/send.js';
 // ---- is it kept already? (a list entry, a reminder: by its words, no model)
-export { keptAlike, keptLine, notAddedText } from './plugins/same.js';
+export { alike, commonWords, keptAlike, keptLine, notAddedText } from './plugins/same.js';

@@ -2,26 +2,31 @@ import { reads, syncAgenda } from './agenda.js';
 import { came, work } from '../activity/log.js';
 import pc from 'picocolors';
 import { isQuiet, listKey, listLabel, listsOf } from './lists.js';
-import { nudgeText, parseNudge, setNudge, syncNudges } from './nudge.js';
+import { nudgeText, parseNudge, syncNudges } from './nudge.js';
 import {
-  addItem,
+  cameTo,
   addWatch,
   DEFAULT_NUDGE,
+  findList,
   findWatch,
-  getItem,
+  getList,
   getWatch,
   itemCounts,
   listItems,
+  listNamed,
   listWatches,
   openWatchDb,
   removeWatch,
   sameAsOf,
   sameAsText,
+  seeList,
   setItemStatus,
   TODO,
-  updateItem,
   updateWatch,
+  watchOfList,
+  keptSaid,
 } from './db.js';
+import { valuesOf } from './fields.js';
 import {
   describeSchedule,
   ensureCarrier,
@@ -172,6 +177,7 @@ export function view(w, counts) {
     scan: { cron: w.scan.cron, next: nextRun(w.scan.cron) },
     sources: w.sources,
     sourcesText: sourcesText(w.sources, w.builtin === TODO),
+    list: { id: w.list_id, name: w.listName },
     ...(w.lists?.quiet?.length ? { quietLists: w.lists.quiet } : {}),
     ...(counts ? { items: counts } : {}),
   };
@@ -181,6 +187,16 @@ function must(db, ref) {
   const w = findWatch(db, ref);
   if (!w) throw new PluginError(`No single watch matches "${ref}". See: bc watch list`);
   return w;
+}
+
+// A list a watch may fill: one that is there, and that no other watch fills.
+function fillable(db, ref, w = null) {
+  const l = findList(db, ref);
+  if (!l) throw new PluginError(`No single list matches "${ref}". See: bc list list`);
+  const by = watchOfList(db, l.id);
+  if (by && by.id !== w?.id)
+    throw new PluginError(`"${l.name}" is filled by the watch "${by.name}" already: a list is filled by one watch.`);
+  return l;
 }
 
 function sayWatch(say, w) {
@@ -205,9 +221,11 @@ export const add = command(async (nameWords, opts) => {
     // (Voice notes are listened to unless that is switched off: only "off" is written down.)
     ...(opts.voiceNotes === false ? { voice: false } : {}),
   };
-  // With no chat it is a plain list: nothing is collected, you (or the agent) add to it by hand.
-  const manual = !sources.chats.length && !sources.self;
-  if (manual) sources.manual = true;
+  // A list to add to by hand needs no watch.
+  if (!sources.chats.length && !sources.self)
+    throw new PluginError(
+      `A watch needs something to watch: --chat "<chat>" or --self. For a list you add to by hand: bc list new "${name}"`,
+    );
 
   // --history all (default): go through everything already in the archive. none: only new messages.
   let lastRowid = 0;
@@ -217,7 +235,12 @@ export const add = command(async (nameWords, opts) => {
 
   return withDb(openWatchDb, (db) => {
     const quiet = (opts.quiet ?? []).map(listKey);
+    // The list it fills: one named, or one of its own named as the watch.
+    const listId = opts.list ? fillable(db, opts.list).id : null;
+    if (!listId && listNamed(db, name))
+      throw new PluginError(`There is a list called "${name}" already. To fill it: --list "${name}". Or give the watch another name.`);
     const w = addWatch(db, {
+      listId,
       chatId: chatId(),
       name,
       lookFor: opts.lookFor,
@@ -230,16 +253,16 @@ export const add = command(async (nameWords, opts) => {
     });
     if (quiet.length) updateWatch(db, w.id, { lists: { quiet } });
     if (opts.json) return { raw: true, data: view(w) };
-    say(`${pc.green('👁')} Watch ${w.id} "${w.name}" created.`);
+    say(`${pc.green('👁')} Watch ${w.id} "${w.name}" created, filling the list "${getList(db, w.list_id).name}".`);
     say(`   watching: ${sourcesText(w.sources, w.builtin === TODO)}`);
     say(`   reports:  ${view(w).schedule} · ${view(w).nudges}`);
-    if (manual) say(pc.dim(`   Add to it with: bc watch add-item ${w.id} --title "…" [--list <name>] [--file <path>]`));
-    else
-      say(
-        pc.dim(
-          `   It starts collecting within 15 minutes${lastRowid ? '' : ', beginning with the history in the archive'}. Or run: bc watch scan ${w.id}`,
-        ),
-      );
+    const kept = keptSaid(w.sources.chats.map((c) => c.ref));
+    if (kept) say(`   undated entries move to Expired ${kept}; they stay there, a tap from open again.`);
+    say(
+      pc.dim(
+        `   It starts collecting within 15 minutes${lastRowid ? '' : ', beginning with the history in the archive'}. Or run: bc watch scan ${w.id}`,
+      ),
+    );
     return say.all();
   });
 });
@@ -248,10 +271,10 @@ export const list = command(async (opts) => {
   const say = saying();
   return withDb(openWatchDb, (db) => {
     const rows = listWatches(db);
-    if (opts.json) return { raw: true, data: rows.map((w) => view(w, itemCounts(db, w.id))) };
+    if (opts.json) return { raw: true, data: rows.map((w) => view(w, itemCounts(db, w.list_id))) };
     if (!rows.length) return say('No watches. Create one with `bc watch add`, or ask the bot.').all();
     for (const w of rows) {
-      const c = itemCounts(db, w.id);
+      const c = itemCounts(db, w.list_id);
       say(
         `${String(w.id).padStart(3)}  ${pc.bold(w.name)}${w.builtin ? pc.dim(` (built in: ${w.builtin})`) : ''}${w.active ? '' : pc.yellow(' (paused)')}`,
       );
@@ -259,6 +282,7 @@ export const list = command(async (opts) => {
       if (w.sources.also) say(`     also:      ${w.sources.also}`);
       if (w.sources.never) say(`     never:     ${w.sources.never}`);
       say(`     watching:  ${sourcesText(w.sources, w.builtin === TODO)}`);
+      if (w.listName !== w.name) say(`     fills:     the list "${w.listName}"`);
       say(`     looks:     ${view(w).looks} · reports ${view(w).schedule} · ${view(w).nudges}`);
       say(
         pc.dim(
@@ -280,6 +304,7 @@ export const itemView = (it) => ({
   area: it.area,
   eventDate: it.event_date,
   summary: it.summary,
+  ...(it.outcome ? { cameTo: cameTo(it) } : {}),
   url: it.url,
   status: it.status,
   from: it.msg_sender,
@@ -287,35 +312,35 @@ export const itemView = (it) => ({
   sent: it.msg_ts ? fmtWhen(it.msg_ts) : null,
   messageId: it.msg_id,
   ...(it.same_as ? { mayBeSameAs: sameAsOf(it) } : {}),
+  ...(it.reference ? { ref: it.reference } : {}),
+  ...(it.fields ? { fields: valuesOf(it) } : {}),
 });
 
-// The list a name refers to, among those the watch has. A name that matches none is taken as given.
-function whichList(db, w, name) {
-  const key = listKey(name);
-  return listsOf(db, w).find((l) => l.key === key)?.key ?? key;
-}
+// The type a name refers to ("Restaurants", "restaurant list": restaurant).
+const whichList = (name) => listKey(name);
 
 export const show = command(async (ref, opts) => {
   const say = saying();
   return withDb(openWatchDb, (db) => {
     const w = must(db, ref);
     const status = opts.status ?? 'new,kept';
-    const list = opts.list ? whichList(db, w, opts.list) : null;
-    const items = listItems(db, w.id, { status, list }).filter(finding(opts.find));
+    const list = opts.list ? whichList(opts.list) : null;
+    const items = listItems(db, w.list_id, { status, list }).filter(finding(opts.find));
+    seeList(db, w.list_id);
     if (opts.json)
       return {
         raw: true,
         data: {
           notice: UNTRUSTED,
-          watch: view(w, itemCounts(db, w.id)),
-          lists: listsOf(db, w),
+          watch: view(w, itemCounts(db, w.list_id)),
+          lists: listsOf(db, w.list_id, w),
           ...(list ? { list } : {}),
           items: items.map(itemView),
         },
       };
     say(`${pc.bold(w.name)}${list ? ` · ${listLabel(list)}` : ''}  ${pc.dim(`${plural(items.length, 'item')} (${status})`)}`);
     // Grouped by list, the lists in order of size.
-    const order = [...new Set([...listsOf(db, w).map((l) => l.key), ...items.map((i) => i.category ?? 'other')])];
+    const order = [...new Set([...listsOf(db, w.list_id, w).map((l) => l.key), ...items.map((i) => i.category ?? 'other')])];
     for (const key of order) {
       const rows = items.filter((i) => (i.category ?? 'other') === key);
       if (!rows.length) continue;
@@ -326,7 +351,8 @@ export const show = command(async (ref, opts) => {
           `${String(it.id).padStart(4)}  ${it.title}${where ? pc.dim(` · ${where}`) : ''}${it.event_date ? pc.yellow(` · ${it.event_date}`) : ''}${it.file ? pc.dim(' 📎') : ''}${it.status === 'new' || it.status === 'kept' ? '' : pc.dim(` [${it.status}]`)}`,
         );
         if (it.summary) say(pc.dim(`      ${it.summary}`));
-        if (sameAsText(it)) say(pc.yellow(`      ⚠ ${sameAsText(it)}`));
+        if (it.outcome) say(pc.dim(`      → ${cameTo(it)}`));
+        if (sameAsText(it)) say(pc.yellow(`      ⚠ ${sameAsText(it, { terminal: true })}`));
         // Where it came from: the message's sender and time, or nothing for one added by hand.
         const from = it.msg_sender ? `${it.msg_sender}${it.msg_ts ? `, ${fmtWhen(it.msg_ts)}` : ''}` : 'added by hand';
         if (it.url) say(pc.dim(`      ${it.url}  (${from})`));
@@ -347,43 +373,6 @@ const finding = (words) => {
     return want.every((w) => said.includes(w));
   };
 };
-
-// `bc watch find <words>`: the entries of every list that say all of these words.
-export const find = command(async (words, opts) => {
-  const say = saying();
-  const text = [words].flat().join(' ').trim();
-  if (!text) throw new PluginError('Say what to look for: bc watch find dentist');
-  return withDb(openWatchDb, (db) => {
-    const status = opts.status ?? 'new,kept';
-    const found = listWatches(db).flatMap((w) =>
-      listItems(db, w.id, { status })
-        .filter(finding(text))
-        .map((it) => ({ ...it, watch: w.name })),
-    );
-    if (opts.json) return { raw: true, data: { notice: UNTRUSTED, items: found.map((it) => ({ ...itemView(it), watch: it.watch })) } };
-    if (!found.length) return `Nothing on any list says "${text}" (${status}).`;
-    for (const it of found)
-      say(
-        `${String(it.id).padStart(4)}  ${it.title}${it.event_date ? pc.yellow(` · ${it.event_date}`) : ''}${pc.dim(` · ${it.watch}`)}${it.status === 'new' || it.status === 'kept' ? '' : pc.dim(` [${it.status}]`)}`,
-      );
-    return say.all();
-  });
-});
-
-// `bc watch lists <watch>`: the lists of a watch and how many items each has.
-export const lists = command(async (ref, opts) => {
-  const say = saying();
-  return withDb(openWatchDb, (db) => {
-    const w = must(db, ref);
-    const all = listsOf(db, w);
-    if (opts.json) return { raw: true, data: { watch: w.name, lists: all } };
-    if (!all.length) return say(`${pc.bold(w.name)}: nothing on any list yet.`).all();
-    say(pc.bold(w.name));
-    for (const l of all) say(`  ${l.label.padEnd(26)} ${String(l.count).padStart(3)}${l.quiet ? pc.dim('  quiet: not in reports') : ''}`);
-    say(pc.dim(`\nSee one: bc watch show ${w.id} --list <name>`));
-    return say.all();
-  });
-});
 
 export const edit = command(async (ref, opts) => {
   const say = saying();
@@ -422,8 +411,8 @@ export const edit = command(async (ref, opts) => {
     if (opts.scan) patch.scan = scanOpt(opts.scan);
     if (opts.quiet?.length || opts.unquiet?.length) {
       const quiet = new Set((w.lists?.quiet ?? []).map(listKey));
-      for (const n of opts.quiet ?? []) quiet.add(whichList(db, w, n));
-      for (const n of opts.unquiet ?? []) quiet.delete(whichList(db, w, n));
+      for (const n of opts.quiet ?? []) quiet.add(whichList(n));
+      for (const n of opts.unquiet ?? []) quiet.delete(whichList(n));
       patch.lists = { ...w.lists, quiet: [...quiet].sort() };
     }
     // When its own report goes out. (Changing only the days, or only the time, keeps the other: say both, or give --cron.)
@@ -434,6 +423,8 @@ export const edit = command(async (ref, opts) => {
     }
     if (opts.pause) patch.active = 0;
     if (opts.resume) patch.active = 1;
+    // Fill another list: what it filed before stays where it is.
+    if (opts.list) patch.listId = fillable(db, opts.list, w).id;
 
     const s = structuredClone(w.sources);
     let touched = false;
@@ -505,7 +496,7 @@ export const edit = command(async (ref, opts) => {
     if (w.builtin === TODO) await syncAgenda(db);
     if (patch.nudge) syncNudges(db, out); // move, add or cancel the nudges already set
     if (patch.lists)
-      for (const it of listItems(db, out.id, { status: 'new' })) if (isQuiet(out, it.category)) setItemStatus(db, it.id, 'kept');
+      for (const it of listItems(db, out.list_id, { status: 'new' })) if (isQuiet(out, it.category)) setItemStatus(db, it.id, 'kept');
     if (opts.json) return { raw: true, data: view(getWatch(db, out.id)) };
     say(`Watch ${out.id} "${out.name}" updated${out.active ? '' : ' (paused)'}.`);
     sayWatch(say, out);
@@ -520,125 +511,8 @@ export const remove = command(async (ref, opts) => {
     if (w.builtin)
       throw new PluginError(`"${w.name}" is built in and can't be removed. Pause it instead: bc watch edit ${w.builtin} --pause`);
     removeWatch(db, w.id);
-    if (opts.json) return { raw: true, data: { removed: w.id, name: w.name } };
-    say(`Watch ${w.id} "${w.name}" and its list removed.`);
-    return say.all();
-  });
-});
-
-export const item = command(async (id, action, list, opts) => {
-  const say = saying();
-  const map = { done: 'done', keep: 'kept', drop: 'dropped', new: 'new' };
-  if (!map[action] && action !== 'move') throw new PluginError('Action is one of: done, keep, drop, or move <list>.');
-  return withDb(openWatchDb, (db) => {
-    const it = getItem(db, Number(id));
-    if (!it) throw new PluginError(`No item ${id}.`);
-    if (action === 'move') {
-      if (!list) throw new PluginError('Move it to which list? e.g. bc watch item 12 move restaurants');
-      const to = whichList(db, getWatch(db, it.watch_id), list);
-      updateItem(db, it.id, { category: to });
-      if (opts.json) return { raw: true, data: { notice: UNTRUSTED, ...itemView(getItem(db, it.id)) } };
-      return say(`Item ${it.id} moved to ${listLabel(to)}: ${it.title}`).all();
-    }
-    setItemStatus(db, it.id, map[action]);
-    if (opts.json) return { raw: true, data: { notice: UNTRUSTED, ...itemView(getItem(db, it.id)) } };
-    say(`Item ${it.id} marked ${map[action]}: ${it.title}`);
-    return say.all();
-  });
-});
-
-// "It has moved to 2 pm", "that one is about Sam": the entry is changed where it is. It keeps
-// its number, its place on the list, the message it came from and whether it was reported.
-export const editItemCmd = command(async (id, opts) => {
-  const say = saying();
-  return withDb(openWatchDb, (db) => {
-    const it = getItem(db, Number(id));
-    if (!it) throw new PluginError(`No item ${id}.`);
-    const w = getWatch(db, it.watch_id);
-    const patch = {};
-    const text = (v) => (String(v).trim() === '' ? null : String(v).trim());
-    if (opts.title !== undefined) {
-      if (!text(opts.title)) throw new PluginError('An entry needs a title.');
-      patch.title = text(opts.title).slice(0, 120);
-    }
-    if (opts.date !== undefined) {
-      if (text(opts.date) && !/^\d{4}-\d{2}-\d{2}$/.test(text(opts.date)))
-        throw new PluginError('--date is YYYY-MM-DD ("" for no particular day).');
-      patch.eventDate = text(opts.date);
-    }
-    if (opts.summary !== undefined) patch.summary = text(opts.summary)?.slice(0, 240) ?? null;
-    if (opts.place !== undefined) patch.place = text(opts.place);
-    if (opts.area !== undefined) patch.area = text(opts.area);
-    if (opts.url !== undefined) patch.url = text(opts.url);
-    if (opts.list !== undefined) patch.category = whichList(db, w, opts.list);
-    if (!Object.keys(patch).length)
-      throw new PluginError('Say what to change: --title, --date, --summary, --place, --area, --url or --list.');
-    let now;
-    try {
-      now = updateItem(db, it.id, patch);
-    } catch (e) {
-      if (/UNIQUE/.test(e.message))
-        throw new PluginError('Another entry on this list already has that link, or that title for the same message.');
-      throw e;
-    }
-    // Its day may have moved: so does the nudge about it.
-    setNudge(db, w, now, now.title);
-    if (opts.json) return { raw: true, data: { notice: UNTRUSTED, ...itemView(getItem(db, it.id)) } };
-    return say(`Item ${it.id} changed: ${now.title}${now.event_date ? ` · ${now.event_date}` : ''}`).all();
-  });
-});
-
-// "Add this one to the weekend list": by WhatsApp message, or typed in.
-export const addItemCmd = command(async (ref, opts) => {
-  const say = saying();
-  return withDb(openWatchDb, async (db) => {
-    const w = must(db, ref);
-    // A picture or document that belongs with it. It must be one the bot is allowed to send.
-    let file = null;
-    if (opts.file) {
-      const { sendable } = await import('../internal.js');
-      file = sendable(opts.file);
-      if (!file) throw new PluginError(`Can't attach ${opts.file}: it doesn't exist, or it is outside the folders files may be sent from.`);
-    }
-    let it = {
-      watchId: w.id,
-      title: opts.title,
-      file,
-      category: whichList(db, w, opts.list ?? opts.category ?? 'other'),
-      place: opts.place ?? null,
-      area: opts.area ?? null,
-      eventDate: opts.date ?? null,
-      summary: opts.summary ?? null,
-      url: opts.url ?? null,
-    };
-    const msgRef = opts.msg;
-    if (msgRef) {
-      const { messageById } = await import('../internal.js');
-      const m = messageById(msgRef);
-      if (!m) throw new PluginError(`No message ${msgRef} in the archive.`);
-      it = {
-        ...it,
-        title: it.title ?? (m.link_title || m.text || 'Untitled').slice(0, 90),
-        url: it.url ?? m.link_url,
-        msgId: m.id,
-        msgChat: m.chat,
-        msgSender: m.sender,
-        msgTs: m.ts,
-      };
-    }
-    if (!it.title) throw new PluginError('Give --title, or --msg <message-id>.');
-    if (it.eventDate && !/^\d{4}-\d{2}-\d{2}$/.test(it.eventDate)) throw new PluginError('--date is YYYY-MM-DD.');
-    // The same thing kept already, on a list or as a reminder: said, and not added unless asked for anyway.
-    if (!opts.anyway) {
-      const { keptAlike, notAddedText } = await import('../internal.js');
-      const kept = await keptAlike(it.title);
-      if (kept.length) throw new PluginError(notAddedText('added', kept));
-    }
-    const made = addItem(db, it);
-    if (!made) throw new PluginError('That link or message is already on the list.');
-    setItemStatus(db, made.id, 'kept'); // the owner chose it: no need to announce it as new
-    if (opts.json) return { raw: true, data: { notice: UNTRUSTED, ...itemView(getItem(db, made.id)) } };
-    say(`Added to "${w.name}" · ${listLabel(made.category ?? 'other')}: ${made.title}`);
+    if (opts.json) return { raw: true, data: { removed: w.id, name: w.name, listStays: w.listName } };
+    say(`Watch ${w.id} "${w.name}" removed. Its list "${w.listName}" stays: bc list show "${w.listName}"`);
     return say.all();
   });
 });

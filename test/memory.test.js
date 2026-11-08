@@ -231,3 +231,30 @@ test("Claude Code: what it runs does not see other things' keys and logins, but 
     for (const k of Object.keys(process.env)) if (!(k in was)) delete process.env[k];
   }
 });
+
+// A sign-in of `claude` runs out after about four weeks (2026-10-28: the agent stopped until it
+// was signed in again). One made with `claude setup-token` lasts, and is what it is started with.
+test('Claude Code: a sign-in that lasts is what it is started with, for the plan only', async () => {
+  const { environment } = await import('../plugins/claude-code/run.js');
+  const secrets = (s) => ({ get: (k) => s[k] ?? null });
+  const plan = environment({ config: { get: () => ({}) }, secrets: secrets({ token: 'T' }) });
+  assert.equal(plan.CLAUDE_CODE_OAUTH_TOKEN, 'T');
+  const elsewhere = environment({
+    config: { get: () => ({ endpoint: 'http://127.0.0.1:1' }) },
+    secrets: secrets({ token: 'T', key: 'K' }),
+  });
+  assert.equal(elsewhere.CLAUDE_CODE_OAUTH_TOKEN, undefined, 'a model somewhere else has a key of its own');
+  const own = environment({ config: { get: () => ({}) }, secrets: secrets({}) });
+  assert.equal(own.CLAUDE_CODE_OAUTH_TOKEN, process.env.CLAUDE_CODE_OAUTH_TOKEN, "none saved: claude's own sign-in");
+  const { default: m } = await import('../plugins/claude-code/plugin.js');
+  const saved = {};
+  const ctx = {
+    config: { get: () => ({}), set: () => {} },
+    secrets: { get: (k) => saved[k], set: (k, v) => (saved[k] = v), delete: (k) => delete saved[k], has: (k) => k in saved },
+  };
+  m.commands.setup.run(ctx, { endpoint: '', token: ' T2 ' });
+  assert.deepEqual(saved, { token: 'T2' });
+  assert.match(m.settings(ctx)['signed in with'], /setup-token/);
+  m.commands.setup.run(ctx, { endpoint: 'http://127.0.0.1:1', key: 'K' });
+  assert.deepEqual(saved, { key: 'K' }, 'a model somewhere else: the plan sign-in is let go');
+});

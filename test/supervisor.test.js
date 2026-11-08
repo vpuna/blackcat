@@ -210,6 +210,48 @@ test('stop, start and restart; a stopped service stays stopped; one that will no
   assert.match(bc('start', 'nonesuch').said, /Unknown service "nonesuch"\. Choose from: agent, steady, crashy, needy, stubborn, later/);
 });
 
+test('work that must not be cut off (a routine on a phone): stop and restart of the agent wait for it, --now does not', async () => {
+  // (Held by a process of its own, as a routine run is.)
+  const holder = (ms) =>
+    spawn(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `const { holdRestart } = await import(${JSON.stringify(`${root}src/service/holds.js`)}); const free = holdRestart('taxi-trip on the phone'); console.log('held'); setTimeout(() => { free(); process.exit(0); }, ${ms});`,
+      ],
+      { env, stdio: ['ignore', 'pipe', 'inherit'] },
+    );
+  const heldBy = (p) => new Promise((r) => p.stdout.once('data', r));
+  const run = (...a) =>
+    new Promise((r) => {
+      const p = spawn(process.execPath, [`${root}bin/bc.js`, ...a], { env: { ...env, BLACKCAT_HOLD_WAIT_S: '2' } });
+      let said = '';
+      p.stdout.on('data', (d) => (said += d));
+      p.stderr.on('data', (d) => (said += d));
+      p.on('exit', (code) => r({ code, said }));
+    });
+  let h = holder(60_000);
+  await heldBy(h);
+  let r = await run('restart', 'agent');
+  assert.equal(r.code, 1);
+  assert.match(r.said, /taxi-trip on the phone \(started .*\) is going on: waiting for it to end\. \(--now: at once\.\)/);
+  assert.match(r.said, /Not restarted: taxi-trip on the phone is still going on after 2 seconds\. bc restart agent --now does it anyway/);
+  assert.equal((await run('stop')).code, 1, 'stopping everything waits too');
+  assert.doesNotMatch((await run('restart', 'steady')).said, /going on/, 'another service is not the agent: no wait');
+  assert.doesNotMatch((await run('restart', 'agent', '--now')).said, /going on/);
+  // killed, it holds nothing
+  h.kill('SIGKILL');
+  await new Promise((res) => h.on('exit', res));
+  assert.doesNotMatch((await run('restart', 'agent')).said, /going on/);
+  // it ends while the restart waits: the restart goes ahead
+  h = holder(800);
+  await heldBy(h);
+  r = await run('restart', 'agent');
+  assert.match(r.said, /is going on: waiting for it to end/);
+  assert.doesNotMatch(r.said, /Not restarted/);
+});
+
 test('what becomes ready is started by itself; a service switched off stays off until it is put back', async () => {
   update((c) => {
     c.plugins.settings = { ...c.plugins.settings, svc: { go: true } };

@@ -1,6 +1,6 @@
 // Your own Telegram account: a read-only source for your chats, the same idea as
 // the WhatsApp one. (The bot you talk to blackcat through is separate: bc tg bot …)
-import { describeTga, isLinked, wanted } from './paired.js';
+import { describeTga, isLinked, tgaSettings, wanted } from './paired.js';
 import { withDb } from '../../src/api.js';
 
 const cmd = () => import('./commands.js');
@@ -73,7 +73,11 @@ are left out unless you choose them.
   source: {
     id: 'tg',
     label: 'Telegram',
+    // Its message ids are "tg<chat>_<n>" (the chat's number, which may be negative, and the message's).
+    messageId: /^tg-?\d+_\d+$/,
     connected: () => isLinked(),
+    // How far back history is fetched (bc tg account select): for how long a list keeps what it found.
+    historyDays: () => tgaSettings().days ?? null,
     // The kinds of chat you keep (bc tg account select): bots, channels and very large groups are off unless chosen.
     collects: (ref, db) => {
       const i = db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'chat_info'").get()

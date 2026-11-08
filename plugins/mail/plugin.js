@@ -722,6 +722,8 @@ Read-only: nothing is sent, deleted, moved or marked as read.`,
     optIn: true,
     textLimit: 3000,
     todoLimit: 1500,
+    // How far back the account's mail is fetched (bc mail days): for how long a list keeps what it found.
+    historyDays: (ctx, id) => accounts(ctx)[String(id).split(':')[1]]?.days ?? 30,
     todoText: 'kept email',
     todoQuestion:
       'Also look at your email? (Only the mail that is kept: from people, and from senders you chose. Mail another watch reads is left to that watch.)',
@@ -729,7 +731,7 @@ Read-only: nothing is sent, deleted, moved or marked as read.`,
     // One attachment of a kept mail, fetched from the mail server when something asks for it.
     fetchMedia: async (ctx, { row, dest, id }) => {
       try {
-        await (await import('./attachments.js')).fetchAttachment(ctx, id, row.direct_path, dest);
+        await (await import('./attachments.js')).fetchAttachment(ctx, id, row.fetch?.directPath, dest);
       } catch (e) {
         throw new Error(`${e.message}; a mail moved out of its folder can no longer be reached`);
       }
@@ -752,7 +754,7 @@ Read-only: nothing is sent, deleted, moved or marked as read.`,
           } catch (e) {
             did.push(`${label(ctx, n)}: could not be fetched`);
             // Say so once: straight away when the password was refused, otherwise after an hour of failing.
-            const refused = /app password|not accepted/.test(e.message);
+            const refused = e.refused === true;
             const tell = withDb(
               () => openStore(ctx),
               (db) => {

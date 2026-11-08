@@ -257,7 +257,12 @@ const SENSITIVE = [
   /\.netrc\b/,
   /credentials/i,
   /token/i,
-  /\/proc\/\d+\/environ/,
+  /\/proc\/(\d+|self|thread-self)\/environ/,
+  // A file or folder of a home's own whose name starts with a dot: where programs keep their
+  // logins (~/.config/gh, ~/.npmrc, ~/.docker, ~/.aws, ~/.git-credentials…). By its full path,
+  // or by its name alone, read from the home folder where commands run.
+  /(~|\$\{?HOME\}?|\/home\/[^/\s]+|\/root)\/\.[\w-]/,
+  /(^|\s)\.[A-Za-z_][\w.-]*/,
 ];
 const SENSITIVE_COMMANDS = [/^(\S*\/)?docker\s+(\w+\s+)?inspect\b/];
 
@@ -364,6 +369,8 @@ export function classify(command, { programs = {}, sensitive: alsoSensitive = []
     // A search through whole folders prints from every file in them, whatever they are
     // (keys and password files included) without naming one of them.
     if (/grep$/.test(prog) && hasOpt(args, 'rRd', ['--recursive', '--dereference-recursive', '--directories'])) sensitive = true;
+    // (ps with BSD's e, "ps e" or "ps auxe": every process's environment, keys included.)
+    if (prog === 'ps' && args.some((a) => !a.startsWith('-') && a.includes('e'))) sensitive = true;
   }
   return sensitive || SENSITIVE.some((re) => re.test(cmd)) ? 'sensitive' : 'read';
 }

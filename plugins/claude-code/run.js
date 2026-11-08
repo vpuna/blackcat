@@ -13,7 +13,9 @@ const ONE_QUESTION_MS = 5 * 60_000;
 const ENGINE_OWN = /^(ANTHROPIC_|CLAUDE|AWS_|GOOGLE_|CLOUD_ML_|VERTEX_)/i;
 
 // What the owner set for this engine, as the environment Claude Code is started with:
-// another place for the model to be (a model served on this network, say), and its key.
+// another place for the model to be (a model served on this network, say), and its key; or,
+// for the plan, a sign-in made with `claude setup-token`, which lasts where `claude`'s own
+// runs out after weeks.
 export function environment(ctx, extra = {}) {
   const s = ctx.config.get();
   // Not the keys and logins of anything else blackcat's surroundings hold: what the engine
@@ -25,6 +27,8 @@ export function environment(ctx, extra = {}) {
   if (s.endpoint) env.ANTHROPIC_BASE_URL = s.endpoint;
   const key = ctx.secrets.get('key');
   if (key) env.ANTHROPIC_AUTH_TOKEN = key;
+  const token = ctx.secrets.get('token');
+  if (token && !s.endpoint) env.CLAUDE_CODE_OAUTH_TOKEN = token;
   return env;
 }
 

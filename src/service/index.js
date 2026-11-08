@@ -21,6 +21,14 @@ export function registerService(program) {
     .action(async (names, opts) => (await import('../selftest.js')).command(names, opts));
 
   program
+    .command('health')
+    .description(
+      'is each thing blackcat reaches working: one line each, and since when one is not (read-only; also /status in the chat, and the check "Connections" every 10 minutes)',
+    )
+    .option('--json', 'machine-readable output')
+    .action(async (opts) => (await import('../health.js')).command(opts));
+
+  program
     .command('start')
     .description('start a service, or all of them')
     .argument(...svcArg)
@@ -29,11 +37,13 @@ export function registerService(program) {
     .command('stop')
     .description('stop a service, or all of them, until started again')
     .argument(...svcArg)
+    .option('--now', 'at once, even while work that must not be cut off is going on (a routine on a phone)')
     .action(lazy('stop'));
   program
     .command('restart')
     .description('restart a service, or everything (after an update)')
     .argument(...svcArg)
+    .option('--now', 'at once, even while work that must not be cut off is going on (a routine on a phone)')
     .action(lazy('restart'));
 
   program

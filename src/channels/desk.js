@@ -102,6 +102,19 @@ export const ui = {
     awaiting.has(offerKey(chat)) || turns.some((t) => t(chat)) ? undefined : out().working?.(chat, kind),
   // `turn(chat)` → true while it is the owner's turn in that chat (a question waits for their tap).
   holdWorking: (turn) => void turns.push(turn),
+  // "typing…" (or `kind`) for as long as `fn` runs: a channel shows it for a few seconds at a
+  // time, so it is said again every WORKING_EVERY_MS (not while it is the owner's turn, above).
+  // → what `fn` gives
+  async whileWorking(chat, fn, kind = 'typing') {
+    const say = () => ui.working(chat, kind).catch(() => {});
+    say();
+    const again = setInterval(say, WORKING_EVERY_MS);
+    try {
+      return await fn();
+    } finally {
+      clearInterval(again);
+    }
+  },
   // Send a file the bot is allowed to send (see files.js). → true if it went.
   async sendFile(chat, requested, { caption } = {}) {
     const { sendable } = await import('./files.js');
@@ -122,6 +135,7 @@ const numbered = new Map(); // chat → the ids of the actions last offered ther
 const offerKey = (chat) => (can().oneChat ? '*' : String(chat));
 const awaiting = new Set(); // chats where a numbered choice has just been offered and not yet answered or passed over
 const turns = []; // (see holdWorking)
+const WORKING_EVERY_MS = 4000;
 function fit(chat, m) {
   const c = can();
   let { text } = m;
@@ -158,6 +172,7 @@ function moment(ev) {
     clearActions: () => ui.setActions(ev.chat, ev.ref, null),
     remove: () => ui.remove(ev.chat, ev.ref),
     working: (kind) => ui.working(ev.chat, kind).catch(() => {}),
+    whileWorking: (fn, kind) => ui.whileWorking(ev.chat, fn, kind),
     // A brief acknowledgement of a tap (a channel without such a thing does nothing).
     // The same, for a tap that could do nothing: what it was about is gone. (Noted as such.)
     gone: async (text) => {

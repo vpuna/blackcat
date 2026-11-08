@@ -10,7 +10,7 @@ import { home, setUp } from './helpers.js';
 const dir = home();
 await setUp({ bot: { allow: [{ id: 42, name: 'me' }] } });
 const { withDb } = await import('../src/db.js');
-const { addNextRepeat, addReminder, answer, getReminder, listReminders, oneEach, openRemindersDb, stopSeries } =
+const { addNextRepeat, addReminder, answer, getReminder, listReminders, oneEach, openRemindersDb, snooze, stopSeries } =
   await import('../src/reminders/db.js');
 const { takeDue } = await import('../src/reminders/local.js');
 const now = () => Math.floor(Date.now() / 1000);
@@ -120,7 +120,8 @@ test('bc remind: done and cancel are for this time, stop ends it, and the briefi
   const b = await withDb(openWatchDb, (db) => composeBriefing(db, 42, { terminal: true }));
   const lines = b.html.split('\n').filter((l) => /Time to go walking/.test(l));
   assert.equal(lines.length, 1, b.html);
-  assert.match(lines[0], /due earlier, not marked done.*🔁 <i>at 17:25<\/i>/);
+  // (due an hour ago: today's, at its time, unless that was yesterday)
+  assert.match(lines[0], /(\d\d:\d\d|due yesterday), not marked done.*🔁 <i>at 17:25<\/i>/);
   assert.match(lines[0], new RegExp(`\\[reminder ${id}\\]`), 'the time that went');
 
   const done = await cmd.done(String(id), {}, {});
@@ -163,4 +164,78 @@ test('snoozed after it went, a time of a series makes no second next time, and i
     const all = listReminders(db, { chatId: 3, all: true });
     assert.deepEqual(all.map((x) => x.status).sort(), ['missed', 'pending', 'sent']);
   });
+});
+
+// (A1 of the audit of 2026-10-24: the rule was kept in the buttons only; a tap on an old
+// message, or the command, moved any reminder to any time, and brought back one answered.)
+test('one rule for moving a reminder: the buttons, a tap on an old message and the command', async () => {
+  const cmd = await import('../src/reminders/commands.js');
+  const r = withDb(openRemindersDb, (db) => {
+    const { id } = addReminder(db, { chatId: 42, text: 'Water the plants', dueTs: now() - 60, repeat: DAILY });
+    const it = getReminder(db, id);
+    addNextRepeat(db, it);
+    return it;
+  });
+  const next = withDb(openRemindersDb, (db) => listReminders(db, {}).find((x) => x.series === r.series && x.id !== r.id));
+  // Past its next time: not moved, by the command either.
+  await assert.rejects(cmd.snooze(String(r.id), { in: '3d' }, {}), /not moved: it comes again/);
+  assert.equal(
+    withDb(openRemindersDb, (db) => snooze(db, getReminder(db, r.id), next.due_ts - 60)),
+    null,
+    'before it: moved',
+  );
+  // Answered: not brought back by a snooze, nor ticked again by an old message's button.
+  withDb(openRemindersDb, (db) => answer(db, getReminder(db, r.id), 'done'));
+  assert.match(
+    withDb(openRemindersDb, (db) => snooze(db, getReminder(db, r.id), now() + 600)),
+    /already done/,
+  );
+  const { installReminders } = await import('../src/reminders/chat.js');
+  const taps = [];
+  installReminders({ action: (re, fn) => taps.push([re, fn]) });
+  const [re, fn] = taps.find(([x]) => x.test(`rm:${r.id}:h`));
+  const said = [];
+  await fn({
+    match: re.exec(`rm:${r.id}:h`),
+    chat: 42,
+    gone: async (t) => said.push(t),
+    toast: async (t) => said.push(t),
+    edit: async () => {},
+  });
+  assert.deepEqual(said, ['That reminder is already done.']);
+  assert.equal(
+    withDb(openRemindersDb, (db) => getReminder(db, r.id).status),
+    'done',
+    'not brought back',
+  );
+});
+
+// (A4 of the audit of 2026-10-24: three places wrote a reminder's line, each in its own words:
+// "(sent, not done)", "(sent, not marked done)", "due earlier, not marked done"; 🔁 alone.)
+test('the chat, the terminal and the briefing say the same of a reminder', async () => {
+  const id = withDb(openRemindersDb, (db) => {
+    const { id } = addReminder(db, { chatId: 42, text: 'Feed the fish', dueTs: now() - 7200, repeat: DAILY, file: '/tmp/x.jpg' });
+    db.prepare("UPDATE reminders SET status = 'sent' WHERE id = ?").run(id);
+    return id;
+  });
+  const { upcomingText } = await import('../src/reminders/chat.js');
+  const chat = upcomingText(42)
+    .split('\n')
+    .find((l) => l.includes('Feed the fish'));
+  const cmd = await import('../src/reminders/commands.js');
+  const listed = await cmd.list({}, {});
+  const terminal = String(listed.text ?? listed)
+    .split('\n')
+    .find((l) => l.includes('Feed the fish'));
+  const { openWatchDb } = await import('../src/watch/db.js');
+  const { composeBriefing } = await import('../src/watch/briefing.js');
+  const b = await withDb(openWatchDb, (db) => composeBriefing(db, 42, { terminal: true }));
+  const briefing = b.html.split('\n').find((l) => l.includes('Feed the fish'));
+  for (const [where, l] of Object.entries({ chat, terminal, briefing })) {
+    assert.ok(l, `${where}: listed`);
+    assert.match(l, /not marked done/, `${where}: ${l}`);
+    assert.match(l, /🔁 (<i>)?at 17:25/, `${where}: ${l}`);
+    assert.match(l, /📎/, `${where}: ${l}`);
+  }
+  withDb(openRemindersDb, (db) => stopSeries(db, getReminder(db, id)));
 });

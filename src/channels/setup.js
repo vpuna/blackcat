@@ -140,16 +140,13 @@ async function finish(c, flow) {
   const slow = setTimeout(() => {
     waiting = c.reply(`⏳ ${def.working ?? 'Working on it. This can take a minute…'}`).catch(() => null);
   }, 1500);
-  const typing = setInterval(() => c.working().catch(() => {}), 4500);
-  c.working().catch(() => {});
   const settle = async () => {
     clearTimeout(slow);
-    clearInterval(typing);
     const sent = await waiting;
     if (sent != null) await ui.remove(c.chat, sent).catch(() => {});
   };
   try {
-    const result = await def.run(flow.pctx, flow.answers);
+    const result = await c.whileWorking(() => def.run(flow.pctx, flow.answers));
     await settle();
     const text = result == null ? 'Done.' : typeof result === 'string' ? result : (result.text ?? 'Done.');
     for (let i = 0; i < text.length; i += 4000) await c.reply(text.slice(i, i + 4000), { preview: false });

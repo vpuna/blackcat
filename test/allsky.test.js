@@ -125,6 +125,16 @@ test('the sky now: fetched to the one folder the agent may read, with when it wa
   assert.match(d.notice, /UNTRUSTED/, 'what comes from the camera is labelled as coming from outside');
 });
 
+test('an Allsky from before v2026.10, with its latest picture where it was then, works the same', async () => {
+  const old = await allskyServer({ older: true });
+  old.latest('the sky, older Allsky', new Date(Date.now() - 60_000));
+  const r = await bc(['allsky', 'setup', '--url', old.url, '--user', '', '--max-mb', '50', '--stale-min', '10']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(fs.readFileSync((await json(['allsky', 'now'])).path, 'utf8'), 'the sky, older Allsky');
+  assert.equal((await bc(['allsky', 'setup', '--url', cam.url, '--user', '', '--max-mb', '50', '--stale-min', '10'])).status, 0);
+  await old.close();
+});
+
 test('the picture closest to a time: the last time it was that time, or on a named night', async () => {
   // 02:20 last night: of 02:15 and 02:45, the nearer
   const night = `${lastNight.slice(0, 4)}-${lastNight.slice(4, 6)}-${lastNight.slice(6, 8)}`;
@@ -205,7 +215,7 @@ test('a camera that has stopped: status says so, `now` says the picture is old, 
 test('a camera whose pictures ask for a login: the password is a secret, kept when setup is run again', async () => {
   // without one, it says what is wrong and nothing is saved over what works
   let r = await bc(['allsky', 'setup', '--url', locked.url, '--user', '', '--max-mb', '50', '--stale-min', '10']);
-  assert.match(r.stderr, /asks for a login for \/current\/tmp\/image\.jpg\. Set it with: bc allsky setup/);
+  assert.match(r.stderr, /asks for a login for \/current\/image\.jpg\. Set it with: bc allsky setup/);
   assert.equal(load().plugins.settings.allsky.url, cam.url);
   // a password is never taken as an option, so it is put where setup would put it
   const ctx = reg.makeCtx(reg.findLoaded('allsky'), { caller: 'owner' });

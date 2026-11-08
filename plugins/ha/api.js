@@ -1,11 +1,15 @@
 // A small client for Home Assistant's REST API (the same one its own apps use), with a
 // long-lived access token.
-import { PluginError } from '../../src/api.js';
+import { PluginError, sleep } from '../../src/api.js';
 
 // (A PluginError: what it says is put to the person as it is, not as a stack trace.)
 export class HaError extends PluginError {}
 
 const TIMEOUT_MS = 15_000;
+// After a service call: how long a device that answers later is given to say it has changed,
+// and how often it is asked.
+export const settle = { ms: 2000, every: 150 };
+const when = (s) => s?.last_updated ?? s?.last_changed ?? null;
 
 export function client({ url, token }) {
   async function request(method, path, body) {
@@ -73,7 +77,28 @@ export function client({ url, token }) {
     config: () => request('GET', '/api/config'),
     states: () => request('GET', '/api/states'),
     state: (id) => request('GET', `/api/states/${id}`),
-    call: (domain, service, data) => request('POST', `/api/services/${domain}/${service}`, data),
+    // A service called, and how what it was called for is now. Home Assistant answers with the
+    // states that changed while it ran; a device that changes later is asked again until its
+    // state is newer than it was before the call (`settle.ms` at most: one already as asked
+    // does not change). → { changed: [state], now: { [entity id]: state | null } }
+    call: async (domain, service, data = {}) => {
+      const ids = [data.entity_id].flat().filter((id) => typeof id === 'string' && !id.startsWith('script.'));
+      const look = (id) => request('GET', `/api/states/${id}`).catch(() => null);
+      const before = Object.fromEntries(await Promise.all(ids.map(async (id) => [id, await look(id)])));
+      const answer = await request('POST', `/api/services/${domain}/${service}`, data);
+      const changed = Array.isArray(answer) ? answer : [];
+      const now = Object.fromEntries(ids.map((id) => [id, changed.find((s) => s.entity_id === id) ?? null]));
+      const end = Date.now() + settle.ms;
+      for (let left = ids.filter((id) => !now[id]); left.length && Date.now() < end; left = left.filter((id) => !now[id])) {
+        await sleep(settle.every);
+        for (const id of left) {
+          const s = await look(id);
+          if (s && when(s) !== when(before[id])) now[id] = s;
+        }
+      }
+      for (const id of ids) now[id] ??= (await look(id)) ?? before[id];
+      return { changed, now };
+    },
     // What a media player can be asked to play, one folder at a time. It only lists: nothing is played.
     browse: async (entityId, id) => {
       const d = await request('POST', '/api/services/media_player/browse_media?return_response', {

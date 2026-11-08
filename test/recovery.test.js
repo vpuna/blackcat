@@ -95,6 +95,9 @@ test('work left from outside a command, or that a command stopped waiting for, i
     table: 'x_work',
     source: 'x',
     label: 'Example',
+    // (The command to try again is the plugin's to say: the core names no source's commands.
+    // A7 of the audit of 2026-10-24.)
+    again: 'bc example history recover',
     say: (r, args) => `went through ${args.days} days: ${r.recovered} found`,
     recover: async (args) => {
       if (fail) throw new Error('the phone did not answer');
@@ -107,7 +110,7 @@ test('work left from outside a command, or that a command stopped waiting for, i
   fail = true;
   leaveWork(db, 'x_work', { days: 180, chats: null });
   await serve();
-  assert.match(sent.at(-1), /^Example: fetching history stopped: the phone did not answer\. Try again: bc x recover$/);
+  assert.match(sent.at(-1), /^Example: fetching history stopped: the phone did not answer\. Try again: bc example history recover$/);
   // Work a command waited to see end is not sent as well.
   fail = false;
   sent.length = 0;

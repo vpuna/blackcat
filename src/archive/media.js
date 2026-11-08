@@ -82,16 +82,18 @@ export function findMedia(db, id) {
     .get(id);
   if (!row) throw Object.assign(new QueryError(`No message ${id}.`), { gone: true });
   if (!row.dl_type) {
+    const link = source(msgSource(id))?.link;
     throw Object.assign(
       new QueryError(
         ['image', 'video', 'gif', 'voice', 'audio', 'document', 'sticker'].includes(row.type)
-          ? `That ${row.type} was stored before media details were kept. Re-link WhatsApp (bc wa pair) to fill them in.`
+          ? `That ${row.type} was stored before media details were kept.${link ? ` Linking it again (${link}) fills them in.` : ''}`
           : `Message ${id} is not a photo, video, audio or document.`,
       ),
       { gone: true },
     );
   }
-  return row;
+  // (What its source kept to fetch it: its own, as it gave it.)
+  return { ...row, fetch: row.fetch == null ? null : JSON.parse(row.fetch) };
 }
 
 function writeThumb(id, row) {
@@ -103,9 +105,8 @@ function writeThumb(id, row) {
 }
 
 // Returns { path, source: 'cache' | 'download' | 'thumbnail', note? }.
-// Fetching is a plain HTTPS download from WhatsApp's media servers plus local
-// decryption, the same thing WhatsApp Web does when you open a photo. It needs no
-// WhatsApp connection and sends nothing to any chat.
+// The file is fetched by the plugin of the source it came from (its `fetchMedia`), from
+// what it kept with the message; it sends nothing to any chat.
 export async function fetchMedia(db, id, { thumbOnly = false } = {}) {
   const row = findMedia(db, id);
   const paths = mediaPaths(id, row);

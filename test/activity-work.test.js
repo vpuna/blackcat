@@ -157,11 +157,11 @@ test('messages that arrive are counted by where they came from, never one entry 
   for (const n of [1, 2, 3]) q.msg.run(messageRow({ chat: 'tg:7', id: `tg7_${n}`, ts: 1700000000 + n, text: 'PRIVATE WORDS' }));
   q.msg.run(messageRow({ chat: 'tg:7', id: 'tg7_3', ts: 1700000003, text: 'the same one again' })); // not stored twice, not counted twice
   // WhatsApp writes with the statement that fills in what a second sending adds: that is not a second message.
-  const wa = '447700900000@s.whatsapp.net';
+  const wa = 'wa:447700900000@s.whatsapp.net';
   q.chat.run({ ref: wa, name: 'B', isGroup: 0, ts: 1700000000 });
   q.msgFill.run(messageRow({ chat: wa, id: 'W1', ts: 1700000001, text: 'x' }));
   q.msgFill.run(messageRow({ chat: wa, id: 'W2', ts: 1700000002, text: 'x' }));
-  const again = q.msgFill.run(messageRow({ chat: wa, id: 'W2', sender: '447700900001@s.whatsapp.net', ts: 1700000002, text: 'x' }));
+  const again = q.msgFill.run(messageRow({ chat: wa, id: 'W2', sender: 'wa:447700900001@s.whatsapp.net', ts: 1700000002, text: 'x' }));
   assert.equal(again.changes, 1, 'the sender was filled in');
   db.close();
   noteArrived();
@@ -261,6 +261,7 @@ test('a command at a terminal is one piece of work: what it did is recorded with
   assert.equal(bc(['check', 'add', 'Never well', '--run', `test -e ${flag}`, '--every', '1h']).status, 0);
   assert.equal(bc(['check', 'add', 'Always well', '--run', 'true', '--every', '1h']).status, 0);
   assert.equal(bc(['check', 'edit', 'blackcat health', '--pause']).status, 0);
+  assert.equal(bc(['check', 'edit', 'Connections', '--pause']).status, 0);
   fs.rmSync(flag);
   clear();
   bc(['check', 'run']);

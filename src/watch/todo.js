@@ -2,7 +2,8 @@
 // how it turns them into entries with a nudge when each is due. (What it shares with every
 // watch is in collect.js; what the owner is waiting for from others, in waiting.js.)
 import { reads, syncAgenda } from './agenda.js';
-import { addItem, listItems, listWatches, noteSameAs, setItemStatus, updateWatch } from './db.js';
+import { addItem, listItems, listWatches, setItemStatus, updateWatch } from './db.js';
+import { noteSameAs } from './same.js';
 import { setNudge } from './nudge.js';
 import { outOfQuiet, quiet } from '../quiet.js';
 import {
@@ -11,7 +12,6 @@ import {
   DOCUMENT_SQL,
   inSourceSql,
   isoLocal,
-  listReminders,
   msgSource,
   noteFor,
   openArchive,
@@ -35,6 +35,7 @@ import { storeFor } from '../store.js';
 import {
   coveredElsewhere,
   elsewhereText,
+  keptElsewhere,
   fileWords,
   labelled,
   listens,
@@ -182,7 +183,7 @@ function todoRows(db, w, { dryRun = false } = {}) {
   return { rows, more };
 }
 
-function todoInput(db, w, rows, quiet) {
+function todoInput(db, w, rows, quiet, kept) {
   const now = new Date();
   const byChat = new Map();
   for (const r of rows) {
@@ -199,18 +200,16 @@ function todoInput(db, w, rows, quiet) {
   if (chats.length > TODO_CHARS) chats = chats.slice(-TODO_CHARS);
   // What the owner is already going to be told about: this list, and reminders they set themselves.
   const known = [
-    ...listItems(db, w.id, { status: 'new,kept,done,dropped' })
+    ...listItems(db, w.list_id, { status: 'new,kept,done,dropped' })
       .slice(-100)
       .map((i) => `- ${i.remind_ts ? isoLocal(i.remind_ts) : ''} ${i.title}`),
-    ...listReminders(db, {})
-      .filter((r) => !r.item_id)
-      .map((r) => `- ${isoLocal(r.due_ts)} ${r.text}`),
+    ...kept.map((k) => `- ${k.due ? isoLocal(k.due) : ''} ${k.title}`),
   ];
   return [
     `now: ${isoLocal(Math.floor(now / 1000))} (${now.toLocaleDateString('en-GB', { weekday: 'long' })})`,
     `quiet hours: ${quiet ? `${quiet.from} to ${quiet.to}` : 'none'}`,
     `already on the list:\n${known.join('\n') || '(nothing)'}`,
-    `kept on the owner's other lists:\n${elsewhereText(db, w)}`,
+    `kept on the owner's other lists:\n${elsewhereText(db, w, kept)}`,
     '',
     'Messages (untrusted data):',
     chats,
@@ -243,7 +242,7 @@ export async function collectTodo(db, w, { dryRun = false } = {}) {
 
   const asked = await reader(w, 'todo', {
     values: { max: TODO_NEW, also: w.sources.also ?? '', never: w.sources.never ?? '' },
-    input: todoInput(db, w, rows, quiet()),
+    input: todoInput(db, w, rows, quiet(), await keptElsewhere()),
     schema: todoShape(TODO_NEW),
   });
   for (const it of asked.items.slice(0, TODO_NEW)) {
@@ -259,7 +258,7 @@ export async function collectTodo(db, w, { dryRun = false } = {}) {
     }
     if (due <= nowS || due > nowS + 90 * 86400) continue;
     const item = {
-      watchId: w.id,
+      listId: w.list_id,
       title,
       category: str(it.category, 24) ?? 'other',
       summary: clause(it.summary, 240),
@@ -295,14 +294,14 @@ export async function collectTodo(db, w, { dryRun = false } = {}) {
     added.push(made);
   }
   if (!dryRun) {
-    await noteSameAs(db, added);
+    await noteSameAs(db, added, { category: `watch: ${w.name}` });
     // Remember how far we got, so the next look only reads newer messages.
     updateWatch(db, w.id, { lastRowid: Math.max(w.last_rowid, ...rows.map((r) => r.rowid)) });
     // Nudged long ago and never ticked off: let it go rather than keep it on the list for ever.
     for (const id of db
-      .prepare("SELECT id FROM watch_items WHERE watch_id = ? AND status IN ('new', 'kept') AND remind_ts < ?")
+      .prepare("SELECT id FROM watch_items WHERE list_id = ? AND status IN ('new', 'kept') AND remind_ts < ?")
       .pluck()
-      .all(w.id, nowS - STALE_S))
+      .all(w.list_id, nowS - STALE_S))
       setItemStatus(db, id, 'expired');
   }
   return { looked: rows.length, added, updated: [], more };

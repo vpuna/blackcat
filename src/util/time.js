@@ -55,3 +55,19 @@ export function agoShort(ts) {
   if (s < 30 * 86400) return `${Math.floor(s / 86400)}d ago`;
   return ymd(ts * 1000);
 }
+
+// A day gone, as said of what was due then: "yesterday", "3 days ago". (`ymd`: YYYY-MM-DD)
+export function agoLabel(ymd) {
+  const days = Math.round((new Date(new Date().toDateString()) - new Date(`${ymd}T00:00:00`)) / 86400000);
+  return days <= 1 ? 'yesterday' : `${days} days ago`;
+}
+
+// A day, as said in a list: "today", "tomorrow", or "Tue 27 Oct". (`ymd`: YYYY-MM-DD)
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+export function dateLabel(ymd) {
+  const d = new Date(`${ymd}T12:00:00`);
+  const days = Math.round((d - new Date(new Date().toDateString())) / 86400000 - 0.5);
+  if (days === 0) return 'today';
+  if (days === 1) return 'tomorrow';
+  return `${DAY_NAMES[d.getDay()]} ${d.getDate()} ${d.toLocaleString('en-GB', { month: 'short' })}`;
+}

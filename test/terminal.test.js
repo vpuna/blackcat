@@ -77,14 +77,14 @@ test('a conversation, and the built-in commands', async () => {
 test("a plugin's screens work here, with choices as numbers", async () => {
   assert.match(await type('/remind'), /^⏰ Reminders\n\n1\. .* · Water the plants/);
   // a typed blackcat command runs directly
-  assert.match(await type('/watch add Ideas', /created/), /Watch 2 "Ideas" created\./);
-  await type("/watch add-item 2 --title 'Try the new cafe'", /cafe/);
+  assert.match(await type('/watch add Ideas --self --look-for ideas', /created/), /Watch 2 "Ideas" created, filling the list "Ideas"\./);
+  await type("/list add Ideas --title 'Try the new cafe'", /cafe/);
   assert.equal(await type('/demo hello', /hello/), 'hello from demo');
   const watches = await type('/watch');
   assert.match(watches, /^👁 Your watches\n\n1\. Things I need to do · 0 on the list\n {4}in the daily briefing\n2\. Ideas · 1 on the list/);
   assert.ok(watches.endsWith('1. 1. Things I need to do\n2. 2. Ideas\n(Answer with a number.)'));
   const card = await type('2');
-  assert.match(card, /^👁 Ideas\nLooks for: Ideas/);
+  assert.match(card, /^👁 Ideas\nLooks for: ideas/);
   assert.ok(card.endsWith('1. 📋 Show list\n2. 🔄 Check for new\n3. ⏸ Pause\n4. ✅ Done ones\n(Answer with a number.)'));
   const list = await type('1', /Still on the list/);
   assert.match(list, /1\. Try the new cafe/);

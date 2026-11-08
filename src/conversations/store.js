@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS conversations (
   channel        TEXT NOT NULL,             -- terminal, or the channel's name (tg-bot, …)
   chat           TEXT NOT NULL,             -- the chat on that channel
   title          TEXT NOT NULL,
-  engine         TEXT NOT NULL,             -- claude-code
+  engine         TEXT NOT NULL,             -- the engine plugin that held it (claude-code, …)
   engine_session TEXT,                      -- the engine's own id for it
   instructions   TEXT,                      -- fingerprint of the instructions it last ran with
   started_ts     INTEGER NOT NULL,
@@ -45,8 +45,6 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
 CREATE INDEX IF NOT EXISTS conversation_turns_conv ON conversation_turns (conversation_id, id);
 `;
 
-// The engine a conversation is taken to be held by when nobody says (the one that comes with blackcat).
-export const ENGINE = 'claude-code';
 const QUESTION_MAX = 8000;
 const REPLY_MAX = 20_000;
 // on: keep conversations at all · days: how long (0 = until you delete them)
@@ -83,7 +81,7 @@ export function titleOf(question) {
 }
 
 // Begin a conversation. → its id, or null when conversations are not kept.
-export function start({ channel, chat, question, instructions, engine = ENGINE }) {
+export function start({ channel, chat, question, instructions, engine }) {
   if (!settings().on) return null;
   return withDb((db) =>
     Number(

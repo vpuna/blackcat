@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { CODE_DIR } from '../service/units.js';
-import { DEFAULT_ENGINE, ROLES, choicesOf, choose, engineFor, enginePlugins, engineStamp, optionsFor, stored } from './registry.js';
+import { ROLES, defaultEngine, choicesOf, choose, engineFor, enginePlugins, engineStamp, optionsFor, stored } from './registry.js';
 import { findLoaded } from '../plugins/registry.js';
 import { plural } from '../util/format.js';
 import { killGroup } from '../util/run.js';
@@ -175,8 +175,8 @@ export async function runCheck({ roles, choice = {}, quick = false, say = () => 
         const c = { ...stored(role), ...choice[role] };
         result = {
           role,
-          engine: c.name ?? DEFAULT_ENGINE,
-          label: c.name ?? DEFAULT_ENGINE,
+          engine: c.name ?? defaultEngine(),
+          label: c.name ?? defaultEngine(),
           model: c.model ?? null,
           options: c.options ?? {},
           at: new Date().toISOString(),
@@ -207,7 +207,7 @@ export async function runCheck({ roles, choice = {}, quick = false, say = () => 
     // What the engine kept about the conversations it had in the copy goes with it (also for a
     // part that was stopped, and so has no result to say which engine it was).
     for (const name of new Set(
-      roles.map((r) => out[r]?.result.engine ?? { ...stored(r), ...choice[r] }.name ?? DEFAULT_ENGINE).filter(Boolean),
+      roles.map((r) => out[r]?.result.engine ?? { ...stored(r), ...choice[r] }.name ?? defaultEngine()).filter(Boolean),
     )) {
       const p = findLoaded(name);
       try {

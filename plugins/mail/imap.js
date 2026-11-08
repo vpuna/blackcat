@@ -9,6 +9,14 @@ import { addrOf, bulk } from './rules.js';
 const SOURCE_MAX = 3 * 1024 ** 2; // bytes of one mail read for its text; attachments beyond this are not needed
 export const TEXT_MAX = 6000; // characters of a mail's text that are kept
 
+// A failure, said for people; `refused`: the server would not take the address or password,
+// which only connecting again with a new app password mends.
+export const failure = (e) => {
+  const t = `${e.responseText ?? ''} ${e.message ?? ''} ${e.code ?? ''}`;
+  const refused =
+    !!e.authenticationFailed || /AUTHENTICATIONFAILED|Invalid credentials|LOGIN failed|Application-specific password required/i.test(t);
+  return Object.assign(new Error(friendly(e)), { refused });
+};
 const friendly = (e) => {
   const t = `${e.responseText ?? ''} ${e.message ?? ''} ${e.code ?? ''}`;
   if (e.authenticationFailed || /AUTHENTICATIONFAILED|Invalid credentials|LOGIN failed/i.test(t))
@@ -34,12 +42,12 @@ export async function withMailbox({ host, port = 993, user, pass }, fn) {
   try {
     await client.connect();
   } catch (e) {
-    throw new Error(friendly(e));
+    throw failure(e);
   }
   try {
     return await fn(client);
   } catch (e) {
-    throw new Error(friendly(e));
+    throw failure(e);
   } finally {
     await client.logout().catch(() => client.close());
   }

@@ -6,6 +6,7 @@ import { FormError, defaultOf, runInTerminal, savedOf, unanswered } from './form
 import {
   available,
   describeJob,
+  everyKnown,
   isEnabled,
   loadOne,
   loadPlugins,
@@ -335,6 +336,14 @@ function registerManagement(program) {
       }
       const loadedP = await loadOne(e);
       if (loadedP.error) return console.error(`Not enabled. ${name}: ${loadedP.error}`);
+      // (A kind of message another plugin brings in, or brought in: both would stop, so it is not switched on.)
+      const kind = loadedP.manifest.source?.id;
+      await loadPlugins();
+      const has = kind && everyKnown().find((p) => p.name !== name && p.manifest.source?.id === kind);
+      if (has)
+        return console.error(
+          `Not enabled. ${name}: it brings in messages of the kind "${kind}", as the ${has.name} plugin does${isEnabled(has.name) ? '' : ' (switched off, but what it brought in is kept)'}. Two plugins cannot share a kind of message: rename it in ${e.dir}/plugin.js.`,
+        );
       setEnabled(name, true);
       // (Switched on, and then found to claim what is another's: it is switched off again, and said.)
       await loadPlugins();

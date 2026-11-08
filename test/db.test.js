@@ -185,8 +185,12 @@ test('opened for looking only, nothing can be changed; and a database is closed 
   assert.equal(seen.open, false);
 });
 
+// What part 10 changed, put back: a fresh archive made to look as one did before it.
+const BEFORE_10 = `ALTER TABLE aliases RENAME COLUMN ref TO lid; ALTER TABLE aliases RENAME COLUMN same_as TO pn; ALTER TABLE aliases RENAME TO lid_map;
+    ALTER TABLE media ADD COLUMN direct_path TEXT; ALTER TABLE media ADD COLUMN url TEXT; ALTER TABLE media ADD COLUMN media_key BLOB;
+    ALTER TABLE media ADD COLUMN file_enc_sha256 BLOB; ALTER TABLE media DROP COLUMN fetch;`;
 // An archive as the first published version left it: marked 6, without what step 7 adds.
-const AT_6 = `DROP TRIGGER messages_ai; DROP TRIGGER messages_ad; DROP TRIGGER messages_au; DROP TABLE messages_fts;
+const AT_6 = `${BEFORE_10} DROP TRIGGER messages_ai; DROP TRIGGER messages_ad; DROP TRIGGER messages_au; DROP TABLE messages_fts;
     CREATE VIRTUAL TABLE messages_fts USING fts5(text, link_title, link_desc, content='messages', content_rowid='rowid', tokenize='unicode61 remove_diacritics 2');
     CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN INSERT INTO messages_fts (rowid, text, link_title, link_desc) VALUES (new.rowid, new.text, new.link_title, new.link_desc); END;
     CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN INSERT INTO messages_fts (messages_fts, rowid, text, link_title, link_desc) VALUES ('delete', old.rowid, old.text, old.link_title, old.link_desc); END;
@@ -206,13 +210,13 @@ test('an archive from an earlier blackcat is refused, not upgraded; a new one is
   const { openWrite } = await import('../src/archive/db.js');
   const { ARCHIVE_DB } = await import('../src/archive/files.js');
   let a = openWrite();
-  assert.equal(a.pragma('user_version', { simple: true }), 9);
+  assert.equal(a.pragma('user_version', { simple: true }), 10);
   // and one from the first published version (marked 6) is given what has been added since, by whoever opens it
   a.exec(AT_6);
   a.close();
   const { openRead } = await import('../src/archive/db.js');
   const r = openRead();
-  assert.equal(r.pragma('user_version', { simple: true }), 9, 'a reader brings it up to date before reading');
+  assert.equal(r.pragma('user_version', { simple: true }), 10, 'a reader brings it up to date before reading');
   assert.equal(
     r.prepare("SELECT COUNT(*) AS n FROM messages_fts WHERE messages_fts MATCH 'dinner'").get().n,
     1,
@@ -280,7 +284,7 @@ test('an archive from the first published version, opened by several processes a
   );
   assert.deepEqual(codes, Array(12).fill(0), 'none of them failed');
   const db = openSqlite(ARCHIVE_DB, { readonly: true });
-  assert.equal(db.pragma('user_version', { simple: true }), 9);
+  assert.equal(db.pragma('user_version', { simple: true }), 10);
   assert.ok(hasColumn(db, 'messages', 'heard') && hasColumn(db, 'messages', 'account'));
   assert.equal(
     db.prepare("SELECT chat_ref FROM messages WHERE id = 'OLD1'").pluck().get(),
@@ -288,4 +292,57 @@ test('an archive from the first published version, opened by several processes a
     'marked once, not twice',
   );
   db.close();
+});
+
+test("part 10: the archive's words are no source's own: other ids are aliases, and what fetches a file is the source's, every value kept", async () => {
+  const { ARCHIVE_DB } = await import('../src/archive/files.js');
+  for (const f of [ARCHIVE_DB, `${ARCHIVE_DB}-wal`, `${ARCHIVE_DB}-shm`]) fs.rmSync(f, { force: true });
+  const { openWrite, openRead, SENDER_LABEL } = await import('../src/archive/db.js');
+  const a = openWrite();
+  a.exec(BEFORE_10);
+  const key = Buffer.from('00ff10ab'.repeat(8), 'hex');
+  const enc = Buffer.from('c0ffee', 'hex');
+  const sha = Buffer.from('abcd', 'hex');
+  const msg = a.prepare("INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES (?, ?, ?, 0, 1700000000, ?, 'x')");
+  const media = a.prepare(
+    'INSERT INTO media (msg_rowid, dl_type, mimetype, file_name, direct_path, url, media_key, file_sha256, file_enc_sha256) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  );
+  const wa = msg.run('wa:1@s.whatsapp.net', 'WA1', 'wa:99@lid', 'image').lastInsertRowid;
+  media.run(wa, 'image', 'image/jpeg', null, '/v/t62/x', 'https://mmg.example/x', key, sha, enc);
+  const old = msg.run('wa:1@s.whatsapp.net', 'WA2', null, 'image').lastInsertRowid;
+  media.run(old, 'image', 'image/jpeg', null, null, null, null, sha, null);
+  const mail = msg.run('mail:home', 'mail:home:7:1', 'mail:a@b.example', 'document').lastInsertRowid;
+  media.run(mail, 'mail', 'application/pdf', 'letter.pdf', '2', null, null, null, null);
+  const tg = msg.run('tg:5', 'tg5_9', 'tg:5', 'image').lastInsertRowid;
+  media.run(tg, 'tg', 'image/jpeg', null, null, null, null, null, null);
+  a.prepare("INSERT INTO lid_map (lid, pn) VALUES ('wa:99@lid', 'wa:15550001234@s.whatsapp.net')").run();
+  a.pragma('user_version = 9');
+  a.close();
+
+  const r = openRead();
+  assert.equal(r.pragma('user_version', { simple: true }), 10);
+  assert.ok(!hasTable(r, 'lid_map'));
+  assert.deepEqual(r.prepare('SELECT ref, same_as FROM aliases').all(), [{ ref: 'wa:99@lid', same_as: 'wa:15550001234@s.whatsapp.net' }]);
+  for (const c of ['direct_path', 'url', 'media_key', 'file_enc_sha256']) assert.ok(!hasColumn(r, 'media', c), `${c} is gone`);
+  const fetch = (rowid) => JSON.parse(r.prepare('SELECT fetch FROM media WHERE msg_rowid = ?').pluck().get(rowid) ?? 'null');
+  assert.deepEqual(fetch(wa), {
+    directPath: '/v/t62/x',
+    url: 'https://mmg.example/x',
+    mediaKey: key.toString('hex').toUpperCase(),
+    encSha256: 'C0FFEE',
+  });
+  assert.ok(Buffer.from(fetch(wa).mediaKey, 'hex').equals(key), 'the key is the same bytes');
+  assert.equal(fetch(old), null, 'one with nothing to fetch it by still has nothing');
+  assert.deepEqual(fetch(mail), { directPath: '2', url: null, mediaKey: null, encSha256: null });
+  assert.deepEqual(fetch(tg), {}, 'a Telegram file is fetched by its message');
+  assert.ok(
+    r.prepare('SELECT file_sha256 FROM media WHERE msg_rowid = ?').pluck().get(wa).equals(sha),
+    "the file's own hash stays where it was",
+  );
+  assert.equal(
+    r.prepare(`SELECT ${SENDER_LABEL} FROM messages m WHERE m.id = 'WA1'`).pluck().get(),
+    '+15550001234',
+    'a hidden id is still shown as the number it is an alias of',
+  );
+  r.close();
 });

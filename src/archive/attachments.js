@@ -8,6 +8,7 @@ import { upgrade } from '../db.js';
 import { fetchMedia } from './media.js';
 import { setHeard } from './db.js';
 import { record } from '../activity/log.js';
+import { log } from '../log.js';
 import { loaded, makeCtx } from '../plugins/registry.js';
 
 // What reads a kind on this machine: the first plugin that says it does, and is able to
@@ -28,12 +29,17 @@ export function localReader(kind) {
 }
 
 // Keep a file's words with its message, for searching; the meaning index is told the chat
-// changed. (The note is kept either way: this is for searching, and can fail without harm.)
+// changed. (The note is kept either way: this is for searching, and failing is said, not fatal.)
 export function keepWords(id, words, max) {
   try {
     const chat = setHeard(id, words, max);
-    if (chat) import('./semantic.js').then((x) => x.noteChanged(chat)).catch(() => {});
-  } catch {}
+    if (chat)
+      import('./semantic.js')
+        .then((x) => x.noteChanged(chat))
+        .catch((e) => log(`message ${id}: the meaning index was not told: ${e.message}`));
+  } catch (e) {
+    log(`message ${id}: its file's words were not kept for searching: ${e.message}`);
+  }
 }
 
 // Reading attachments: an image, PDF or document from the archive is downloaded and given

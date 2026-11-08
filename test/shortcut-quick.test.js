@@ -49,3 +49,13 @@ test('shortcuts are asked before Home Assistant', async () => {
   assert.ok(order.includes('ha') && order.includes('shortcut'), order.join(' '));
   assert.ok(order.indexOf('shortcut') < order.indexOf('ha'), order.join(' '));
 });
+
+test('"bc" before the name changes nothing; a shortcut run by the agent is learned as its name', async () => {
+  assert.equal(pick('bc temps'), 'temps');
+  const { default: m } = await import('../plugins/shortcut/plugin.js');
+  const ctx = { config: { get: () => ({ shortcuts: { sky: { description: 'the sky', run: [] } } }) } };
+  assert.equal(await m.chat.learn('run', ['sky'], { ctx }), 'sky');
+  assert.equal(await m.chat.learn('run', ['moon'], { ctx }), null, 'no such shortcut');
+  assert.equal(await m.chat.learn('list', [], { ctx }), 'look');
+  assert.equal(await m.chat.learn('remove', ['sky'], { ctx }), null);
+});

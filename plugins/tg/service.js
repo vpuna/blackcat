@@ -7,6 +7,7 @@ import {
   accountFor,
   archiveMeta as getMeta,
   archiveStatements,
+  sourceChanges,
   claimRows,
   mediaPaths,
   notifyOwner,
@@ -59,7 +60,7 @@ export async function startTgService({ client, log, events, utils, gapMs = 700 }
   const me = await client.getMe();
   const meRef = chatRef(String(me.id));
   // Rows stored before the rule above existed: the owner's own messages recorded as someone else's.
-  db.prepare('UPDATE messages SET from_me = 1, sender_ref = NULL WHERE sender_ref = ? AND from_me = 0').run(meRef);
+  archiveStatements(db).markMine.run(meRef);
   // The owner's account this is logged in as, by its Telegram user (which stays the same if
   // the phone number changes): what it stores is that account's, and so is what came before.
   const account = accountFor(db, { source: 'tg', identity: String(me.id) });
@@ -67,17 +68,10 @@ export async function startTgService({ client, log, events, utils, gapMs = 700 }
 
   const q = {
     ...archiveStatements(db, () => account),
-    info: db.prepare(`INSERT INTO chat_info (ref, kind, members, username) VALUES (@ref, @kind, @members, @username)
-      ON CONFLICT (ref) DO UPDATE SET kind = excluded.kind, members = COALESCE(excluded.members, chat_info.members), username = COALESCE(excluded.username, chat_info.username)`),
     getInfo: db.prepare('SELECT * FROM chat_info WHERE ref = ?'),
-    setCutoff: db.prepare('UPDATE chat_info SET backfill_cutoff = ? WHERE ref = ?'),
     newest: db.prepare('SELECT MAX(ts) FROM messages WHERE chat_ref = ?').pluck(),
-    // A deletion outside channels only names message numbers, not the chat.
-    // ("_" is a wildcard in LIKE, so it is escaped to match the literal separator.)
-    delAnywhere: db.prepare(
-      `UPDATE messages SET deleted = 1 WHERE id LIKE ? ESCAPE '\\' AND chat_ref >= 'tg:' AND chat_ref < 'tg;' AND chat_ref NOT LIKE 'tg:-100%'`,
-    ),
   };
+  const changes = sourceChanges(db);
 
   // Record a chat and what kind it is. Returns { ref, kind, members }.
   function noteChat(entity, { ts = null } = {}) {
@@ -87,7 +81,7 @@ export async function startTgService({ client, log, events, utils, gapMs = 700 }
     const isPerson = kind === 'user' || kind === 'bot';
     const name = entity.self ? 'Saved Messages' : displayName(entity);
     q.chat.run({ ref, name: isPerson && !entity.self ? null : name, isGroup: isPerson ? 0 : 1, ts });
-    q.info.run({ ref, kind, members: entity.participantsCount ?? null, username: entity.username ?? null });
+    q.chatInfo.run({ ref, kind, members: entity.participantsCount ?? null, username: entity.username ?? null });
     if (isPerson) q.contact.run({ ref, name, notify: entity.username ?? null, phone: entity.phone ?? null });
     return { ref, kind, members: entity.participantsCount ?? null, marked };
   }
@@ -157,11 +151,16 @@ export async function startTgService({ client, log, events, utils, gapMs = 700 }
     (e) => ingestLive(e.message).catch((err) => log?.(`message not stored: ${err.message}`)),
     new events.NewMessage({}),
   );
-  client.addEventHandler((e) => ingestLive(e.message, { edit: true }).catch(() => {}), new events.EditedMessage({}));
+  client.addEventHandler(
+    (e) => ingestLive(e.message, { edit: true }).catch((err) => log?.(`edited message not stored: ${err.message}`)),
+    new events.EditedMessage({}),
+  );
   client.addEventHandler((e) => {
     for (const n of e.deletedIds ?? []) {
       if (e.peer) q.del.run(chatRef(String(utils.getPeerId(e.peer))), msgId(String(utils.getPeerId(e.peer)), n));
-      else q.delAnywhere.run(`tg%\\_${n}`);
+      // (A deletion outside channels names only message numbers, not the chat. "_" is a
+      // wildcard in LIKE, so it is escaped to match the separator.)
+      else changes.deletedAnywhere('tg', `tg%\\_${n}`, 'tg:-100');
     }
   }, new events.DeletedMessage({}));
 
@@ -289,8 +288,10 @@ export async function startTgService({ client, log, events, utils, gapMs = 700 }
   // and keep what is missing (one already there is not stored twice). The days may reach
   // further back than what is kept by itself.
   async function recover({ days, chats: only = null } = {}, progress = () => {}) {
-    while (busy) await sleep(300); // not beside a history fetch: Telegram limits how much is asked
-    busy = true;
+    // (Not beside a history fetch: Telegram limits how much is asked. Waited for, not polled.)
+    while (busy) await busy.catch(() => {});
+    let done;
+    busy = new Promise((ok) => (done = ok));
     try {
       const s = tgaSettings();
       const from = now() - days * 86400;
@@ -322,7 +323,8 @@ export async function startTgService({ client, log, events, utils, gapMs = 700 }
       if (out.recovered) setMeta(db, { tg_last_message_at: now() });
       return out;
     } finally {
-      busy = false;
+      busy = null;
+      done();
     }
   }
 
@@ -333,7 +335,16 @@ export async function startTgService({ client, log, events, utils, gapMs = 700 }
   // thousands of opens and writes a day for a table that is nearly always empty.
   const adb = openRequestsDb();
   // `bc tg account recover`, left for this service to do: see src/archive/recovery.js.
-  const serveJobs = serveRecovery({ db: adb, table: 'tg_jobs', source: 'tg', label: 'Telegram', recover, log, ready: () => !stopped });
+  const serveJobs = serveRecovery({
+    db: adb,
+    table: 'tg_jobs',
+    source: 'tg',
+    label: 'Telegram',
+    again: 'bc tg account recover',
+    recover,
+    log,
+    ready: () => !stopped,
+  });
   const pending = adb.prepare("SELECT * FROM tg_requests WHERE status = 'pending' ORDER BY id LIMIT 3");
   const answer = adb.prepare('UPDATE tg_requests SET status = ?, path = ?, error = ? WHERE id = ?');
   const purge = adb.prepare('DELETE FROM tg_requests WHERE created_ts < ?');
@@ -377,10 +388,11 @@ export async function startTgService({ client, log, events, utils, gapMs = 700 }
   // The settings are read again only when the config file has actually been written.
   const configChanged = settingsChangedAt;
   let configSeen = configChanged();
-  let busy = false;
+  let busy = null; // a history fetch going on: a promise that settles when it ends
   const runBackfill = async () => {
     if (busy) return;
-    busy = true;
+    let done;
+    busy = new Promise((ok) => (done = ok));
     try {
       await backfill();
     } catch (e) {
@@ -392,7 +404,8 @@ export async function startTgService({ client, log, events, utils, gapMs = 700 }
         await notifyOwner(`Telegram: fetching history stopped (${e.message}). It is tried again within the hour.`).catch(() => false);
       }
     } finally {
-      busy = false;
+      busy = null;
+      done();
       lookedAt = now();
     }
   };

@@ -109,6 +109,7 @@ export default {
   selftest: () => [
     {
       name: `the ${voiceSettings().model} model`,
+      local: true,
       run: () => {
         const v = voiceSettings();
         const id = (MODELS[v.model] ?? { id: v.model }).id;

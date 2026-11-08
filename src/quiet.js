@@ -34,10 +34,20 @@ export function outOfQuiet(ts, q = quiet()) {
 }
 
 // Are we inside quiet hours at this moment?
-export function inQuiet(nowMs = Date.now(), q = quiet()) {
-  if (!q?.from || !q?.to) return false;
-  const t = nowMs / 1000;
-  const from = todayAt(q.from, nowMs);
-  const to = todayAt(q.to, nowMs);
-  return from <= to ? t >= from && t < to : t >= from || t < to;
+export const inQuiet = (nowMs = Date.now(), q = quiet()) => inWindow(q, nowMs / 1000);
+
+// Is `ts` (Unix seconds) inside a window of the day, which may run past midnight? The one test
+// for every such window: quiet hours, and a check's own quiet time. `w`: { from, to } or
+// "HH:MM-HH:MM"; none, and it is never inside.
+export function inWindow(w, ts = Date.now() / 1000) {
+  const [from, to] = (typeof w === 'string' ? w.split('-') : [w?.from, w?.to]).map((x) => {
+    const [h, m] = String(x ?? '')
+      .split(':')
+      .map(Number);
+    return Number.isInteger(h) && Number.isInteger(m) ? h * 60 + m : null;
+  });
+  if (from == null || to == null) return false;
+  const d = new Date(ts * 1000);
+  const m = d.getHours() * 60 + d.getMinutes();
+  return from <= to ? m >= from && m < to : m >= from || m < to;
 }

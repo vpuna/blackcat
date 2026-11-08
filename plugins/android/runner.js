@@ -22,8 +22,6 @@ const END_PICTURE_MAX_MS = 4000; // …or this long has gone by
 // A step for a screen that may not come (if_shown) ends early when what a later step waits
 // for has been on the screen this long, and it was not before the last tap.
 const SKIP_AFTER_MS = 1500;
-const RETAP_AFTER_MS = 3000;
-const MAX_RETAPS = 3; // (an app just started can ignore taps for several seconds)
 const MAX_RECOVERIES = 2;
 const OWNER_PICTURE = 2400;
 const KEY_GAP_MS = 250; // between presses of a remote's key
@@ -50,12 +48,23 @@ const MAX_JUDGED = 3;
 // as the routine left it. Whatever happens in between, also a failure.
 const KEPT_STAY_ON = 'blackcat_stay_on_while_plugged_in';
 
+// What a run cut off before its end left on a device ("stay awake while charging" on, the
+// device's own value kept beside it), put back. → whether there was any. (The "tidy" job, as
+// soon as nothing runs on the device: until then the screen of a device left charging stays on.)
+export async function putBack(dev) {
+  const kept = await dev.setting('global', KEPT_STAY_ON);
+  if (!/^\d+$/.test(kept)) return false;
+  await dev.setting('global', 'stay_on_while_plugged_in', kept);
+  await dev.unset('global', KEPT_STAY_ON);
+  return true;
+}
+
 export async function session(dev, routine, fn, { log = () => {}, tv = false } = {}) {
   const app = routine.app;
   const after = routine.after ?? (tv ? 'stay' : 'sleep');
   // (The device's own value is kept on the device while a run works: one cut off before its
-  // end, by the service being stopped say, leaves it there, and the next run puts it back,
-  // not the "stay on" it found.)
+  // end, by the service being stopped say, leaves it there, for putBack, or the next run, to
+  // put back, not the "stay on" it found.)
   const kept = await dev.setting('global', KEPT_STAY_ON);
   const stayOn = /^\d+$/.test(kept) ? kept : await dev.setting('global', 'stay_on_while_plugged_in');
   if (!/^\d+$/.test(kept) && /^\d+$/.test(stayOn)) await dev.setting('global', KEPT_STAY_ON, stayOn);
@@ -79,10 +88,14 @@ export async function session(dev, routine, fn, { log = () => {}, tv = false } =
     }
     return await fn();
   } finally {
-    await dev.setting('global', 'stay_on_while_plugged_in', /^\d+$/.test(stayOn) ? stayOn : 0).catch(() => {});
-    await dev.unset('global', KEPT_STAY_ON).catch(() => {});
-    if (after !== 'stay') await dev.key('HOME').catch(() => {});
-    if (after === 'sleep') await dev.sleep().catch(() => {});
+    // (Each said when it cannot be done: a phone left with its screen kept on is worth knowing of.)
+    const unsaid = (what) => (e) => log(`could not ${what}: ${e.message}`);
+    await dev
+      .setting('global', 'stay_on_while_plugged_in', /^\d+$/.test(stayOn) ? stayOn : 0)
+      .catch(unsaid('put back "stay awake while charging"'));
+    await dev.unset('global', KEPT_STAY_ON).catch(unsaid('forget the kept "stay awake" setting'));
+    if (after !== 'stay') await dev.key('HOME').catch(unsaid('go to the home screen'));
+    if (after === 'sleep') await dev.sleep().catch(unsaid('turn the screen off'));
     log(
       {
         sleep: 'home screen, screen off, settings put back',
@@ -98,7 +111,6 @@ export async function session(dev, routine, fn, { log = () => {}, tv = false } =
 const NEW_SIGNS = { '\u20C3': 'AED ', '\u20CE': 'AED ' };
 // What a screen shows, in words: to tell the same screen (still loading) from another.
 const labelsOf = (root) => new Set([...walk(root ?? {})].map(labelOf).filter(Boolean));
-const sameScreen = (was, now) => !!was?.size && [...was].filter((l) => !now.has(l)).length <= Math.max(2, 0.2 * was.size);
 // Two looks at a screen that is the same one still settling: few things gone, few come (a
 // search box's hint that changes, a clock). An app just opened that swaps its first screen
 // for its real one is not.
@@ -106,21 +118,14 @@ const alike = (a, b) => {
   const room = Math.max(2, 0.1 * Math.max(a.size, b.size));
   return [...a].filter((l) => !b.has(l)).length <= room && [...b].filter((l) => !a.has(l)).length <= room;
 };
-// What is gone from a screen, a few of them, for saying why.
-const goneFrom = (was, now) => {
-  const gone = [...was].filter((l) => !now.has(l));
-  const named = gone.slice(0, 5).map((l) => `"${l.length > 40 ? `${l.slice(0, 39)}…` : l}"`);
-  return `${gone.length} of ${was.size} things on it are gone: ${named.join(', ')}${gone.length > named.length ? ', …' : ''}`;
-};
 const same = (a, b) => !!a && !!b && a.every((x, k) => x === b[k]);
-// (The same element after the screen under it moved, as a home screen still loading does: the same size, anywhere.)
-const sameSize = (a, b) => !!a && !!b && a[2] - a[0] === b[2] - b[0] && a[3] - a[1] === b[3] - b[1];
 const asLetters = (v) => [...v].map((c) => NEW_SIGNS[c] ?? c).join('');
 
 export class Runner {
   // answer: async ({ values, shot, routine }) => 'confirm' | 'cancel' | 'timeout'
   // recover: async ({ routine, step, n, error, els, shot }) => a diagnosis (recover.js), or null
-  // onStep / onDone: ({ n, step, text }) as each step starts and ends (for the owner to follow).
+  // onStep / onDone: ({ n, step, text, skipped }) as each step starts and ends (for the owner to
+  // follow); `skipped`: not done, as it was not needed this time.
   // judge: async ({ els, shot }) => whether the screen after the press is the app's last one
   //   ({ final, summary, result }, after.js), for a routine that does not say; or null.
   // onWait: (seconds) while it waits for that screen.
@@ -165,15 +170,10 @@ export class Runner {
   }
 
   // The first element the target names, waiting up to `seconds`; a known pop-up in the way is cleared.
-  // `retap`: a step that needs it. A tap on an app that is still starting can be lost: when
-  // what this step needs has not come three seconds after the last tap, and the element tapped
-  // is still on the screen, the same size (it may have moved, as a screen that loads does), it is
-  // tapped again, up to MAX_RETAPS times, three seconds apart; when it is not, why goes on the
-  // run's record. Nothing is waited for when all goes well.
   // `steady`: for an element about to be tapped, found while the last tap may still be landing:
   // taken once it is in the same place on two looks in a row (not while it slides in). `ahead`: for a screen that may not come, what later
   // steps wait for; when one of those is on the screen (and stays), it is not waited for longer.
-  async waitFor(target, seconds, { retap = false, steady = false, ahead = [] } = {}) {
+  async waitFor(target, seconds, { steady = false, ahead = [] } = {}) {
     const t0 = Date.now();
     const end = t0 + seconds * 1000;
     let prev = null;
@@ -183,7 +183,6 @@ export class Runner {
     for (;;) {
       const root = await this.screen();
       const found = find(root, target).find((h) => !this.stale(target, h)) ?? null;
-      if (found) this.lastTap = null; // (what the tap was for has come)
       const hit = found && (!steady || !this.landing() || (prev && same(prev.bounds, found.bounds))) ? found : null;
       prev = found;
       // A known pop-up is cleared before what is under it is tapped: the screen as read holds
@@ -200,38 +199,6 @@ export class Runner {
         else if (Date.now() - later.since >= SKIP_AFTER_MS) {
           this.skippedFor = sign;
           return null;
-        }
-      }
-      const t = this.lastTap;
-      if (retap && t && Date.now() - t.at > RETAP_AFTER_MS) {
-        // Only on the screen it was tapped on: the element where it was, and most of what was
-        // around it still there (a home screen still loading offers is the same screen; another is not).
-        const now = labelsOf(root);
-        const onIt = sameScreen(t.labels, now);
-        const found = onIt ? find(root, t.target).find((n) => sameSize(n.bounds, t.bounds)) : null;
-        // (What the target finds now is held to what every tap is held to: never what books,
-        // pays or sends. It may not be what was tapped, though it is found the same way.)
-        const commitsNow = found && commits(this.app, { text: labelOf(found) });
-        const again = commitsNow ? null : found;
-        // (Why not, with the step's failure should it fail: on the run's record and for a model's look.)
-        if (!again) {
-          this.untapped = `${spoken(t.target)} was not tapped again: ${
-            commitsNow
-              ? `"${labelOf(found)}" books, pays or sends`
-              : onIt
-                ? 'it is not on the screen, the same size'
-                : `the screen changed (${goneFrom(t.labels, now)})`
-          }`;
-          this.log(this.untapped);
-        }
-        const times = (t.times ?? 1) + 1;
-        this.lastTap = again && times <= MAX_RETAPS ? { ...t, at: Date.now(), times } : null;
-        if (again) {
-          await this.tapNode(again);
-          const step = this.steps[t.n];
-          if (step) step.text = `${step.text.replace(/ \(tapped \d+ times: .*\)$/, '')} (tapped ${times} times: nothing came of the first)`;
-          this.log(`tapped ${spoken(t.target)} again (${times}): nothing came of the tap before`);
-          continue;
         }
       }
       await this.clearPopup(root);
@@ -257,6 +224,12 @@ export class Runner {
       if (!find(root, p.when).length) continue;
       const b = find(root, p.tap)[0];
       if (!b) continue;
+      // (Held to what every tap is: never a button that books, pays or sends, whatever the
+      // pop-up's rule names. A generic id, android:id/button1, can be "Pay now".)
+      if (commits(this.app, { text: labelOf(b) })) {
+        this.log(`a pop-up (${spoken(p.when)}): not tapped, "${labelOf(b)}" books, pays or sends`);
+        continue;
+      }
       this.log(`a pop-up (${spoken(p.when)}): tapped ${spoken(p.tap)}`);
       await this.dev.tap(...middle(b));
       await sleep(SETTLE_MS);
@@ -347,12 +320,9 @@ export class Runner {
       const n = `${where}${i + 1}`;
       // (A step for when an optional value is given, or for when it is not.)
       if (this.notNeeded(s)) {
-        this.steps.push({
-          n,
-          do: s.do,
-          ms: 0,
-          text: `not needed: ${s.only_with ? `no ${s.only_with} was given` : `${s.only_without} was given`}`,
-        });
+        const text = `not needed: ${s.only_with ? `no ${s.only_with} was given` : `${s.only_without} was given`}`;
+        this.steps.push({ n, do: s.do, ms: 0, text, skipped: true });
+        this.onDone({ n, step: s, text, skipped: true });
         continue;
       }
       for (;;) {
@@ -436,15 +406,15 @@ export class Runner {
     const t0 = Date.now();
     const said = s.why ? ` (${s.why})` : '';
     this.onStep({ n, step: s, of: this.routine.steps.length });
-    const done = (text) => {
-      this.steps.push({ n, do: s.do, ms: Date.now() - t0, text });
+    const done = (text, { skipped = false } = {}) => {
+      this.steps.push({ n, do: s.do, ms: Date.now() - t0, text, ...(skipped ? { skipped } : {}) });
       this.log(`${n} ${text}`);
-      this.onDone({ n, step: s, text });
+      this.onDone({ n, step: s, text, skipped });
     };
     // (`final`: the step may not be tried again, whatever is on the screen.)
     const fail = async (text, { final = false } = {}) => {
       this.steps.push({ n, do: s.do, ms: Date.now() - t0, text, failed: true });
-      throw Object.assign(new StepFailed(`Step ${n} failed: ${text}${said}${this.untapped ? `. ${this.untapped}` : ''}`), {
+      throw Object.assign(new StepFailed(`Step ${n} failed: ${text}${said}`), {
         step: n,
         final,
         shot: await this.shot('failed').catch(() => null),
@@ -452,25 +422,18 @@ export class Runner {
     };
     switch (s.do) {
       case 'tap': {
-        const node = await this.waitFor(s.target, s.wait ?? 10, { retap: true, steady: true });
+        const node = await this.waitFor(s.target, s.wait ?? 10, { steady: true });
         if (!node) await fail(`${spoken(s.target)} did not show`);
         if (commits(this.app, { text: labelOf(node) }))
           await fail(`"${labelOf(node)}" books, pays or sends: only the confirmation step may press it`);
         await this.tapNode(node);
-        // (Kept for the next step: should what it waits for not come, this tap may have been lost.)
-        // (With where it was and what else was on the screen: it is tapped again only on that screen.)
-        this.untapped = null;
-        this.lastTap =
-          s.retry === false
-            ? null
-            : { target: s.target, at: Date.now(), n: this.steps.length, bounds: node.bounds, labels: labelsOf(this.seen) };
         done(`tapped ${spoken(s.target)}`);
         break;
       }
       case 'type': {
         let field = null;
         if (s.target) {
-          field = await this.waitFor(s.target, s.wait ?? 10, { retap: true, steady: true });
+          field = await this.waitFor(s.target, s.wait ?? 10, { steady: true });
           if (!field) await fail(`the field ${spoken(s.target)} did not show`);
           await this.tapNode(field);
           await this.focused(field);
@@ -485,13 +448,13 @@ export class Runner {
         break;
       }
       case 'wait':
-        if (!(await this.waitFor(s.target, s.wait ?? 10, { retap: true }))) await fail(`${spoken(s.target)} never showed`);
+        if (!(await this.waitFor(s.target, s.wait ?? 10))) await fail(`${spoken(s.target)} never showed`);
         done(`${spoken(s.target)} is there`);
         break;
       case 'check': {
         // (Waited for with the text it should have: a field is often drawn before it is filled in.)
         const want = s.text_contains == null ? s.target : { ...s.target, textContains: s.text_contains };
-        const node = (await this.waitFor(want, s.wait ?? 5, { retap: true })) ?? find(await this.screen(), s.target)[0] ?? null;
+        const node = (await this.waitFor(want, s.wait ?? 5)) ?? find(await this.screen(), s.target)[0] ?? null;
         const text = node ? labelOf(node) : '';
         if (!node || (s.text_contains != null && !text.includes(s.text_contains)))
           await fail(
@@ -504,7 +467,7 @@ export class Runner {
       // holds the value asked for already): looked at once, before any of them, without waiting.
       case 'unless_shown':
         // (Given a moment to show: a screen that has just opened may still be drawing it.)
-        if (await this.waitFor(s.target, s.wait ?? 3)) done(`${spoken(s.target)} is there already: not needed`);
+        if (await this.waitFor(s.target, s.wait ?? 3)) done(`${spoken(s.target)} is there already: not needed`, { skipped: true });
         else {
           done(`${spoken(s.target)} is not there yet`);
           const r = await this.steps_(s.then ?? [], `${n}.`, ahead);
@@ -517,7 +480,9 @@ export class Runner {
           const r = await this.steps_(s.then ?? [], `${n}.`, ahead);
           if (r) return r;
         } else
-          done(`${spoken(s.target)} did not show${this.skippedFor ? ` (${spoken(this.skippedFor)}, of a later step, did)` : ''}: skipped`);
+          done(`${spoken(s.target)} did not show${this.skippedFor ? ` (${spoken(this.skippedFor)}, of a later step, did)` : ''}: skipped`, {
+            skipped: true,
+          });
         break;
       case 'choose':
         await this.choose(s, fail, done);
@@ -712,7 +677,7 @@ export class Runner {
   }
 
   async confirm(s, fail, done) {
-    const button = await this.waitFor(s.button, s.wait ?? 15, { retap: true });
+    const button = await this.waitFor(s.button, s.wait ?? 15);
     const root = await this.screen();
     const missing = (s.must_show ?? []).filter((t) => !find(root, t).length);
     if (!button || missing.length)

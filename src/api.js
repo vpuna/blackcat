@@ -24,6 +24,8 @@ export { dataPath, ownDataDir, settingsChangedAt, settingsFor } from './plugins/
 export { log } from './log.js';
 // (controlService('stop' | 'start' | 'restart', id): for a plugin that must have its service out of the way while an account is linked.)
 export { controlService, isInstalled, service, show } from './service/units.js';
+// Work that a restart must wait for: → release().
+export { holdRestart } from './service/holds.js';
 
 // ---- whose address is this: names that plugins know for addresses
 export { nameOf, personLabel } from './plugins/people.js';
@@ -56,9 +58,10 @@ export {
   schedule,
   storedSchedule,
 } from './util/schedule.js';
-export { count, errMsg, esc, explainErrors, plural, size, took, usd } from './util/format.js';
+export { callText, count, errMsg, esc, explainErrors, plural, size, took, usd } from './util/format.js';
 // Waiting (`await sleep(ms)`), and a path as a person writes it (`~/notes`).
-export { sleep } from './util/wait.js';
+export { sleep, until } from './util/wait.js';
+export { handOff, handedOff } from './util/handoff.js';
 export { expandHome, resolveHome } from './util/paths.js';
 export { shell, withoutSecrets } from './util/run.js';
 export { duration } from './system.js';
@@ -102,7 +105,7 @@ export const semantic = () => import('./archive/semantic.js');
 export { openWrite as openArchiveForWriting } from './archive/db.js';
 // The owner's account a source collects through, and the rows it stored before that was known.
 export { accountFor, claimRows } from './archive/db.js';
-export { archiveStatements, fileType, mediaRow, messageRow } from './archive/writer.js';
+export { archiveStatements, fileType, mediaRow, messageRow, sourceChanges } from './archive/writer.js';
 // The chats that are blackcat itself (its bot, as your account sees it): never collected, never offered.
 export { ownRefs } from './channels/registry.js';
 

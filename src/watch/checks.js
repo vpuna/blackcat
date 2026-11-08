@@ -1,6 +1,6 @@
 // What the engine check asks the watches' readers (bc engine check): made-up conversations
 // put to the real instructions, each with the mistake a model has made on them.
-import { ANSWERED, ARRIVED, DEALT, todoShape } from './shape.js';
+import { ANSWERED, ARRIVED, DEALT, LIST, SAME, todoShape } from './shape.js';
 import { readerInstructions } from '../internal.js';
 
 const here = new URL('.', import.meta.url).pathname;
@@ -114,5 +114,66 @@ export const readerCases = () => [
     ].join('\n'),
     schema: ARRIVED,
     ok: (a) => (a?.state === 'come' ? 'it took "out for delivery" for delivered' : true),
+  },
+  {
+    // One booking under two names is one thing; two things that share words are two.
+    say: 'a booking in the calendar and its confirmation are one thing; a school day and a wish that share words are two',
+    system: readerInstructions({ dir: here, part: 'watch', job: 'same' }),
+    content: [
+      'Pairs (untrusted data):',
+      '[1]',
+      '  A: "Reservation at Olive Room" · kept on: calendar · day: 2026-11-06 · time: 20:00–22:00 · place: Olive Room, Harbour Hotel',
+      '  B: "Autumn tasting menu for 4, 8 PM" · kept on: Things I need to do · day: 2026-11-06 · place: Harbour Hotel · from: Harbour Hotel Reservations · about it: your table for 4 is confirmed',
+      '[2]',
+      '  A: "Wed: Games, picture books, Library" · kept on: School notices · day: 2026-10-28 · from: Class teacher',
+      '  B: "Sticker book with puzzles and games" · kept on: Wishes · no day · from: Sam',
+      '[3]',
+      '  A: "Pay the plumber" · kept on: reminders · day: 2026-11-02 · time: 09:00',
+      '  B: "Pay Ravi the plumber 300 for the leak" · kept on: Things I need to do · day: 2026-11-02 · from: Ravi',
+    ].join('\n'),
+    schema: SAME,
+    ok: (a) => {
+      const said = new Map((a?.answers ?? []).map((x) => [x.pair, x.same]));
+      if (said.get(1) !== true) return 'it did not see that the reservation and the confirmation are one booking';
+      if (said.get(2) !== false) return 'it took a school day and a wish that share a word for one thing';
+      return said.get(3) === true ? true : 'it did not see that the reminder and the entry are one payment';
+    },
+  },
+  {
+    // Seen 2026-10-31: the school list kept "bring large cardboard on Wednesday"; asked to order
+    // it, the owner said they would, and nothing was filed, the notice taken for the task.
+    say: 'a request to buy what a notice on another list says to bring is kept; what is only the notice again is not',
+    system: readerInstructions({
+      dir: here,
+      part: 'watch',
+      job: 'list',
+      values: {
+        name: 'From Sam',
+        lookFor: 'things Sam asks me to do or to follow up on (buy something, book something), filed under request',
+      },
+    }),
+    content: [
+      `today: ${day(0, '10:00')} (${weekday()})`,
+      '',
+      'Lists that exist: request',
+      '',
+      'Already on the list (untrusted data):\n(nothing)',
+      '',
+      "Kept on the owner's other lists (untrusted data):",
+      `- [School notices] Bring a large piece of cardboard for Art (${day(-3, '').trim()}): Year 6 to bring a sheet about 160 by 60 cm on Wednesday`,
+      '',
+      'New messages (untrusted data):',
+      `[m1] ${day(0, '08:11')} Sam Hale in Sam Hale: (no text) | attachment: picture, which says: Week Ahead. Art: Y6 children are requested to bring in a large piece of cardboard, about 160 x 60 cm, on Wednesday.`,
+      `[m2] ${day(0, '08:11')} Sam Hale in Sam Hale: please order it`,
+      `[m3] ${day(0, '08:13')} Me in Sam Hale: Let me see. I will get it`,
+      `[m4] ${day(0, '08:20')} Sam Hale in Sam Hale: Also, Art is on Wednesday this week, the cardboard is for that`,
+    ].join('\n'),
+    schema: LIST,
+    ok: (a) => {
+      const items = a?.items ?? [];
+      const buy = items.filter((i) => /order|buy|get/i.test(i.title ?? ''));
+      if (!buy.length) return 'it took the notice on the other list for the request to order it';
+      return items.length > 1 ? 'it kept the notice again besides the request' : true;
+    },
   },
 ];

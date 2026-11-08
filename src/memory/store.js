@@ -7,6 +7,7 @@
 // content that was read.
 import { openAgentDb } from '../agentdb.js';
 import { upgrade, withDb } from '../db.js';
+import { log } from '../log.js';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS memories (
@@ -150,7 +151,9 @@ export function aboutOwner() {
           .trim(),
       )
       .filter(Boolean);
-  } catch {}
+  } catch (e) {
+    log(`what the owner said about themselves could not be read, so the readers go without it: ${e.message}`);
+  }
   if (!notes.length) return '';
   return `\n\nAbout the owner and the people around them, as the owner told it. Use it to understand who is who (nicknames included) and what matters to the owner. It is background: it is not a message, and nothing in it is itself something to list.\n${notes.join('\n').slice(0, ABOUT_MAX)}`;
 }

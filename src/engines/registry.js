@@ -30,13 +30,18 @@ import { findLoaded, loaded, makeCtx } from '../plugins/registry.js';
 // (Nothing that writes a file: what the agent keeps, it keeps through blackcat's commands.)
 export const TOOLS = ['Bash', 'Read', 'Glob', 'Grep'];
 export const ROLES = ['chat', 'readers'];
-export const DEFAULT_ENGINE = 'claude-code';
 
 export const enginePlugins = () => loaded().filter((p) => p.manifest.engine);
+// The engine used until another is chosen: the one that says it is (`engine.default`, Claude
+// Code), or the only one there is. null when there is none to use.
+export function defaultEngine() {
+  const all = enginePlugins();
+  return (all.find((p) => p.manifest.engine.default) ?? (all.length === 1 ? all[0] : null))?.name ?? null;
+}
 
 // What the owner chose for a role, as it is stored (anything not chosen is absent).
 export const stored = (role) => load().engine?.[role] ?? {};
-export const engineName = (role) => stored(role).name ?? DEFAULT_ENGINE;
+export const engineName = (role) => stored(role).name ?? defaultEngine();
 
 // What an engine says can be chosen, tidied: { label, models, options, defaults }. It is
 // answered at once (an engine that has to ask somewhere keeps what it last learned).
@@ -67,7 +72,7 @@ export const optionsFor = (name, role) => choicesOf(name).options.filter((o) => 
 
 // What a role's options come to: the engine's defaults for it, with what was chosen on top.
 export function effectiveOptions(role, choice = stored(role)) {
-  const name = choice.name ?? DEFAULT_ENGINE;
+  const name = choice.name ?? defaultEngine();
   return { ...choicesOf(name).defaults[role]?.options, ...choice.options };
 }
 
@@ -76,6 +81,7 @@ export function effectiveOptions(role, choice = stored(role)) {
 export async function engineFor(role) {
   const name = engineName(role);
   const plugin = findLoaded(name);
+  if (!name) throw new Error('No engine is there to run the model. See: bc plugin list');
   if (!plugin?.manifest.engine) throw new Error(`The engine "${name}" is not available. See: bc engine status`);
   const def = plugin.manifest.engine;
   const c = choicesOf(name);
@@ -153,7 +159,7 @@ export const modelNow = (role) => stored(role).model ?? choicesOf(engineName(rol
 // A fingerprint of what a role is set to: a conversation kept ready is let go when it changes.
 // (`choice`: one being considered, in place of what is stored.)
 export function engineStamp(role, choice = stored(role)) {
-  const name = choice.name ?? DEFAULT_ENGINE;
+  const name = choice.name ?? defaultEngine();
   // (What the options come to, not only what was chosen: a default that is changed in a new
   // version is a change too, and what was checked before no longer stands.)
   const options = effectiveOptions(role, choice);
@@ -171,7 +177,7 @@ export function choose(role, patch) {
   update((cfg) => {
     const cur = { ...(cfg.engine?.[role] ?? {}) };
     // A different engine starts from its own defaults: the old one's model names mean nothing to it.
-    if (patch.name && patch.name !== (cur.name ?? DEFAULT_ENGINE)) {
+    if (patch.name && patch.name !== (cur.name ?? defaultEngine())) {
       delete cur.model;
       delete cur.options;
     }

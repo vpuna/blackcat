@@ -42,12 +42,14 @@ process.stdin.on('end', () => {
 `,
 );
 const queue = (...a) => fs.writeFileSync(answers, JSON.stringify(a));
+// (Not counting whether new entries are what is kept already: that is asked after a look, and is not what these are about.)
 const calls = () =>
   fs
     .readFileSync(asked, 'utf8')
     .trim()
     .split('\n')
-    .map((l) => JSON.parse(l));
+    .map((l) => JSON.parse(l))
+    .filter((c) => !String(c.input).startsWith('Pairs (untrusted data)'));
 const plain = () => {
   const { FORCE_COLOR: _f, ...env } = process.env;
   return { ...env, NO_COLOR: '1' };
@@ -164,7 +166,7 @@ test('"Things I need to do": what the reader picks out goes on the list, with it
   });
   const r = await collect(db, getWatch(db, todo.id));
   assert.equal(r.added.length, 1);
-  const [it] = listItems(db, todo.id, { status: 'new,kept' });
+  const [it] = listItems(db, todo.list_id, { status: 'new,kept' });
   assert.deepEqual(
     [it.title, it.category, it.summary, it.msg_id, it.msg_chat],
     ['Reply to Maya about picking up Leo', 'reply', 'she asked and has no answer', m1, 'Maya'],
@@ -175,6 +177,39 @@ test('"Things I need to do": what the reader picks out goes on the list, with it
   assert.match(c.system, /^You are a reader\. You have no tools[\s\S]*\n\nYou pick out what the owner needs to do or answer/);
   assert.doesNotMatch(c.system, /The owner has asked/, 'nothing added, nothing kept out: neither is mentioned');
   assert.match(c.input, new RegExp(`\\[${m1}\\] .* can you pick up Leo on Thursday at 5\\?`));
+  db.close();
+});
+
+test('"Things I need to do": a missed call is read with the rest, and the reader is told to make it a call back', async () => {
+  const db = openWatchDb();
+  const todo = listWatches(db).find((w) => w.builtin === TODO);
+  updateWatch(db, todo.id, { active: 1, sources: { everywhere: 'all', mine: true, calendar: false } });
+  // (What earlier tests left open in this chat would be judged with the call: put it aside.)
+  db.prepare("UPDATE watch_items SET status = 'dropped' WHERE status IN ('new', 'kept')").run();
+  const m = say('Missed voice call');
+  wa.prepare("UPDATE messages SET type = 'call' WHERE id = ?").run(m);
+  queue({
+    data: {
+      items: [
+        {
+          message_id: m,
+          title: 'Call back Maya (missed call)',
+          category: 'reply',
+          summary: 'she called',
+          nudge_at: `${tomorrow} 09:00`,
+          confidence: 0.9,
+        },
+      ],
+    },
+  });
+  const r = await collect(db, getWatch(db, todo.id));
+  assert.deepEqual(
+    r.added.map((x) => x.title),
+    ['Call back Maya (missed call)'],
+  );
+  const c = calls().at(-1);
+  assert.match(c.input, new RegExp(`\\[${m}\\] .* Missed voice call`));
+  assert.match(c.system, /\*\*A missed call\.\*\*.*Its kind is "reply".*"Call back Sam \(missed call\)"/);
   db.close();
 });
 
@@ -221,7 +256,7 @@ test('"Things I need to do": an event carries its day and its place; the other k
     },
   });
   await collect(db, getWatch(db, todo.id));
-  const by = Object.fromEntries(listItems(db, todo.id, { status: 'new,kept' }).map((i) => [i.title, i]));
+  const by = Object.fromEntries(listItems(db, todo.list_id, { status: 'new,kept' }).map((i) => [i.title, i]));
   assert.deepEqual(
     [by["Dinner with Maya at Luigi's, 8pm"].event_date, by["Dinner with Maya at Luigi's, 8pm"].place],
     [tomorrow, "Luigi's"],
@@ -308,7 +343,7 @@ test("a watch's own list: a new entry, an update to one already there, and tidyi
   });
   let r = await collect(db, getWatch(db, w.id));
   assert.equal(r.added.length, 1);
-  const [it] = listItems(db, w.id, { status: 'new,kept' });
+  const [it] = listItems(db, w.list_id, { status: 'new,kept' });
   assert.deepEqual(
     [it.title, it.category, it.place, it.area, it.event_date, it.summary],
     ['Concert at the marina', 'event', 'Marina stage', 'Marina', tomorrow, 'An open-air concert.'],
@@ -322,19 +357,19 @@ test("a watch's own list: a new entry, an update to one already there, and tidyi
   });
   r = await collect(db, getWatch(db, w.id));
   assert.deepEqual([r.added.length, r.updated.length], [0, 1]);
-  assert.equal(listItems(db, w.id, { status: 'new,kept' })[0].summary, 'An open-air concert at 8pm, tickets at the door.');
+  assert.equal(listItems(db, w.list_id, { status: 'new,kept' })[0].summary, 'An open-air concert at 8pm, tickets at the door.');
   // tidying: two entries that are the same thing become one
   const m3 = say('marina gig on Saturday!!');
   queue({ data: { items: [{ message_id: m3, title: 'Marina gig', category: 'event', confidence: 0.8 }] } });
   await collect(db, getWatch(db, w.id));
-  const two = listItems(db, w.id, { status: 'new,kept' });
+  const two = listItems(db, w.list_id, { status: 'new,kept' });
   assert.equal(two.length, 2);
   queue({ data: { groups: [{ ids: two.map((x) => x.id), summary: 'An open-air concert at the marina at 8pm.' }] } });
   const merged = await tidy(db, getWatch(db, w.id));
   assert.equal(merged.length, 1);
   assert.deepEqual(JSON.parse(calls().at(-1).schema), TIDY);
   assert.deepEqual(
-    listItems(db, w.id, { status: 'new,kept' }).map((x) => x.summary),
+    listItems(db, w.list_id, { status: 'new,kept' }).map((x) => x.summary),
     ['An open-air concert at the marina at 8pm.'],
   );
   db.close();
@@ -422,7 +457,7 @@ test("a watch that was already there starts reading the owner's own messages fro
   // as it was before: at step 4, one watch that never asked for the owner's messages, one that did, and the built-in one
   raw.prepare("UPDATE shapes SET step = 4 WHERE part = 'watch'").run();
   raw.exec(
-    'ALTER TABLE watch_items DROP COLUMN checked_ts; ALTER TABLE watch_items DROP COLUMN same_as; ALTER TABLE watch_items DROP COLUMN reference',
+    'ALTER TABLE watch_items DROP COLUMN checked_ts; ALTER TABLE watch_items DROP COLUMN same_as; ALTER TABLE watch_items DROP COLUMN reference; ALTER TABLE watch_items DROP COLUMN outcome; ALTER TABLE watch_items DROP COLUMN outcome_text; ALTER TABLE watch_items DROP COLUMN outcome_ts; ALTER TABLE watch_items DROP COLUMN fields; ALTER TABLE watch_items DROP COLUMN mentioned_ts; DROP TABLE lists; DROP TABLE list_links; ALTER TABLE watches DROP COLUMN list_id; ALTER TABLE watch_items RENAME COLUMN list_id TO watch_id',
   ); // (which came after)
   raw
     .prepare("UPDATE watches SET sources = ? WHERE name = 'Ideas'")
@@ -452,7 +487,7 @@ test("a watch that was already there starts reading the owner's own messages fro
     todoBefore,
     'and so is the built-in one',
   );
-  assert.equal(after.prepare("SELECT step FROM shapes WHERE part = 'watch'").pluck().get(), 9);
+  assert.equal(after.prepare("SELECT step FROM shapes WHERE part = 'watch'").pluck().get(), 12);
   after.close();
 });
 
@@ -481,12 +516,12 @@ test('an entry is changed where it is: it keeps its number, its link, the messag
   const before = db.prepare('SELECT * FROM watch_items WHERE id = ?').get(made.id);
   db.close();
 
-  r = bc('watch', 'edit-item', String(made.id), '--title', 'Fish place lunch 14:00', '--summary', 'Lunch moved to 14:00.', '--json');
+  r = bc('list', 'edit', String(made.id), '--title', 'Fish place lunch 14:00', '--set', 'note=Lunch moved to 14:00.', '--json');
   assert.equal(r.status, 0, r.said);
   const after = (() => {
     const d = openWatchDb();
     const row = d.prepare('SELECT * FROM watch_items WHERE id = ?').get(made.id);
-    const n = d.prepare('SELECT COUNT(*) FROM watch_items WHERE watch_id = ?').pluck().get(id);
+    const n = d.prepare('SELECT COUNT(*) FROM watch_items WHERE list_id = (SELECT list_id FROM watches WHERE id = ?)').pluck().get(id);
     d.close();
     return { row, n };
   })();
@@ -496,11 +531,11 @@ test('an entry is changed where it is: it keeps its number, its link, the messag
   assert.equal(after.n, 1, 'still one entry, not a second one');
   // its day, moved and then taken away; the list it is on
   assert.match(
-    bc('watch', 'edit-item', String(made.id), '--date', '2027-01-02').said,
-    /Item \d+ changed: Fish place lunch 14:00 · 2027-01-02/,
+    bc('list', 'edit', String(made.id), '--set', 'date=2027-01-02').said,
+    /Changed: +\d+ +Fish place lunch 14:00 .*date: 2027-01-02/,
   );
-  assert.equal(bc('watch', 'edit-item', String(made.id), '--date', '').status, 0);
-  assert.equal(bc('watch', 'edit-item', String(made.id), '--list', 'outings').status, 0);
+  assert.equal(bc('list', 'edit', String(made.id), '--unset', 'date').status, 0);
+  assert.equal(bc('list', 'edit', String(made.id), '--set', 'type=outings').status, 0);
   const d2 = openWatchDb();
   assert.deepEqual(d2.prepare('SELECT event_date, category, url FROM watch_items WHERE id = ?').get(made.id), {
     event_date: null,
@@ -509,17 +544,17 @@ test('an entry is changed where it is: it keeps its number, its link, the messag
   });
   d2.close();
   // what is refused, and nothing changes
-  assert.match(bc('watch', 'edit-item', String(made.id)).said, /Say what to change/);
-  assert.match(bc('watch', 'edit-item', String(made.id), '--title', ' ').said, /An entry needs a title/);
-  assert.match(bc('watch', 'edit-item', String(made.id), '--date', 'Saturday').said, /--date is YYYY-MM-DD/);
-  assert.match(bc('watch', 'edit-item', '99999', '--title', 'x').said, /No item 99999/);
+  assert.match(bc('list', 'edit', String(made.id)).said, /Say what to change/);
+  assert.match(bc('list', 'edit', String(made.id), '--title', ' ').said, /An entry needs a title/);
+  assert.match(bc('list', 'edit', String(made.id), '--set', 'date=Saturday').said, /YYYY-MM-DD/);
+  assert.match(bc('list', 'edit', '99999', '--title', 'x').said, /99999/);
   // and the agent is told to change an entry, not to drop it and add another
   const { loadPlugins, findLoaded, makeCtx } = await import('../src/plugins/registry.js');
   await loadPlugins();
   const { notesOf } = await import('../src/plugins/notes.js');
   assert.match(
     notesOf(findLoaded('watch'), makeCtx(findLoaded('watch'))) ?? '',
-    /change that entry with `edit-item`\. Never drop it and add another/,
+    /change that entry with `list edit <id>`.*Never drop it and add another/,
   );
 });
 
@@ -559,7 +594,7 @@ test('two looks at the same moment file a message once, however differently each
     both.map((r) => r.out).join('\n'),
   );
   const after = openWatchDb();
-  const mine = listItems(after, w.id, { status: 'new,kept' }).filter((i) => i.msg_id === m);
+  const mine = listItems(after, w.list_id, { status: 'new,kept' }).filter((i) => i.msg_id === m);
   assert.equal(mine.length, 1, `filed once, not ${mine.length} times: ${mine.map((i) => i.title).join(' | ')}`);
   assert.equal(
     both.reduce((n, r) => n + JSON.parse(r.out).watches[0].added.length, 0),
@@ -584,12 +619,12 @@ test("each reader is shown what the owner's other lists are keeping, and told no
       )
       .run(`X${++n}`, fromMe, Math.floor(Date.now() / 1000) - 60 + n, text);
   addItem(db, {
-    watchId: todo.id,
+    listId: todo.list_id,
     title: 'Waiting on the shop: the table by Tuesday',
     category: 'waiting',
     remindTs: Math.floor(Date.now() / 1000) + 86400,
   });
-  addItem(db, { watchId: ideas.id, title: 'Pottery class on Saturday', category: 'event', eventDate: tomorrow });
+  addItem(db, { listId: ideas.list_id, title: 'Pottery class on Saturday', category: 'event', eventDate: tomorrow });
   // a watch on a chat: told what "Things I need to do" keeps, and not what is on its own list twice
   tell('the shop says the table comes by Tuesday if the factory ships it');
   queue({ data: { items: [] } });
@@ -628,4 +663,15 @@ test("each reader is shown what the owner's other lists are keeping, and told no
   assert.match(calls().at(-2).system, /Write it to them: "you" and "your", never "the owner"/);
   w2.close();
   db.close();
+});
+
+test('a reader is told what kind of file a message has, in the same words whichever source it came from', async () => {
+  await (await import('../src/plugins/registry.js')).loadPlugins();
+  const { fileKind } = await import('../src/watch/collect.js');
+  assert.equal(fileKind({ dl_type: 'ptt', mimetype: 'audio/ogg' }), 'voice note');
+  assert.equal(fileKind({ dl_type: 'document', mimetype: 'application/pdf', fileName: 'form.pdf' }), 'document "form.pdf"');
+  assert.equal(fileKind({ dl_type: 'image', mimetype: 'image/jpeg' }), 'image');
+  assert.equal(fileKind({ dl_type: 'mail', mimetype: 'application/pdf', fileName: 'letter.pdf' }), 'document "letter.pdf"');
+  assert.equal(fileKind({ dl_type: 'tg', mimetype: 'image/jpeg' }), 'picture', 'a Telegram photo is a picture (it was "file")');
+  assert.equal(fileKind({ dl_type: 'tg', mimetype: 'application/zip', fileName: 'x.zip' }), 'document "x.zip"');
 });

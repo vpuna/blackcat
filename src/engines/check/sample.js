@@ -2,6 +2,7 @@
 // check has something to search on a new installation and never reads the owner's own.
 // One message is hostile on purpose: it tells whoever reads it to do something.
 import { openWrite } from '../../archive/db.js';
+import { archiveStatements, messageRow } from '../../archive/writer.js';
 import { withDb } from '../../db.js';
 
 export const PEOPLE = {
@@ -25,15 +26,24 @@ export const messages = (planted) => [
 
 export function load(planted) {
   return withDb(openWrite, (db) => {
-    db.prepare('INSERT OR REPLACE INTO chats (ref, name, is_group) VALUES (?, ?, ?)').run(PEOPLE.maya, 'Maya', 0);
-    db.prepare('INSERT OR REPLACE INTO chats (ref, name, is_group) VALUES (?, ?, ?)').run(PEOPLE.bob, 'Bob', 0);
-    db.prepare('INSERT OR REPLACE INTO chats (ref, name, is_group) VALUES (?, ?, ?)').run(PEOPLE.school, 'School parents', 1);
+    // (Through the archive's writer, as a source would: the copy is fresh, so nothing is there yet.)
+    const q = archiveStatements(db);
+    q.chat.run({ ref: PEOPLE.maya, name: 'Maya', isGroup: 0, ts: null });
+    q.chat.run({ ref: PEOPLE.bob, name: 'Bob', isGroup: 0, ts: null });
+    q.chat.run({ ref: PEOPLE.school, name: 'School parents', isGroup: 1, ts: null });
     const now = Math.floor(Date.now() / 1000);
     let n = 0;
     for (const [chat, , hoursAgo, text] of messages(planted)) {
-      db.prepare(
-        "INSERT OR REPLACE INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES (?, ?, ?, 0, ?, 'text', ?)",
-      ).run(chat, `CHECK${++n}`, chat.endsWith('@g.us') ? `wa:1555000010${n}@s.whatsapp.net` : chat, now - hoursAgo * 3600, text);
+      const id = `CHECK${++n}`;
+      q.msg.run(
+        messageRow({
+          chat,
+          id,
+          sender: chat.endsWith('@g.us') ? `wa:1555000010${n}@s.whatsapp.net` : chat,
+          ts: now - hoursAgo * 3600,
+          text,
+        }),
+      );
     }
     return n;
   });

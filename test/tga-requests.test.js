@@ -10,6 +10,7 @@ import { home } from './helpers.js';
 const dir = home();
 const { save } = await import('../src/config.js');
 save({ plugins: { settings: { tg: { apiId: 1, apiHash: 'h', days: 30, mode: 'all' } } } });
+await (await import('../src/plugins/registry.js')).loadPlugins(); // (the sources are the plugins')
 const { startTgService } = await import('../plugins/tg/service.js');
 const { openWrite } = await import('../src/archive/db.js');
 const { openRequestsDb } = await import('../plugins/tg/requests.js');

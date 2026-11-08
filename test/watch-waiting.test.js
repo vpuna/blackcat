@@ -40,12 +40,14 @@ process.stdin.on('end', () => {
 `,
 );
 const queue = (...a) => fs.writeFileSync(answers, JSON.stringify(a));
+// (Not counting whether new entries are what is kept already: that is asked after a look, and is not what these are about.)
 const calls = () =>
   fs
     .readFileSync(asked, 'utf8')
     .trim()
     .split('\n')
-    .map((l) => JSON.parse(l));
+    .map((l) => JSON.parse(l))
+    .filter((c) => !String(c.input).startsWith('Pairs (untrusted data)'));
 
 // Something to listen with, as a plugin of the owner's own: it "hears" what the file holds.
 fs.mkdirSync(path.join(dir, 'user-plugins/ears'), { recursive: true });
@@ -75,10 +77,12 @@ const { listReminders } = await import('../src/reminders/db.js');
 const wa = openWrite();
 wa.prepare("INSERT INTO chats (ref, name, is_group) VALUES ('wa:111@s.whatsapp.net', 'Maya', 0)").run();
 let n = 0;
+// (Ten minutes ago, but never before midnight: what was asked "today" stays today.)
+const recent = () => Math.max(Math.floor(new Date().setHours(0, 0, 0, 0) / 1000), Math.floor(Date.now() / 1000) - 600);
 const say = (text, fromMe = 0) => {
   wa.prepare(
     "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('wa:111@s.whatsapp.net', ?, 'wa:111@s.whatsapp.net', ?, ?, 'text', ?)",
-  ).run(`W${++n}`, fromMe, Math.floor(Date.now() / 1000) - 600 + n, text);
+  ).run(`W${++n}`, fromMe, recent() + n, text);
   return `W${n}`;
 };
 // A voice note from her: its row, and the file as if it had been fetched already.
@@ -88,7 +92,7 @@ const voice = (content, fromMe = 0) => {
     .prepare(
       "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('wa:111@s.whatsapp.net', ?, 'wa:111@s.whatsapp.net', ?, ?, 'voice', NULL)",
     )
-    .run(id, fromMe, Math.floor(Date.now() / 1000) - 600 + ++n);
+    .run(id, fromMe, recent() + ++n);
   wa.prepare("INSERT INTO media (msg_rowid, dl_type, mimetype, seconds) VALUES (?, 'ptt', 'audio/ogg', 6)").run(r.lastInsertRowid);
   fs.mkdirSync(path.join(MEDIA_DIR, id), { recursive: true });
   fs.writeFileSync(path.join(MEDIA_DIR, id, 'voice.bin'), content);
@@ -386,10 +390,34 @@ test('a back-and-forth in text and voice notes from both of them is read as one 
   assert.match(judged.system, /Read it as one conversation and say where it stands at the end/);
   assert.match(judged.system, /something agreed and then changed is judged by the change/);
   const done = getItem(db, it.id);
-  assert.deepEqual([done.status, done.summary], ['done', 'Answered: she will go ahead, in oak, order kept']);
+  assert.deepEqual([done.status, done.outcome, done.outcome_text], ['done', 'answered', 'she will go ahead, in oak, order kept']);
+  assert.equal(done.summary, 'asked, no answer yet', 'what it was about is kept');
 });
 
-test("the owner's own follow-up alone is not something new to judge", async () => {
+// Seen 2026-10-27: he said someone would drop the covers off, the owner wrote "I just got it,
+// thank you", and nothing more came from him; the entry stayed open, since only what came from
+// him was looked at.
+test('the owner says it came: judged at the next look, and ticked off', async () => {
+  clearOthers();
+  const m = say('can you send the curtains over?', 1);
+  queue({ data: { items: [waitingFor(m, 'Waiting on Maya: the curtains')] } });
+  await collect(db, todo());
+  const it = listItems(db, todo().list_id).find((i) => i.title === 'Waiting on Maya: the curtains');
+  say('someone will drop them off');
+  queue({ data: { state: 'waiting', by: null, why: 'someone will drop them off' } }, { data: { items: [] } });
+  await collect(db, todo());
+  assert.equal(getItem(db, it.id).status, 'new');
+  say('I just got them, thank you', 1);
+  queue({ data: { state: 'answered', by: null, why: 'they came' } }, { data: { items: [] } });
+  await collect(db, todo());
+  const last = calls()
+    .filter((c) => /Said in that conversation since/.test(c.input))
+    .at(-1);
+  assert.match(last.input, /Me: I just got them, thank you/);
+  assert.equal(getItem(db, it.id).status, 'done');
+});
+
+test("the owner's own follow-up alone, with nothing from them, is not something new to judge", async () => {
   clearOthers();
   const m = say('can you send the measurements?', 1);
   queue({ data: { items: [waitingFor(m, 'Waiting on Maya: the measurements')] } });
@@ -424,7 +452,7 @@ test('put off, or promised, for a later day: the owner goes on waiting until the
   assert.equal(now.status, 'new', 'still open');
   assert.ok(now.remind_ts > first, 'expected later than it was');
   assert.equal(new Date(now.remind_ts * 1000).getHours(), 18);
-  assert.equal(now.summary, 'Since then: put off to Tuesday: cancelled by then if it has not shipped');
+  assert.deepEqual([now.outcome, now.outcome_text], ['later', 'put off to Tuesday: cancelled by then if it has not shipped']);
   assert.equal(nudges().length, before, 'and nothing is said: it is not late');
   const judged = calls().find((c) => /sofa ships/.test(c.input) && /Said in that conversation since/.test(c.input));
   assert.match(judged.input, /^now: \d{4}-\d\d-\d\d \d\d:\d\d \(\w+\)\n/, 'it is told the time, to work out "Tuesday"');
@@ -459,6 +487,22 @@ test('what was answered is said once in the briefing, since nothing else says it
   await collect(db, todo());
   assert.equal(getItem(db, it.id).status, 'done');
   assert.match(await briefing(), /✓ Maya: update on the curtains · answered: she is dropping them off within the hour/);
+});
+
+// (W2 of the audit of 2026-10-24: what an entry came to was written into its summary, and only
+// when the reader gave a reason; one ticked off without one was never said.)
+test('answered with no reason given: still said in the briefing, and what it was about is kept', async () => {
+  clearOthers();
+  const m = say('did the electrician confirm Thursday?', 1);
+  queue({ data: { items: [waitingFor(m, 'Waiting on Maya: whether the electrician confirmed')] } });
+  await collect(db, todo());
+  const it = listItems(db, todo().id, { status: 'new,kept' }).find((x) => x.title.includes('electrician confirmed'));
+  say('yes, Thursday at 10');
+  queue({ data: { state: 'answered', by: null, why: '' } }, { data: { items: [] } });
+  await collect(db, todo());
+  const after = getItem(db, it.id);
+  assert.deepEqual([after.status, after.outcome, after.outcome_text, after.summary], ['done', 'answered', null, 'asked, no answer yet']);
+  assert.match(await briefing(), /✓ Maya: whether the electrician confirmed · answered\n/);
 });
 
 test('an answer from the reader that cannot be used stops only that entry, not the look', async () => {
@@ -681,9 +725,8 @@ test('what something came to is kept whole or cut at a word, never in the middle
   say('I will send it on Monday, the office is closed until then');
   queue({ data: { state: 'later', by: `${tomorrow} 18:00`, why: `Since then: ${long}` } });
   await collect(db, todo());
-  const kept = getItem(db, it.id).summary;
-  assert.match(kept, /^Since then: Tom agreed/);
-  assert.doesNotMatch(kept, /Since then:.*Since then:/, 'the lead-in is there once');
+  const kept = getItem(db, it.id).outcome_text;
+  assert.match(kept, /^Tom agreed/, 'without the lead-in the reader put before it');
   assert.ok(/[.;…]$/.test(kept), `not cut in a word: "…${kept.slice(-30)}"`);
 });
 
@@ -789,7 +832,7 @@ test('what the owner owes and then did: ticked off, said once in the briefing wi
   assert.ok(!nudges().some((r) => r.item_id === it.id && r.status === 'pending'), 'its nudge is not sent');
   assert.match(
     await briefing(),
-    /Done, by the look of it\n✓ Send Lena the photos from Saturday · done: you sent saturday-photos\.zip today \[item \d+\]\nNot done after all\? bc watch item <id> keep/,
+    /Done, by the look of it\n✓ Send Lena the photos from Saturday · done: you sent saturday-photos\.zip today \[item \d+\]\nNot done after all\? bc list mark <id> open/,
   );
   const { composeBriefing } = await import('../src/watch/briefing.js');
   const b = await composeBriefing(db, todo().chat_id);
@@ -808,9 +851,34 @@ test('not sure, or only promised: it stays open; a later time named moves its nu
   queue({ data: { state: 'later', by: `${ymd} 10:00`, why: 'put off to payday', confidence: 0.9 } });
   await collect(db, todo());
   const now = getItem(db, it.id);
-  assert.deepEqual([now.status, now.summary], ['new', 'Since then: put off to payday']);
+  assert.deepEqual([now.status, now.outcome, now.outcome_text], ['new', 'later', 'put off to payday']);
   const nudge = nudges().find((r) => r.item_id === it.id && r.status === 'pending');
   assert.equal(new Date(nudge.due_ts * 1000).getDate(), day.getDate(), 'its nudge moved to the day named');
+});
+
+test('a missed call, then a call that went on, whoever rang: the reader judges it with no word written, and the call back is ticked off', async () => {
+  const rang = (text, fromMe = 0) => {
+    const id = lena(text, fromMe);
+    wa.prepare("UPDATE messages SET type = 'call' WHERE id = ?").run(id);
+    return id;
+  };
+  db.prepare("UPDATE watch_items SET status = 'dropped' WHERE status IN ('new', 'kept')").run();
+  const m = rang('Missed voice call');
+  queue({
+    data: {
+      items: [{ message_id: m, title: 'Call back Lena (missed call)', category: 'reply', nudge_at: `${tomorrow} 18:00`, confidence: 0.9 }],
+    },
+  });
+  await collect(db, todo());
+  const it = listItems(db, todo().id, { status: 'new,kept' }).find((x) => x.title === 'Call back Lena (missed call)');
+  rang('Voice call, 12 min');
+  queue({ data: { state: 'done', by: null, why: 'you spoke for 12 minutes today', confidence: 0.95 } });
+  await collect(db, todo());
+  const judged = dealtCalls().at(-1);
+  assert.match(judged.input, /The entry \(reply\): Call back Lena \(missed call\)/);
+  assert.match(judged.input, /- .* \+222: Voice call, 12 min/);
+  assert.match(judged.system, /"Voice call, 12 min" went on, so the two of them spoke/);
+  assert.equal(getItem(db, it.id).status, 'done');
 });
 
 // ---- what is still to come: bookings, and things on their way ----
@@ -907,7 +975,10 @@ test('a booking: under "Coming up" with its day; moved, its day and nudge move; 
   queue({ data: { state: 'moved', date: inDays(12), why: `moved to ${inDays(12)}` } }, { data: { items: [] } });
   await collect(db, todo());
   const moved = getItem(db, it.id);
-  assert.deepEqual([moved.status, moved.event_date, moved.summary], ['new', inDays(12), `Moved: moved to ${inDays(12)}`]);
+  assert.deepEqual(
+    [moved.status, moved.event_date, moved.outcome, moved.outcome_text],
+    ['new', inDays(12), 'moved', `moved to ${inDays(12)}`],
+  );
   const nudge = nudges().find((r) => r.item_id === it.id && r.status === 'pending');
   assert.equal(new Date(nudge.due_ts * 1000).getDate(), new Date(Date.now() + 11 * 86400000).getDate(), 'the evening before its new day');
   courier('HX93021: your booking has been cancelled.');
@@ -915,4 +986,39 @@ test('a booking: under "Coming up" with its day; moved, its day and nudge move; 
   await collect(db, todo());
   assert.equal(getItem(db, it.id).status, 'done');
   assert.match(await briefing(), /✓ Harbour Hotel, two nights · cancelled: cancelled by the hotel/);
+});
+
+test('entries from before: what they came to is moved out of the summary into its own place', async () => {
+  const w = todo().list_id;
+  const add = db.prepare(
+    'INSERT INTO watch_items (list_id, title, category, summary, status, created_ts, checked_ts) VALUES (?, ?, ?, ?, ?, 1, ?)',
+  );
+  const a = add.run(w, 'Waiting on Maya: the keys', 'waiting', 'Answered: she left them at the desk', 'done', 500).lastInsertRowid;
+  const b = add.run(w, 'A parcel', 'expected', 'Moved: now on the 3rd', 'new', null).lastInsertRowid;
+  const c = add.run(w, 'Call the bank', 'commitment', 'About the card', 'new', null).lastInsertRowid;
+  // (as the tables were before step 10, and so before lists stood by themselves, step 11)
+  for (const col of ['outcome', 'outcome_text', 'outcome_ts', 'fields', 'mentioned_ts'])
+    db.exec(`ALTER TABLE watch_items DROP COLUMN ${col}`);
+  db.exec('DROP TABLE lists; DROP TABLE list_links; ALTER TABLE watches DROP COLUMN list_id');
+  db.exec('ALTER TABLE watch_items RENAME COLUMN list_id TO watch_id');
+  db.prepare("UPDATE shapes SET step = 9 WHERE part = 'watch'").run();
+  const again = openWatchDb();
+  const row = (id) => again.prepare('SELECT summary, outcome, outcome_text, outcome_ts FROM watch_items WHERE id = ?').get(id);
+  assert.deepEqual(row(a), {
+    summary: 'she left them at the desk',
+    outcome: 'answered',
+    outcome_text: 'she left them at the desk',
+    outcome_ts: 500,
+  });
+  assert.deepEqual(row(b), { summary: 'now on the 3rd', outcome: 'moved', outcome_text: 'now on the 3rd', outcome_ts: 1 });
+  assert.deepEqual(row(c), { summary: 'About the card', outcome: null, outcome_text: null, outcome_ts: null });
+});
+
+test('an entry given the link another one has is told so, by what the database said', async () => {
+  const { edit } = await import('../src/lists/commands.js');
+  const w = todo().list_id;
+  const add = db.prepare("INSERT INTO watch_items (list_id, title, url, status, created_ts) VALUES (?, ?, ?, 'new', 1)");
+  add.run(w, 'The school form', 'https://example.org/form');
+  const other = add.run(w, 'Another form', null).lastInsertRowid;
+  await assert.rejects(edit(String(other), { set: ['link=https://example.org/form'] }), /already has that link/);
 });

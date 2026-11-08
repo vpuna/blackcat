@@ -204,19 +204,8 @@ tell whether its system is well (bc ha check, bc unifi check, and so on).`,
       s.once('run', async () => {
         const out = await s.runJob(['check', 'run', '--due', '--json']);
         if (!out) return;
-        const { findingButtons } = await chat();
-        for (const c of JSON.parse(out).checks) {
-          for (const n of c.notices ?? []) {
-            s.ctx.log(`"${c.name}": ${n.text}`);
-            if (ui && c.chatId != null)
-              await ui
-                .send(c.chatId, n.text, {
-                  what: `about the check "${c.name}"`,
-                  ...(n.finding ? { actions: findingButtons(n.finding, n.fix) } : {}),
-                })
-                .catch((e) => s.ctx.log(`could not send: ${e.message}`));
-          }
-        }
+        const { tellOwner } = await chat();
+        for (const c of JSON.parse(out).checks) await tellOwner(ui, c, s.ctx.log);
       });
     },
   },
@@ -245,6 +234,8 @@ tell whether its system is well (bc ha check, bc unifi check, and so on).`,
     const { fixAllowed } = await import('./check.js');
     return withDb(openChecksDb, (db) => listChecks(db)).map((c) => ({
       name: c.name,
+      // (A check tells the owner itself when it is not working: `bc health` leaves it out.)
+      told: true,
       run: () => {
         if (!c.active) return { skip: 'paused' };
         if (c.wrong?.open) throw new Error(`not working: ${c.wrong.title}`);

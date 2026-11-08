@@ -10,7 +10,7 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import readline from 'node:readline';
 import pc from 'picocolors';
-import { setQuiet } from '../log.js';
+import { muteLog } from '../log.js';
 import { shellTokens } from '../plugins/access.js';
 import { loadPlugins, loaded, makeCtx, mountOf } from '../plugins/registry.js';
 import { CODE_DIR } from '../service/units.js';
@@ -81,7 +81,7 @@ function recapText(r) {
 }
 
 export async function chat(words, opts) {
-  setQuiet(true);
+  muteLog(true);
   const interactive = !!(process.stdin.isTTY && process.stdout.isTTY);
   if (words.length) return oneQuestion(words.join(' '), opts, interactive);
   if (!interactive) {

@@ -181,7 +181,7 @@ test("the briefing says who organised an appointment, and the item's card too", 
   const todo = listWatches(db).find((w) => w.builtin === TODO);
   updateWatch(db, todo.id, { active: 1, sources: { everywhere: 'all', mine: true, calendar: true } });
   await syncAgenda(db);
-  const items = Object.fromEntries(listItems(db, todo.id, { status: 'new,kept' }).map((i) => [i.title, i]));
+  const items = Object.fromEntries(listItems(db, todo.list_id, { status: 'new,kept' }).map((i) => [i.title, i]));
   assert.equal(items['Budget review'].msg_sender, 'Priya Nair (priya@work.example)');
   assert.equal(items['Service visit'].msg_sender, 'City Garage (bookings@garage.example)');
   assert.equal(items.Gym.msg_sender, null);
@@ -199,8 +199,80 @@ test("the briefing says who organised an appointment, and the item's card too", 
   again.prepare("UPDATE watch_items SET msg_sender = NULL WHERE title = 'Service visit'").run();
   await syncAgenda(again);
   assert.equal(
-    listItems(again, todo.id, { status: 'new,kept' }).find((i) => i.title === 'Service visit').msg_sender,
+    listItems(again, todo.list_id, { status: 'new,kept' }).find((i) => i.title === 'Service visit').msg_sender,
     'City Garage (bookings@garage.example)',
   );
+  again.close();
+});
+
+test('an event in the calendar that the list has from a mail too is marked "may be the same as" it, on that day only, and no longer once that one goes; the briefing shows it once', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const { addItem, getItem, openWatchDb, listWatches, listItems, setItemStatus, TODO } = await import('../src/watch/db.js');
+  const { syncAgenda } = await import('../src/watch/agenda.js');
+  const db = openWatchDb();
+  const todo = listWatches(db).find((w) => w.builtin === TODO);
+  const today = new Date().toLocaleDateString('en-CA');
+  const later = new Date(Date.now() + 3 * 86400000).toLocaleDateString('en-CA');
+  // filed from mails: the same meeting today, one with the same words on another day, and something else today
+  const mail = addItem(db, {
+    listId: todo.list_id,
+    title: 'Budget review with Priya',
+    category: 'event',
+    eventDate: today,
+    msgId: 'mail:home:1',
+  });
+  addItem(db, { listId: todo.list_id, title: 'Budget review with Priya', category: 'event', eventDate: later, msgId: 'mail:home:2' });
+  addItem(db, { listId: todo.list_id, title: 'Pay the gas bill', category: 'deadline', eventDate: today, msgId: 'mail:home:3' });
+  const { sameAsOf } = await import('../src/watch/db.js');
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const asked = path.join(process.env.BLACKCAT_HOME, 'reader-calls');
+  process.env.FAKE_READER_LOG = asked;
+  const calls = () => (fs.existsSync(asked) ? fs.readFileSync(asked, 'utf8').split('\n').filter(Boolean).length : 0);
+  let at = db;
+  const cal = (title) => listItems(at, todo.list_id, { status: 'new,kept' }).find((i) => i.title === title && i.msg_id.startsWith('cal:'));
+  // no answer to go by: the words decide (the gas bill, the same day, has none in common)
+  process.env.FAKE_READER_REPLY = '{}';
+  await syncAgenda(db);
+  assert.deepEqual(
+    sameAsOf(cal('Budget review')).map((k) => k.id),
+    [mail.id],
+  );
+  // judged: the meeting is it, the gas bill is not; and what was judged is not asked again
+  process.env.FAKE_READER_REPLY = JSON.stringify({
+    answers: [
+      { pair: 1, same: true },
+      { pair: 2, same: false },
+    ],
+  });
+  await syncAgenda(db);
+  assert.deepEqual(
+    sameAsOf(cal('Budget review')).map((k) => k.id),
+    [mail.id],
+  );
+  assert.equal(JSON.parse(cal('Budget review').same_as).length, 2, 'the "no" is kept too');
+  const before = calls();
+  await syncAgenda(db);
+  assert.equal(calls(), before, 'nothing asked again');
+  delete process.env.FAKE_READER_REPLY;
+  delete process.env.FAKE_READER_LOG;
+  assert.deepEqual(sameAsOf(cal('Gym')), []);
+  db.close();
+  const { FORCE_COLOR: _f, ...env } = process.env;
+  const out = spawnSync(process.execPath, [new URL('../bin/bc.js', import.meta.url).pathname, 'watch', 'briefing', '--print', '--peek'], {
+    encoding: 'utf8',
+    env,
+  }).stdout;
+  // shown once, as the calendar's (with its time); the one on another day is still there
+  assert.match(out, /📅 \S+ Budget review · organised by/);
+  assert.doesNotMatch(out, /may be the same as/);
+  assert.doesNotMatch(out, new RegExp(`\\[item ${mail.id}\\]`));
+  assert.match(out, /Budget review with Priya/);
+  // the mail's entry dropped: the calendar's is no longer marked
+  const again = openWatchDb();
+  at = again;
+  setItemStatus(again, mail.id, 'dropped');
+  await syncAgenda(again);
+  assert.deepEqual(sameAsOf(getItem(again, cal('Budget review').id)), []);
   again.close();
 });

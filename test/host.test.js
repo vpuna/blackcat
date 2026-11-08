@@ -98,6 +98,28 @@ test('and by the command itself when the path is hidden behind a wildcard, a var
   }
 });
 
+// (S3 of the audit of 2026-10-24: a word with no slash or dot was taken for no path, and what
+// the command ran saw the engine's key in supervised mode.)
+test('a folder named without a slash is a path too: the one in the home folder, where commands run', () => {
+  const r = spawnSync(process.execPath, [`${root}bin/bc.js`, 'host', 'run', `grep -r SECRET ${path.basename(dir)}`], {
+    encoding: 'utf8',
+    env: { ...process.env, BLACKCAT_CALLER: 'agent', HOME: path.dirname(dir) },
+  });
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /private files or folders/);
+  assert.doesNotMatch(r.stdout + r.stderr, /SECRET-(BOT-TOKEN|MAIL-PASSWORD|IN-DATA-ROOT)/);
+});
+
+test("what it runs does not see the keys and logins blackcat was started with, the engine's among them", () => {
+  const r = spawnSync(process.execPath, [`${root}bin/bc.js`, 'host', 'run', 'env'], {
+    encoding: 'utf8',
+    env: { ...process.env, BLACKCAT_CALLER: 'agent', ANTHROPIC_AUTH_TOKEN: 'SECRET-ENGINE-KEY', SOMETHING_ELSE: 'plain' },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(r.stdout, /SECRET-ENGINE-KEY/);
+  assert.match(r.stdout, /SOMETHING_ELSE=plain/, 'the rest of the environment is there');
+});
+
 test('ordinary files and the folders the agent may read are not affected', () => {
   assert.match(asAgent(`cat ${outside}/notes.txt`).stdout, /ordinary notes/);
   assert.match(asAgent(`cat ${dir}/data/inbox/hello.txt`).stdout, /a file the owner sent/);

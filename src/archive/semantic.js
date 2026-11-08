@@ -459,8 +459,7 @@ export async function find(questions, { chat, since, until, limit = 8, source, o
             }
             const found = new Map(); // window id → { matched, order }
             hits.forEach((h, order) => {
-              const w =
-                windowAt.get(h.chatRef, h.ts, h.ts) ?? (h.chatRef.startsWith('wa:') ? windowAt.get(h.chatRef.slice(3), h.ts, h.ts) : null);
+              const w = windowAt.get(h.chatRef, h.ts, h.ts);
               if (!w || found.has(w.id)) return;
               const text = w.text.toLowerCase();
               const matched = words.filter((x) => new RegExp(`(^|[^\\p{L}\\p{N}])${x}`, 'u').test(text)).length;

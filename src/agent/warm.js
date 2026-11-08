@@ -16,6 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CONFIG_FILE, DATA, load } from '../config.js';
 import { log } from '../log.js';
+import { backoff } from '../service/supervisor.js';
 
 export const SOCKET = path.join(DATA, 'run', 'commands.sock');
 const WORKER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'warm-worker.js');
@@ -36,6 +37,7 @@ export function startWarm() {
   let timer = null;
   const stats = { handed: 0, declined: 0 };
 
+  let fails = 0; // (how many times in a row the spare has died before it was used)
   function spawnSpare() {
     if (stopped || spare) return;
     // In a process group of its own, so that if its caller goes away mid-command, the command
@@ -51,12 +53,16 @@ export function startWarm() {
       // The settings as they were once it had loaded (loading can itself tidy the settings file).
       if (m === 'ready') ((mine.stamp = configStamp()), (mine.ready = true));
     });
-    child.on('error', () => {});
-    child.on('exit', () => {
+    child.on('error', (e) => log(`the spare worker could not be started: ${e.message}`));
+    child.on('exit', (code, signal) => {
       if (spare !== mine) return;
-      // It ended before it was used (it failed to load): try again, but not in a tight loop.
+      // It ended before it was used (it failed to load): said, and tried again, waiting longer
+      // each time it keeps failing, as the supervisor does with a service.
       spare = null;
-      if (!stopped) setTimeout(spawnSpare, 5000).unref();
+      const next = backoff(fails, Date.now() - mine.born);
+      fails = next.fails;
+      log(`the spare worker ended before it was used (${signal ?? `exit ${code}`}): again in ${next.wait / 1000} s`);
+      if (!stopped) setTimeout(spawnSpare, next.wait).unref();
     });
   }
   function retire() {

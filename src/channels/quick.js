@@ -5,7 +5,8 @@ import crypto from 'node:crypto';
 import { ownerDid } from '../activity/log.js';
 import { log } from '../log.js';
 import { loaded, makeCtx } from '../plugins/registry.js';
-import { tell } from '../agent/brain.js';
+import { afterTurn, tell } from '../agent/brain.js';
+import { forget, learnFrom, pluginOf, recall, usedOnce } from './learned.js';
 
 // The quick route: before a message goes to the agent, each plugin gets a chance to handle
 // it directly (`telegram.quick` in its manifest). A plugin takes a message only when it
@@ -30,38 +31,66 @@ export const inOrder = () => {
   return [...all.filter((p) => chatHooks(p).quickFirst), ...all.filter((p) => !chatHooks(p).quickFirst)];
 };
 
+// What a plugin's quick route made of the message, carried out. `learned`: it was a wording
+// learned from the agent (learned.js), offered to be forgotten the first few times it is used.
+async function take(c, p, r, t0, learned = null) {
+  const how = learned ? 'done directly, as learned' : 'done directly';
+  if (r.confirm) {
+    const id = crypto.randomBytes(5).toString('hex');
+    pending.set(id, { run: r.run, chatId: c.chat });
+    setTimeout(() => pending.delete(id), 2 * 60_000).unref();
+    await c.reply(r.confirm, { actions: actions().add('✅ Yes', `qk:${id}:y`).add('✖ No', `qk:${id}:n`) });
+  } else if (r.answer) {
+    if (r.note) tell(c.conversation, r.note);
+    const after = (await r.answer(c))?.note;
+    ownerDid(how, `${p.name}: ${after ?? r.note ?? 'answered'}`, { surface: 'chat', ms: Date.now() - t0 });
+    if (after) tell(c.conversation, after);
+  } else {
+    ownerDid(how, `${p.name}: ${r.note ?? 'answered'}`, { surface: 'chat', ms: Date.now() - t0 });
+    await finish(c, r);
+  }
+  if (!learned) return;
+  usedOnce(learned.id);
+  if (learned.uses < OFFER_FORGET)
+    await c.reply(`↪️ As when you said “${learned.wording}” before.`, { actions: actions().add('Not what I meant', `lw:${learned.id}`) });
+}
+const OFFER_FORGET = 3; // uses on which "Not what I meant" is offered
+
 // → true if the message was handled here and must not go to the agent.
 export async function tryQuick(c, text) {
   for (const p of inOrder()) {
-    const quick = chatHooks(p).quick;
     const t0 = Date.now();
-    let r = null;
-    try {
-      r = await quick(text, { ctx: makeCtx(p, { caller: 'owner', surface: 'chat' }) });
-    } catch (e) {
-      log(`quick route of ${p.name} failed, leaving it to the agent: ${e.message}`);
-    }
+    const r = await ask(p, text);
     if (!r) continue;
-    if (r.confirm) {
-      const id = crypto.randomBytes(5).toString('hex');
-      pending.set(id, { run: r.run, chatId: c.chat });
-      setTimeout(() => pending.delete(id), 2 * 60_000).unref();
-      await c.reply(r.confirm, { actions: actions().add('✅ Yes', `qk:${id}:y`).add('✖ No', `qk:${id}:n`) });
-    } else if (r.answer) {
-      if (r.note) tell(c.conversation, r.note);
-      const after = (await r.answer(c))?.note;
-      ownerDid('done directly', `${p.name}: ${after ?? r.note ?? 'answered'}`, { surface: 'chat', ms: Date.now() - t0 });
-      if (after) tell(c.conversation, after);
-    } else {
-      ownerDid('done directly', `${p.name}: ${r.note ?? 'answered'}`, { surface: 'chat', ms: Date.now() - t0 });
-      await finish(c, r);
-    }
+    await take(c, p, r, t0);
     return true;
   }
-  return false;
+  // Words learned from the agent: what it did for them, by the plugin's own quick route.
+  const l = recall(text);
+  const p = l && pluginOf(l);
+  const r = p && (await ask(p, l.words));
+  if (!r) return false;
+  await take(c, p, r, Date.now(), l);
+  return true;
+}
+
+async function ask(p, text) {
+  try {
+    return (await chatHooks(p).quick(text, { ctx: makeCtx(p, { caller: 'owner', surface: 'chat' }) })) ?? null;
+  } catch (e) {
+    log(`quick route of ${p.name} failed, leaving it to the agent: ${e.message}`);
+    return null;
+  }
 }
 
 export function installQuick() {
+  afterTurn(learnFrom);
+  ui.action(/^lw:(\d+)$/, async (c) => {
+    await c.clearActions().catch(() => {});
+    await c.reply(
+      forget(Number(c.match[1])) ? 'Forgotten: the next time you say it, it goes to the agent.' : 'That was forgotten already.',
+    );
+  });
   ui.action(/^qk:([0-9a-f]+):([yn])$/, async (c) => {
     const p = pending.get(c.match[1]);
     pending.delete(c.match[1]);

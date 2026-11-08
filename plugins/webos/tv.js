@@ -6,7 +6,19 @@
 import dgram from 'node:dgram';
 import { PluginError, sleep } from '../../src/api.js';
 
-export class TvError extends PluginError {}
+// `code`: what kind of failure, for code to go by (the message is for people):
+//   offline   nothing answers at the TV's address
+//   starting  it takes a connection and drops it, or does not answer on it: turning off or on
+//   closed    it closed the connection mid-request
+//   timeout   it did not answer a request in time
+export class TvError extends PluginError {
+  constructor(message, code = null) {
+    super(message);
+    this.code = code;
+  }
+}
+// Not there to talk to (off, or not on the network), as opposed to a TV that answered "no".
+export const unreachable = (e) => e instanceof TvError && (e.code === 'offline' || e.code === 'starting');
 
 const PORTS = [
   ['wss', 3001],
@@ -112,7 +124,7 @@ export class Tv {
         why = e.code ?? e.message;
       }
     }
-    if (!this.ws) throw new TvError(`The TV at ${this.host} does not answer (${why}): is it on, and on this network?`);
+    if (!this.ws) throw new TvError(`The TV at ${this.host} does not answer (${why}): is it on, and on this network?`, 'offline');
     // (Paired over the encrypted connection, it answers on it again, with the same certificate.)
     if (this.pin && this.cert !== this.pin) {
       await this.close();
@@ -130,7 +142,7 @@ export class Tv {
       this.waiting.get(m.id)?.(m);
     });
     this.ws.on('close', () => {
-      for (const done of [...this.waiting.values()]) done({ type: 'error', error: 'the TV closed the connection' });
+      for (const done of [...this.waiting.values()]) done({ type: 'error', error: 'the TV closed the connection', closed: true });
     });
     return this;
   }
@@ -141,7 +153,7 @@ export class Tv {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.waiting.delete(id);
-        reject(new TvError(`The TV did not answer ${uri ?? type} in time.`));
+        reject(new TvError(`The TV did not answer ${uri ?? type} in time.`, 'timeout'));
       }, ms);
       this.waiting.set(id, (m) => {
         if (type === 'register' && m.type === 'response' && m.payload?.pairingType) {
@@ -154,7 +166,7 @@ export class Tv {
         }
         clearTimeout(timer);
         this.waiting.delete(id);
-        if (m.type === 'error') reject(new TvError(said(m.error, uri)));
+        if (m.type === 'error') reject(m.closed ? new TvError('The TV closed the connection.', 'closed') : new TvError(said(m.error, uri)));
         else resolve(m);
       });
       this.ws.send(JSON.stringify({ id, type, ...(uri ? { uri: `ssap://${uri}` } : {}), payload }));
@@ -241,8 +253,8 @@ export async function withTv(host, { key, pin, ports }, fn) {
     } catch (e) {
       // (One turning off, or just turned on, takes a connection and then drops it, or never
       // answers on it: that is a TV not answering yet, not one that no longer knows this machine.)
-      if (/closed the connection|did not answer/.test(e.message))
-        throw new TvError(`The TV at ${host} does not answer yet: it is turning off or on.`);
+      if (e.code === 'closed' || e.code === 'timeout')
+        throw new TvError(`The TV at ${host} does not answer yet: it is turning off or on.`, 'starting');
       throw new TvError(`The TV at ${host} did not let this machine in (${e.message.replace(/\.$/, '')}): pair it again.`);
     }
     return await fn(tv);
@@ -265,7 +277,7 @@ export const MAC = /^([0-9a-f]{2}[:-]){5}[0-9a-f]{2}$/i;
 // The wake-up packet for a network card: six 0xFF bytes, then its address sixteen times, sent to
 // everyone on the network (and to the TV's own address, for a network that drops broadcasts).
 export function magic(mac) {
-  if (!MAC.test(mac)) throw new TvError(`"${mac}" is not a network card's address (like 58:96:0a:77:df:aa).`);
+  if (!MAC.test(mac)) throw new TvError(`"${mac}" is not a network card's address (like 00:00:5e:00:53:01).`);
   const card = Buffer.from(mac.split(/[:-]/).map((b) => parseInt(b, 16)));
   return Buffer.concat([Buffer.alloc(6, 0xff), ...Array(16).fill(card)]);
 }

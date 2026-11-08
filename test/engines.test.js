@@ -142,7 +142,7 @@ test('a new choice is taken up by the next message, on the same conversation', a
   const before = lines(claudeLog).length;
   await brain.reply(CHAT, 'one');
   assert.equal(lines(claudeLog).length, before, 'nothing changed: the process kept ready answers');
-  const conv = conversations.list({ channel: 'tg-bot', chat: CHAT })[0];
+  const conv = conversations.list({ channel: 'chat', chat: CHAT })[0];
   fs.mkdirSync(path.join(dir, '.claude/projects', path.join(dir, 'agent').replace(/[^A-Za-z0-9]/g, '-')), { recursive: true });
   eng.choose('chat', { model: 'sonnet' });
   assert.equal(await brain.reply(CHAT, 'two'), 'claude heard: two');
@@ -150,7 +150,7 @@ test('a new choice is taken up by the next message, on the same conversation', a
   assert.equal(lines(claudeLog).length, before + 1, 'a process was started with the new choice');
   assert.equal(argAfter(start.args, '--model'), 'sonnet');
   assert.equal(argAfter(start.args, '--resume'), 'sess-c', 'and it carries the conversation on');
-  assert.equal(conversations.list({ channel: 'tg-bot', chat: CHAT })[0].id, conv.id);
+  assert.equal(conversations.list({ channel: 'chat', chat: CHAT })[0].id, conv.id);
 });
 
 test('the readers ask through their own engine and model, with no tools', async () => {
@@ -183,14 +183,14 @@ test("a different engine starts from its own defaults; the old one's model means
 });
 
 test("the conversation carries over to the new engine from blackcat's own record", async () => {
-  const conv = conversations.list({ channel: 'tg-bot', chat: CHAT })[0];
+  const conv = conversations.list({ channel: 'chat', chat: CHAT })[0];
   const answer = await brain.reply(CHAT, 'and now?');
   const start = lines(startsLog).at(-1);
   assert.equal(start.resume, null, "the other engine's conversation is not offered to this one");
   assert.match(answer, /^parrot heard: \[You are continuing an earlier conversation with the owner/);
   assert.match(answer, /claude heard: two/, 'it is told what was said');
   assert.match(answer, /and now\?$/);
-  const now = conversations.list({ channel: 'tg-bot', chat: CHAT })[0];
+  const now = conversations.list({ channel: 'chat', chat: CHAT })[0];
   assert.equal(now.id, conv.id, 'it is the same conversation');
   // and it was given exactly what any engine is given: the four tools, the caller, the chat
   assert.deepEqual(start.tools, ['Bash', 'Read', 'Glob', 'Grep']);
@@ -446,4 +446,19 @@ test('a plugin that calls itself an engine but cannot hold a conversation is not
   const r = bc(['plugin', 'enable', 'half']);
   assert.match(r.stderr + r.stdout, /engine\.converse must be a function/);
   assert.ok(!JSON.parse(bc(['engine', 'status', '--json']).stdout).engines.some((e) => e.name === 'half'));
+});
+
+test('the engine used until another is chosen is the one that says it is, or the only one there is; with none, that is said', async () => {
+  const was = load();
+  assert.equal(eng.defaultEngine(), 'claude-code', 'Claude Code says it is the default');
+  save({ ...was, engine: undefined, plugins: { ...was.plugins, enabled: ['parrot'], disabled: ['claude-code'] } });
+  await loadPlugins();
+  assert.equal(eng.defaultEngine(), 'parrot', 'the only one there is');
+  assert.equal(eng.engineName('chat'), 'parrot');
+  save({ ...was, engine: undefined, plugins: { ...was.plugins, enabled: [], disabled: ['claude-code', 'parrot'] } });
+  await loadPlugins();
+  assert.equal(eng.defaultEngine(), null);
+  await assert.rejects(eng.engineFor('chat'), /No engine is there to run the model/);
+  save(was);
+  await loadPlugins();
 });

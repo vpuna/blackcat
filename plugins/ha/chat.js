@@ -4,7 +4,7 @@
 import { HaError, client } from './api.js';
 import { ACTIONS, areaName, controllable, inArea, levelFor, main, primary, readCatalogue } from './catalogue.js';
 import { describe } from './plugin.js';
-import { actions, esc, sleep } from '../../src/api.js';
+import { actions, esc } from '../../src/api.js';
 
 const ICON = {
   light: '💡',
@@ -222,7 +222,6 @@ export function install(ui, ctx) {
       await c.toast(said ? undefined : 'Done');
       if (said) return void (await c.reply(`${icon(e)} <b>${esc(e.name)}</b>\n${esc(said)}`, { html: true }));
       if (acting) ctx.log(`${e.name}: ${code} (from the /ha buttons)`);
-      await sleep(800); // let it take effect, then show what it is now
       const v = await thingView(cat, idx);
       await (stage === 'y' ? c.edit(`${v.text}`, { html: true, actions: v.kb }).catch(() => {}) : edit(c, v.text, v.kb));
     }),

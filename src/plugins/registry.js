@@ -1,5 +1,5 @@
 import { jobSchedule, jobShapeProblem, summary as scheduleSummary } from '../util/schedule.js';
-import { registerSource } from '../archive/sources.js';
+import { registerSource, resetSources, validSourceId } from '../archive/sources.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -116,13 +116,14 @@ const SHAPE = {
   },
   service: { id: 'string', summary: 'string', command: 'string', ready: 'fn', health: 'fn' },
   job: { id: 'string', summary: 'string', run: 'fn', when: 'sync', cron: 'any', every: 'any', at: 'any' },
-  chat: { commands: 'any', install: 'fn', tick: 'fn', quick: 'fn', quickFirst: 'boolean' },
+  chat: { commands: 'any', install: 'fn', tick: 'fn', quick: 'fn', quickFirst: 'boolean', learn: 'fn' },
   // Something that reads a kind of file on this machine (see src/archive/reading.js).
   reader: { kind: 'string', read: 'fn', stop: 'fn', ready: 'sync' },
   agent: { fill: 'sync', readDirs: 'sync', listCommands: 'boolean', notes: 'any' },
   channel: { label: 'string', can: 'object', paired: 'sync', self: 'sync', open: 'fn', start: 'fn' },
   engine: {
     label: 'string',
+    default: 'boolean',
     process: 'string',
     shapes: 'boolean',
     choices: 'fn',
@@ -134,6 +135,7 @@ const SHAPE = {
     ownResult: 'fn',
     where: 'fn',
     takes: 'sync',
+    pace: 'sync',
   },
   storage: { label: 'string', places: 'sync', list: 'fn', mkdir: 'fn', put: 'fn', get: 'fn', remove: 'fn', free: 'fn' },
   source: {
@@ -144,9 +146,11 @@ const SHAPE = {
     todoLimit: 'number',
     todoText: 'string',
     todoQuestion: 'string',
+    messageId: 'regexp',
     connected: 'sync',
     collects: 'sync',
     fetchMedia: 'fn',
+    historyDays: 'sync',
   },
 };
 const isAsync = (f) => f?.constructor?.name === 'AsyncFunction';
@@ -159,6 +163,7 @@ const KIND = {
   object: (v) => !!v && typeof v === 'object' && !Array.isArray(v),
   fn: (v) => typeof v === 'function',
   sync: (v) => typeof v === 'function' && !isAsync(v),
+  regexp: (v) => v instanceof RegExp,
 };
 const PART_WORD = { manifest: 'a manifest', command: 'a command', service: 'a service', job: 'a job' };
 const KIND_WORD = {
@@ -167,6 +172,7 @@ const KIND_WORD = {
   boolean: 'true or false',
   array: 'a list',
   object: 'an object',
+  regexp: 'a pattern (/…/)',
   fn: 'a function',
   sync: 'a function that answers at once (not async)',
 };
@@ -462,7 +468,9 @@ function claims(entries, chatWords) {
 //   watch    what blackcat is for: it goes through what the sources bring into the archive,
 //            keeps what the owner cares about on lists, and reports (the briefing, nudges)
 //   remind   the reminders those lists and the owner set, and when they may arrive
+//   list     lists of the owner's own, and the lists watches fill (kept with the watches)
 //   check    looks at a system on a schedule, says when it stops working, and may try a fix
+//   learned  the owner's words for simple commands, learned from the agent (src/channels/learned.js)
 const FRAMEWORK = [
   { name: 'msg', dir: path.join(CODE_DIR, 'src/archive/commands'), file: 'manifest.js', bundled: true, framework: true },
   { name: 'activity', dir: path.join(CODE_DIR, 'src/activity'), file: 'manifest.js', bundled: true, framework: true },
@@ -470,9 +478,11 @@ const FRAMEWORK = [
   { name: 'check', dir: path.join(CODE_DIR, 'src/checks'), file: 'manifest.js', bundled: true, framework: true, optional: true },
   { name: 'conversations', dir: path.join(CODE_DIR, 'src/conversations'), file: 'manifest.js', bundled: true, framework: true },
   { name: 'memory', dir: path.join(CODE_DIR, 'src/memory'), file: 'manifest.js', bundled: true, framework: true },
+  { name: 'learned', dir: path.join(CODE_DIR, 'src/learned'), file: 'manifest.js', bundled: true, framework: true },
   { name: 'engine', dir: path.join(CODE_DIR, 'src/engines'), file: 'manifest.js', bundled: true, framework: true },
   { name: 'remind', dir: path.join(CODE_DIR, 'src/reminders'), file: 'manifest.js', bundled: true, framework: true, optional: true },
   { name: 'watch', dir: path.join(CODE_DIR, 'src/watch'), file: 'manifest.js', bundled: true, framework: true, optional: true },
+  { name: 'list', dir: path.join(CODE_DIR, 'src/lists'), file: 'manifest.js', bundled: true, framework: true, optional: true },
 ];
 
 // A plugin is on if you enabled it, or if it is one of blackcat's own features
@@ -510,26 +520,8 @@ export async function loadOne(entry) {
     const manifest = (await import(pathToFileURL(path.join(entry.dir, entry.file ?? 'plugin.js')).href)).default;
     const bad = problems(manifest, entry.name);
     if (bad.length) return { ...entry, error: bad.join('; ') };
-    // A plugin that collects messages from somewhere says so, and the archive learns the
-    // source from it (registered whether or not the plugin is switched on: what it stored
-    // earlier is still in the archive and still has to be told apart).
-    if (manifest.source) {
-      const plugin = { ...entry, manifest };
-      const s = manifest.source;
-      // (The bundled sources for WhatsApp and Telegram describe the two sources the archive knows by id format.)
-      // (How it is connected, for "no messages yet": its pair command, or the one that adds an account.)
-      const link = ['pair', 'add', 'setup'].find((n) => manifest.commands?.[n]);
-      registerSource(
-        {
-          ...s,
-          plugin: entry.name,
-          link: link ? `bc ${mountOf(manifest).join(' ')} ${link}` : null,
-          connected: s.connected && (() => isEnabled(entry.name, manifest) && s.connected(makeCtx(plugin, { caller: 'job' }))),
-          fetchMedia: s.fetchMedia && ((row, dest, id) => s.fetchMedia(makeCtx(plugin, { caller: 'job' }), { row, dest, id })),
-        },
-        { own: !!entry.bundled },
-      );
-    }
+    if (manifest.source && !validSourceId(manifest.source.id))
+      return { ...entry, error: `its source id "${manifest.source.id}" is not a short lowercase word` };
     return { ...entry, manifest: withStandardCommands(manifest) };
   } catch (e) {
     return { ...entry, error: `could not be loaded: ${e.message}` };
@@ -603,6 +595,50 @@ function withStandardCommands(manifest) {
   return Object.keys(extra).length ? { ...manifest, commands: { ...manifest.commands, ...extra } } : manifest;
 }
 
+// A plugin that collects messages from somewhere says so, and the archive learns the source
+// from it: its prefix, its label, how its message ids look, how to fetch a file.
+function sourceDef(p) {
+  const { manifest } = p;
+  // (How it is connected, for "no messages yet": its pair command, or the one that adds an account.)
+  const link = ['pair', 'add', 'setup'].find((n) => manifest.commands?.[n]);
+  const s = manifest.source;
+  return {
+    ...s,
+    plugin: p.name,
+    link: link ? `bc ${mountOf(manifest).join(' ')} ${link}` : null,
+    connected: s.connected && (() => isEnabled(p.name, manifest) && s.connected(makeCtx(p, { caller: 'job' }))),
+    fetchMedia: s.fetchMedia && ((row, dest, id) => s.fetchMedia(makeCtx(p, { caller: 'job' }), { row, dest, id })),
+    historyDays: s.historyDays && ((id) => s.historyDays(makeCtx(p, { caller: 'job' }), id)),
+  };
+}
+
+// A kind of message is one plugin's. Two that bring in the same kind would write each
+// other's chats, and what one brought in before is still in the archive even while it is
+// switched off: so of two that claim the same kind (everything that comes with blackcat,
+// and the owner's own that are on), neither is loaded until the clash is put right.
+// (Switching on one that would clash is refused where it is switched on.)
+function sourceClashes(read) {
+  const out = [];
+  const claim = read.filter((p) => p.manifest.source);
+  for (const p of claim) {
+    const others = claim.filter((q) => q !== p && q.manifest.source.id === p.manifest.source.id);
+    if (others.length)
+      out.push({
+        name: p.name,
+        dir: p.dir,
+        why: `it brings in messages of the kind "${p.manifest.source.id}", as ${others.map((q) => `the ${q.name} plugin`).join(' and ')} does: neither is loaded until one of them is taken away or renamed`,
+      });
+  }
+  return out;
+}
+
+// Who keeps each kind of message, now that the clashes are out: the one plugin that claims
+// it, switched on or not (what it brought in is in the archive, and is told apart by it).
+function keepSources(read) {
+  resetSources();
+  for (const p of read) if (p.manifest.source) registerSource(sourceDef(p));
+}
+
 let cache = null;
 let cacheKey = null;
 const told = new Set(); // (what was refused is said once in a process)
@@ -646,6 +682,8 @@ export async function loadPlugins() {
     if (!entry.bundled && !isEnabled(entry.name)) continue;
     const loadedP = await loadOne(entry);
     if (!loadedP.error) read.push(loadedP);
+    // (Known at once, for a part loaded after it that asks what the sources are: see below for who keeps one.)
+    if (!loadedP.error && loadedP.manifest.source) registerSource(sourceDef(loadedP));
     if (loadedP.error) {
       if (isEnabled(entry.name)) console.error(`plugin "${entry.name}" skipped: ${loadedP.error}`);
       continue;
@@ -660,12 +698,19 @@ export async function loadPlugins() {
     read,
     CHAT_COMMANDS.map((c) => c.command),
   );
-  for (const r of clashing) {
-    for (const list of [out, read]) {
-      const i = list.findIndex((x) => x.name === r.name);
-      if (i >= 0) list.splice(i, 1);
-    }
-  }
+  // (A kind of message is looked at among what is left: one refused already claims nothing.)
+  const drop = (rs) => {
+    for (const r of rs)
+      for (const list of [out, read]) {
+        const i = list.findIndex((x) => x.name === r.name);
+        if (i >= 0) list.splice(i, 1);
+      }
+  };
+  drop(clashing);
+  const kinds = sourceClashes(read);
+  clashing.push(...kinds);
+  drop(kinds);
+  keepSources(read);
   for (const r of refused()) if (!told.has(r.name)) (told.add(r.name), console.error(`plugin "${r.name}" was not loaded: ${r.why}`));
   // Forms that depend on what the other plugins offer (a question per source) are built now.
   // (The plugins count as loaded from here, so such a form can ask what they offer.)

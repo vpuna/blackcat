@@ -1,5 +1,6 @@
 import pc from 'picocolors';
 import {
+  aboutReminder,
   addReminder,
   answerReminder as answer,
   fmtWhen,
@@ -14,7 +15,7 @@ import {
   REPEAT_WORDS,
   repeatCron,
   repeatText,
-  rescheduleReminder as reschedule,
+  snoozeReminder,
   schedule,
   shortestGap,
   stopSeries,
@@ -69,25 +70,23 @@ export function view(r) {
 }
 
 function line(r) {
-  const flag =
-    r.status === 'sent'
-      ? pc.yellow(' (sent, not marked done)')
+  const a = aboutReminder(r);
+  const flag = !a.state
+    ? ''
+    : r.status === 'sent'
+      ? pc.yellow(` (${a.state})`)
       : r.status === 'done'
-        ? pc.green(' ✓')
-        : r.status === 'cancelled'
-          ? pc.dim(' cancelled')
-          : r.status === 'missed'
-            ? pc.dim(' missed')
-            : '';
+        ? pc.green(` ${a.state}`)
+        : pc.dim(` ${a.state}`);
   const tags = [
-    r.source === 'auto' ? 'auto' : null,
-    r.repeat ? `repeats ${repeatText(r.repeat)}` : null,
-    r.msg_chat ? `re: ${r.msg_sender ?? r.msg_chat}` : null,
-    r.file ? 'with a file' : null,
+    a.auto ? 'picked up from your messages' : null,
+    a.repeats ? `🔁 ${a.repeats}` : null,
+    a.re ? `re: ${a.re}` : null,
+    a.file ? '📎 with a file' : null,
   ]
     .filter(Boolean)
     .join(' · ');
-  return `${String(r.id).padStart(4)}  ${fmtWhen(r.due_ts).padEnd(20)} ${r.text}${flag}${tags ? pc.dim(`  [${tags}]`) : ''}`;
+  return `${String(r.id).padStart(4)}  ${fmtWhen(r.due_ts).padEnd(20)} ${a.text}${flag}${tags ? pc.dim(`  [${tags}]`) : ''}`;
 }
 
 // A snapshot of the WhatsApp message a reminder is about.
@@ -192,7 +191,8 @@ export const snooze = command(async (id, opts) => {
   return withDb(openAgentDb, (db) => {
     const r = find(db, id);
     const dueTs = parseWhen(opts);
-    reschedule(db, r.id, dueTs);
+    const why = snoozeReminder(db, r, dueTs);
+    if (why) throw new PluginError(`Reminder ${r.id} was not moved: ${why}.`);
     return { raw: true, data: view(getReminder(db, r.id)), text: `Reminder ${r.id} moved to ${pc.bold(fmtWhen(dueTs))}: ${r.text}` };
   });
 });

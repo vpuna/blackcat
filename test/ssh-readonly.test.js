@@ -6,6 +6,11 @@ import { test } from 'node:test';
 import { classify } from '../src/util/readonly.js';
 
 const READ = [
+  'ps aux',
+  'ps -ef',
+  'ps -e',
+  'cat /proc/loadavg',
+  'ls ./logs',
   'uptime',
   'df -h',
   'free -m',
@@ -75,6 +80,16 @@ const READ = [
   "echo 'a b' | tr a-z A-Z",
 ];
 const SENSITIVE = [
+  // (S3 of the audit of 2026-10-24: other programs' logins, this process's environment, and
+  // every process's through ps.)
+  'cat ~/.config/gh/hosts.yml',
+  'cat .npmrc',
+  'cat ~/.docker/config.json',
+  'cat /home/someone/.aws/credentials',
+  'cat /proc/self/environ',
+  'ps e',
+  'ps auxe',
+  'ps auxeww',
   'cat /etc/shadow',
   'cat /root/.ssh/id_ed25519',
   'docker inspect plex',
@@ -91,6 +106,7 @@ const SENSITIVE = [
   'grep root /etc/sha[d]ow',
 ];
 const MUST_NOT_BE_READ = [
+  'cat $HOME/.git-credentials',
   // long options cut short, which GNU programs accept
   'sort --out=/etc/cron.d/evil /etc/hostname',
   'sort --outp=/tmp/x /etc/hostname',

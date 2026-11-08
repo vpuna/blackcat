@@ -21,7 +21,7 @@ export default {
     id: 'sms', label: 'Text messages', optIn: true, textLimit: 50, todoLimit: 60, todoText: 'text messages',
     todoQuestion: 'Also look at your text messages?',
     connected: (ctx) => ctx.config.get().on === true,
-    fetchMedia: async (ctx, { row, dest, id }) => { fs.writeFileSync(dest, 'file for ' + id + ' part ' + row.direct_path); },
+    fetchMedia: async (ctx, { row, dest, id }) => { fs.writeFileSync(dest, 'file for ' + id + ' part ' + row.fetch.directPath); },
   },
 };
 `,
@@ -54,7 +54,14 @@ const withFile = q.msg.run(
   messageRow({ chat: 'sms:+15550001', id: 'sms:2', sender: 'sms:+15550001', ts: now - 20, type: 'image', text: 'a picture' }),
 );
 q.media.run(
-  mediaRow({ rowid: withFile.lastInsertRowid, dlType: 'sms', mimetype: 'image/png', size: 10, fileName: 'pic.png', directPath: 'part-7' }),
+  mediaRow({
+    rowid: withFile.lastInsertRowid,
+    dlType: 'sms',
+    mimetype: 'image/png',
+    size: 10,
+    fileName: 'pic.png',
+    fetch: { directPath: 'part-7' },
+  }),
 );
 q.chat.run({ ref: 'wa:15551234@s.whatsapp.net', name: 'Maya', isGroup: 0, ts: now });
 q.msg.run(
@@ -133,7 +140,6 @@ test('the to-do watch can be told to leave it out or take it back, and its setup
   assert.match(bc('msg', 'chats', '--source', 'sms').stdout, /Bank alerts/);
 });
 
-test('a source id that clashes with a built-in one, or is malformed, is refused', () => {
-  assert.throws(() => sources.registerSource({ id: 'wa', label: 'x' }), /own sources/);
+test('a source id that is malformed is refused', () => {
   assert.throws(() => sources.registerSource({ id: 'Bad Id', label: 'x' }), /short lowercase word/);
 });

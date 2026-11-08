@@ -1,5 +1,123 @@
 # Changes
 
+## 0.4.0
+
+### New
+- **Lists of your own** (`bc list`, `/list`): spare electronics, groceries, a trip. Each has the
+  fields you name (text, number or date) besides a title, type, note, date, place, link and ref;
+  `show` groups by type and adds up numbers. Link a message or mail to an entry, put a list's
+  dated entries in the briefing (`bc list briefing <list> on`), find what every list says about
+  something (`bc list find`), and find lists nobody has used in a while (`bc list list --unused
+  90d`). A watch fills one list: its own, or one you made (`bc watch add … --list`).
+- **Old undated entries move to Expired** once no message has mentioned them for as long as you
+  fetch that source's history (WhatsApp 30 days, a mail account its own). `/list` shows them in a
+  section of their own, "⌛ Expired · older than 30 days (21)", by type, a page at a time; a tap
+  opens one again, and so does a message that mentions it. Nothing is deleted.
+- **`bc health`, and `/status` in the chat:** one line for each account, device, machine and
+  the engine blackcat reaches, and since when one has not worked. A second built-in check,
+  Connections, runs it every 10 minutes and tells you once something has been down for half an
+  hour, and again when it is back.
+- **Simple commands learn your words.** When the agent switched one thing or ran one shortcut
+  for words of yours, the same words next time are done at once without it, by the same route
+  as "kitchen light on" (and ask first where that asks). Only words you said before, a typo
+  apart. `/learned` or `bc learned list` shows them, each with a way to forget it.
+- **Calls.** A WhatsApp or Telegram call is kept as a message with its length ("Voice call,
+  12 min", "Missed voice call"). "Things I need to do" lists a missed one as "Call back …", and a
+  call or a message to that person afterwards ticks it off. Before, calls were dropped. Still to
+  be seen with real calls on WhatsApp, which tells a linked device of a call only as it goes.
+- **Alerts say what was going on.** For a check that keeps context (`--context`), a reader puts
+  it in one sentence ("the backup was using most of the processor"). On Mondays the briefing
+  says which checks were down the week before, how often and for how long.
+- **An engine for models that speak the OpenAI API (beta)** (`bc plugin enable openai`, `bc
+  openai setup`): llama.cpp, Ollama, vLLM or LM Studio on your network, or a hosted model such
+  as OpenRouter. blackcat holds the conversation and serves its own tools, so every call still
+  goes through its policy. Try it for readers with `bc engine use openai --for readers`, which
+  runs the engine check first. Plugin authors: `engine.pace` sets how many requests at once.
+
+### Changed
+- **The briefing starts with what is past due:** reminders not marked done and anything owed
+  whose day has gone, latest first, five and a button for the rest. Before, old reminders
+  filled "Today" every morning, and what was new could be crowded out for days.
+- **Whether two entries are the same is judged by a model**, from day, time, place and sender
+  as well as words, so a booking and its confirmation mail match under different names, and
+  two things that only share a word do not. With no model, words decide as before. "May be the
+  same as" now names the other entry by its title, not its number.
+- **A watch's entries are changed with `bc list`**, like any list's. `bc watch item`,
+  `add-item`, `edit-item`, `lists` and `find` are gone: `item 12 keep` is `bc list mark 12
+  open`, `item 12 move restaurants` is `bc list edit 12 --set type=restaurants`, and `watch
+  find` is `bc list find`. A watch always watches something; a list kept by hand is `bc list
+  new`, and removing a watch keeps its list. Adding by hand compares with that list only.
+- **This machine's alerts are a check:** `bc check add --from host:health` (temperature, disk
+  and, on a Raspberry Pi, power dips), with its readings kept and snoozes and the briefing like
+  any check. `bc host setup` and the host plugin's own job are gone: add the check once after
+  upgrading. `/status` shows this machine as one line; `bc host status` has the rest.
+- **Android routines:** a routine may name any number of screens it can end on after the press
+  ("Your driver is on the way", "… has arrived"). The screen is read once and a tap is made
+  once; a read that fails stops with why.
+- **Reminders** read the same in the chat, the terminal and the briefing, and give the briefing
+  their own lines. With reminders switched off, the briefing lists none.
+- **The settings file is no longer written while blackcat runs,** so an edit of yours can't be
+  lost to it: what this machine last alerted about is kept in the database, and a shortcut's
+  one-off time is marked used there.
+- **For plugin authors:** the core names no message source and no engine; WhatsApp, Telegram,
+  mail and Claude Code are plugins like any other. A source writes the archive only through its
+  writer, which gains what the three did with SQL of their own. Two plugins that bring in the
+  same kind of message are both left unloaded. A shortcut step hands on a picture through
+  `$BLACKCAT_HANDOFF` (`{"picture": "<path>"}`, `{"told": true}`), not `[[send: …]]` in what it
+  prints. "typing…" is kept up by `c.whileWorking(fn, kind)`. Errors are told apart by a code,
+  not their wording, and fixed waits are gone where something could be waited for.
+
+### Fixed
+- **Claude Code's sign-in ran out after about four weeks.** `bc claude setup` now takes a
+  sign-in made with `claude setup-token`, which lasts a year and is part of your plan.
+- **`host run` could read other programs' logins without asking** (`~/.config/gh/hosts.yml`,
+  `~/.npmrc`, `/proc/self/environ` and the like), and what it ran could see the engine's key.
+  Any of a home's dot files now asks, and the keys are left out.
+- **Android: a pop-up's button was tapped without the book, pay or send check,** and the agent
+  could try a draft routine without asking. Both ask now. A pop-up rule or booking word added
+  to an app needs the routines approved again; ones approved before keep their approval.
+- **A restart in the middle of a phone routine cut it off** at its confirmation screen.
+  `bc restart` and `bc stop` now wait for it (`--now` does not), and a question whose asker has
+  gone says nothing was done.
+- **"Waiting on" stayed open after you said it came:** only the other person's messages were
+  looked at. Yours count now, and two things asked at once are two entries.
+- **A request to buy what a notice on another list asked for was dropped,** taken for the same
+  thing. A request to order, pay, register or book is filed unless that task is already kept.
+- **Something ticked off by a reader with no reason given was never said** in the briefing, and
+  what an entry came to was written over what it was about. They are kept apart now.
+- **A booking in your calendar and in a confirmation mail showed twice** in the briefing; it is
+  shown once, as the calendar's.
+- **Checks:** a look whose command did not finish closed what it had found and said "working
+  again"; Connections sent a message for each thing wrong; "I fixed it" on a snoozed check
+  looked three times and read like a new alert. What is wrong now stays open until a look says
+  otherwise, one run sends one message, and a snoozed check is looked at once.
+- **Old reminder buttons, and `bc remind snooze`,** could bring back a reminder already done,
+  cancelled or missed, or snooze a repeating one past its next time.
+- **Home Assistant said what a light was 0.7 s after asking,** sometimes before it had changed.
+  It now reads the change from Home Assistant's answer, or asks again for up to 2 s.
+- **A phone routine cut off before its end left the screen on while charging;** an Android job
+  now puts the setting back within 10 minutes.
+- **A shortcut that runs an Android routine showed skipped steps as done.** They show as
+  "– (not needed)".
+- **`--json` output could start with a log line;** log lines go to stderr with `--json`.
+- **Allsky v2026.10 moved its latest picture** to `/current/image.jpg`; both places are tried.
+- **Running the tests woke a real TV.** They use example addresses now, and never the real
+  `adb`.
+- **Failures that passed without a word are logged,** and a channel whose check fails says so
+  in `bc channel` instead of "not set up".
+
+### Upgrading
+Make a backup first (`bc backup now`). The databases take a few steps on first start:
+- agent.db: the tables `holds`, `health` and `learned`, `asks.pid`, and the check Connections.
+- Watches: each list stands by itself under the watch's number; a watch that watched nothing
+  becomes a plain list. What entries came to moves out of their summaries, and entries gain
+  `mentioned_ts`.
+- The message archive: WhatsApp's hidden ids become `aliases`, and what a source keeps to fetch
+  a file moves to `media.fetch` (checked on a copy of a real archive: every file and name kept).
+- Android routines keep their approvals.
+
+Then add this machine's check once if you want its alerts: `bc check add --from host:health`.
+
 ## 0.3.0
 
 ### New

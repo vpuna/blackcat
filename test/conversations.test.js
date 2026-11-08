@@ -76,10 +76,10 @@ const keepEngineCopy = (session) => {
 test('every turn is kept: question, reply, how long, and what it used', async () => {
   assert.equal(await brain.reply(CHAT, 'What is the plan for the school trip?'), 'answer to: What is the plan for the school trip?');
   await brain.reply(CHAT, 'And who is driving?');
-  const [c] = store.list({ channel: 'tg-bot', chat: CHAT });
+  const [c] = store.list({ channel: 'chat', chat: CHAT });
   assert.deepEqual(
     [c.title, c.turns, c.channel, c.chat, c.engine],
-    ['What is the plan for the school trip?', 2, 'tg-bot', '42', 'claude-code'],
+    ['What is the plan for the school trip?', 2, 'chat', '42', 'claude-code'],
   );
   assert.match(c.engine_session, /^sess-/);
   const turns = store.turns(c.id);
@@ -111,7 +111,7 @@ test('a title comes from the first thing asked, without the notes blackcat puts 
 });
 
 test('/new starts another conversation; the earlier one can be picked and carried on as it was', async () => {
-  const first = store.list({ channel: 'tg-bot', chat: CHAT })[0];
+  const first = store.list({ channel: 'chat', chat: CHAT })[0];
   keepEngineCopy(first.engine_session);
   brain.resetSession(CHAT);
   await brain.reply(CHAT, 'Something else entirely: how hot is it?');
@@ -134,11 +134,11 @@ test('/new starts another conversation; the earlier one can be picked and carrie
     'continued in the engine, with nothing repeated',
   );
   assert.equal(store.get(first.id).turns, 3, 'and kept as the same conversation');
-  assert.equal(store.list({ channel: 'tg-bot', chat: CHAT }).length, 2);
+  assert.equal(store.list({ channel: 'chat', chat: CHAT }).length, 2);
 });
 
 test('when the engine no longer has it, it is carried on from the record', async () => {
-  const first = store.list({ channel: 'tg-bot', chat: CHAT }).find((c) => c.title.startsWith('What is the plan'));
+  const first = store.list({ channel: 'chat', chat: CHAT }).find((c) => c.title.startsWith('What is the plan'));
   brain.resetSession(CHAT);
   fs.rmSync(engineFile(first.engine_session)); // Claude Code has cleared its old files
   const r = await brain.resumeConversation(CHAT, first.id);
@@ -165,7 +165,7 @@ test('when the engine no longer has it, it is carried on from the record', async
 });
 
 test('if the engine fails to pick a conversation up, it is carried on from the record without being asked', async () => {
-  const c = store.list({ channel: 'tg-bot', chat: CHAT }).find((x) => x.title.startsWith('What is the plan'));
+  const c = store.list({ channel: 'chat', chat: CHAT }).find((x) => x.title.startsWith('What is the plan'));
   brain.resetSession(CHAT);
   // blackcat believes the engine still has it (the "gone" session makes the stand-in exit at once)
   const { openAgentDb } = await import('../src/agentdb.js');
@@ -200,7 +200,7 @@ test('each turn is charged its own share, however the conversation was picked up
 });
 
 test("one chat cannot open another's conversation; the terminal has its own", async () => {
-  const theirs = store.list({ channel: 'tg-bot', chat: CHAT })[0];
+  const theirs = store.list({ channel: 'chat', chat: CHAT })[0];
   assert.equal(await brain.resumeConversation(brain.TERMINAL, theirs.id), null);
   assert.equal(await brain.resumeConversation(777, theirs.id), null);
   assert.equal(await brain.resumeConversation(CHAT, 99999), null);
@@ -227,7 +227,7 @@ const readLog = () =>
 
 test('a long conversation is carried on with its latest part in full and the earlier part as a summary', async () => {
   brain.resetSession(CHAT);
-  const id = store.start({ channel: 'tg-bot', chat: CHAT, question: 'long one' });
+  const id = store.start({ channel: 'chat', chat: CHAT, question: 'long one', engine: 'claude-code' });
   for (let i = 0; i < 40; i++)
     store.finishTurn(store.addTurn(id, `question ${i} ${'q'.repeat(300)}`), { reply: `reply ${i} ${'r'.repeat(300)}` });
   const h = store.history(id, 5000);
@@ -270,7 +270,7 @@ test('a long conversation is carried on with its latest part in full and the ear
 });
 
 test('the summary is added to, not written again: only what was said since is read', async () => {
-  const id = store.list({ channel: 'tg-bot', chat: CHAT }).find((c) => c.title === 'long one').id;
+  const id = store.list({ channel: 'chat', chat: CHAT }).find((c) => c.title === 'long one').id;
   const before = store.get(id);
   // picked up again with nothing new: nothing is read
   await brain.resumeConversation(CHAT, id);
@@ -291,7 +291,7 @@ test('the summary is added to, not written again: only what was said since is re
 });
 
 test('a very long conversation is read a piece at a time; a reader that fails leaves it as it was', async () => {
-  const id = store.start({ channel: 'tg-bot', chat: CHAT, question: 'very long one' });
+  const id = store.start({ channel: 'chat', chat: CHAT, question: 'very long one', engine: 'claude-code' });
   for (let i = 0; i < 80; i++)
     store.finishTurn(store.addTurn(id, `question ${i} ${'q'.repeat(1200)}`), { reply: `reply ${i} ${'r'.repeat(1200)}` });
   const n = readLog().length;
@@ -321,7 +321,7 @@ test('summaries can be switched off: then only the latest part is handed over, a
   update((c) => {
     c.conversations = { ...c.conversations, summary: false };
   });
-  const id = store.start({ channel: 'tg-bot', chat: CHAT, question: 'unsummarised' });
+  const id = store.start({ channel: 'chat', chat: CHAT, question: 'unsummarised', engine: 'claude-code' });
   for (let i = 0; i < 40; i++)
     store.finishTurn(store.addTurn(id, `question ${i} ${'q'.repeat(300)}`), { reply: `reply ${i} ${'r'.repeat(300)}` });
   const n = readLog().length;
@@ -337,7 +337,7 @@ test('summaries can be switched off: then only the latest part is handed over, a
 });
 
 test('what you are shown when you pick one up: where you were, not the conversation', () => {
-  const id = store.start({ channel: 'tg-bot', chat: CHAT, question: 'How do I descale the kettle?' });
+  const id = store.start({ channel: 'chat', chat: CHAT, question: 'How do I descale the kettle?', engine: 'claude-code' });
   store.finishTurn(store.addTurn(id, 'How do I descale the kettle?'), { reply: 'Vinegar and water.' });
   assert.equal(store.lastAsked(id), null, 'one exchange: its title already says it');
   store.finishTurn(store.addTurn(id, `[a note blackcat added]\n\nAnd how often? ${'x'.repeat(400)}`), {
@@ -391,7 +391,7 @@ test('reading it back: list, show with where the time went, find', () => {
 test('when the setup changes, the engine starts afresh with the new instructions and the conversation is carried on from the record', async () => {
   await brain.reply(CHAT, 'We settled on the 14:10 train.');
   const before = told().at(-1);
-  const conv = store.list({ channel: 'tg-bot', chat: CHAT })[0];
+  const conv = store.list({ channel: 'chat', chat: CHAT })[0];
   const rules = path.join(dir, 'agent/AGENT.md');
   const was = fs.existsSync(rules) ? fs.readFileSync(rules, 'utf8') : null;
   fs.writeFileSync(rules, `${was ?? ''}\nA rule added since.\n`);
@@ -428,12 +428,12 @@ test('switched off, nothing new is kept and the conversation still works; old on
   save({ ...load(), conversations: { on: true, days: 30 } });
   const { openAgentDb } = await import('../src/agentdb.js');
   const db = openAgentDb();
-  const old = store.start({ channel: 'terminal', chat: 'terminal', question: 'an old one' });
+  const old = store.start({ channel: 'terminal', chat: 'terminal', question: 'an old one', engine: 'claude-code' });
   store.finishTurn(store.addTurn(old, 'an old one'), { reply: 'yes' });
   db.prepare('UPDATE conversations SET last_ts = last_ts - 40 * 86400 WHERE id = ?').run(old);
   db.prepare("DELETE FROM meta WHERE key = 'conversations_pruned'").run();
   db.close();
-  const fresh = store.start({ channel: 'terminal', chat: 'terminal', question: 'a new one' });
+  const fresh = store.start({ channel: 'terminal', chat: 'terminal', question: 'a new one', engine: 'claude-code' });
   store.addTurn(fresh, 'a new one');
   assert.equal(store.get(old), null, 'not used for 40 days, kept for 30');
   assert.ok(store.get(fresh));

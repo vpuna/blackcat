@@ -2,7 +2,7 @@
 // in the archive, and never sends anything. Searching is done with the archive's own commands (bc msg …).
 import fs from 'node:fs';
 import { isPaired } from './paired.js';
-import { collects, describeSelection } from './settings.js';
+import { collects, describeSelection, waSettings } from './settings.js';
 import { ARCHIVE_DB, withDb } from '../../src/api.js';
 
 const cmd = () => import('./commands.js');
@@ -74,9 +74,13 @@ Searching and reading what it collected is done with the archive's own commands:
   source: {
     id: 'wa',
     label: 'WhatsApp',
+    // Its message ids are WhatsApp's own, as it gives them: letters and digits.
+    messageId: /^[0-9A-Za-z]+$/,
     connected: () => isPaired(),
     // The chats you chose to keep (bc wa select).
     collects: (ref) => collects(ref),
+    // How far back history is fetched (bc wa select): what is worth reading, for how long a list keeps what it found.
+    historyDays: () => waSettings().days ?? null,
     fetchMedia: async (_ctx, { row, dest }) => (await import('./media.js')).fetchWhatsAppMedia(row, dest),
   },
 

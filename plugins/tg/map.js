@@ -1,5 +1,6 @@
 // Turn Telegram objects into the archive's rows. Kept free of network calls so it can
 // be tested with plain objects. Telegram ids all start with "tg" (see wa/db.js: sourceOf).
+import { callText } from '../../src/api.js';
 
 export const chatRef = (markedId) => `tg:${markedId}`;
 // Message ids are only unique within a chat on Telegram, so the chat is part of ours.
@@ -62,19 +63,27 @@ function fromDocument(doc, toJpg) {
       height: video?.h ?? attr('DocumentAttributeImageSize')?.h ?? null,
       seconds: Math.round(video?.duration ?? audio?.duration ?? 0) || null,
       fileName,
-      directPath: null,
-      url: null,
-      mediaKey: null,
-      sha256: null,
-      encSha256: null,
+      fetch: {}, // (fetched by its message: see media.js)
       thumb: strippedThumb(doc.thumbs, toJpg),
     },
   };
 }
 
-// → { type, text, link, media } or null for things not worth storing (service messages, empties).
+// A call, either way: a service message of its own.
+const aCall = (msg) =>
+  msg.action?.className === 'MessageActionPhoneCall'
+    ? {
+        type: 'call',
+        text: callText({ video: !!msg.action.video, seconds: msg.action.duration, mine: !!msg.out }),
+        link: null,
+        media: null,
+      }
+    : null;
+
+// → { type, text, link, media } or null for things not worth storing (other service messages, empties).
 export function describe(msg, { toJpg } = {}) {
-  if (!msg || msg.className === 'MessageService' || msg.action) return null;
+  if (!msg) return null;
+  if (msg.className === 'MessageService' || msg.action) return aCall(msg);
   const text = msg.message || null;
   const m = msg.media;
   let type = 'text';
@@ -95,11 +104,7 @@ export function describe(msg, { toJpg } = {}) {
         height: big?.h ?? null,
         seconds: null,
         fileName: null,
-        directPath: null,
-        url: null,
-        mediaKey: null,
-        sha256: null,
-        encSha256: null,
+        fetch: {}, // (fetched by its message: see media.js)
         thumb: strippedThumb(m.photo.sizes, toJpg),
       };
       break;

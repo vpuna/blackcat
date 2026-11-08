@@ -9,7 +9,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fit } from './device.js';
 import { MODEL_PICTURE } from './recover.js';
-import { MAX_NEXT, MAX_SIGNS } from './routines.js';
+import { MAX_NEXT } from './routines.js';
+
+// At most this many words of each kind are taken from what a model reads off the pictures.
+const MAX_SIGNS = 4;
 
 export const MAX_PICTURES = 4;
 const KINDS = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' };

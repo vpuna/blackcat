@@ -112,7 +112,15 @@ test('in the quiet time nothing is said; after it, what is still wrong is', asyn
     const x = new Date(ms);
     return `${String(x.getHours()).padStart(2, '0')}:${String(x.getMinutes()).padStart(2, '0')}`;
   };
-  const { inQuiet, parseQuiet } = await import('../src/checks/check.js');
+  const { parseQuiet } = await import('../src/checks/check.js');
+  // (A5 of the audit of 2026-10-24: a check's quiet time and the owner's quiet hours were two
+  // tests of the same thing, with different arguments; one now, for both.)
+  const { inQuiet: quietHours, inWindow: inQuiet } = await import('../src/quiet.js');
+  const at = (iso) => Math.floor(new Date(iso).getTime() / 1000);
+  assert.equal(inQuiet({ from: '23:00', to: '01:00' }, at('2026-10-15T00:30:00')), true, 'the same window, as the settings keep it');
+  assert.equal(quietHours(at('2026-10-15T00:30:00') * 1000, { from: '23:00', to: '01:00' }), true);
+  assert.equal(quietHours(at('2026-10-15T12:30:00') * 1000, { from: '23:00', to: '01:00' }), false);
+  assert.equal(inQuiet(null), false, 'none: never inside');
   const around = `${hm(d - 10 * 60_000)}-${hm(+d + 10 * 60_000)}`;
   assert.equal(inQuiet(parseQuiet(around)), true);
   assert.equal(inQuiet('23:00-01:00', Math.floor(new Date('2026-10-15T00:30:00').getTime() / 1000)), true, 'past midnight');
@@ -347,10 +355,109 @@ test('in the bot: an alert has buttons; snooze offers how long; "I fixed it" loo
   await tap('s4');
   assert.match(said.at(-1).text, /snoozed until .*\. I'll tell you when it works again\./);
   assert.equal(currentFindings(db, id)[0].state, 'snoozed');
+  // "I fixed it" on what is snoozed, and it is not: one look, no buttons, and it stays snoozed.
+  const before = said.length;
+  await tap('x');
+  assert.equal(said.length, before + 1, 'one look, no "looking again"');
+  assert.match(said.at(-1).text, /^✗ Web \w+: still not working\. .*\nIt stays snoozed until /);
+  assert.deepEqual(said.at(-1).buttons, []);
+  assert.equal(currentFindings(db, id)[0].state, 'snoozed');
   up();
   await tap('x');
   assert.match(said.at(-1).text, /^✅ Web \w+: working again\./);
   assert.equal(getCheck(db, id).wrong, null);
   assert.equal(pastFindings(db, id)[0].state, 'resolved');
   db.close();
+});
+
+// Seen 2026-10-28 with the check "Connections": Claude Code signed out was two findings (the
+// engine for chat, for readers), each a message; then a look that ran out of time said both
+// were "working again", and ten minutes later that they were not.
+test('a look whose command answered nothing leaves what it found before open; one run is one message', async () => {
+  const said = path.join(dir, 'said.json');
+  const two = JSON.stringify({
+    problems: [
+      { key: 'chat', title: 'chat: not signed in' },
+      { key: 'readers', title: 'readers: not signed in' },
+    ],
+  });
+  fs.writeFileSync(said, two);
+  const { db, id } = await made({ command: `cat ${said}; grep -qx fine ${said}` });
+  const told = await look(db, id);
+  assert.equal(told.length, 2);
+  const { currentFindings } = await import('../src/checks/db.js');
+  fs.writeFileSync(said, 'Error: something else broke');
+  const blind = await look(db, id);
+  assert.equal(blind.length, 1, 'the command that failed is said');
+  assert.match(blind[0], /failed \(exit 1\): Error: something else broke/);
+  assert.ok(!blind.some((t) => /working again/.test(t)), 'not known to be working: not said to be');
+  assert.deepEqual(
+    currentFindings(db, id)
+      .map((f) => f.key)
+      .sort(),
+    ['chat', 'down', 'readers'],
+    'still open, beside the command that failed',
+  );
+  fs.writeFileSync(said, 'fine');
+  const back = await look(db, id);
+  assert.equal(back.filter((t) => /working again/.test(t)).length, 3, 'working again once it says so');
+
+  // What one run has to say goes as one message; the buttons are for a single thing.
+  const { tellOwner } = await import('../src/checks/chat.js');
+  const sent = [];
+  const ui = { send: async (chat, text, o) => sent.push({ chat, text, buttons: !!o.actions }) };
+  await tellOwner(
+    ui,
+    {
+      name: 'C',
+      chatId: 42,
+      notices: [
+        { text: 'a', finding: 1 },
+        { text: 'b', finding: 2 },
+      ],
+    },
+    () => {},
+  );
+  await tellOwner(ui, { name: 'C', chatId: 42, notices: [{ text: 'c', finding: 3 }] }, () => {});
+  await tellOwner(ui, { name: 'C', chatId: 42, notices: [] }, () => {});
+  assert.deepEqual(sent, [
+    { chat: 42, text: 'a\n\nb', buttons: false },
+    { chat: 42, text: 'c', buttons: true },
+  ]);
+  db.close();
+});
+
+// On Mondays the briefing says what went wrong in the week before, in one line, worked out
+// from what the checks kept (no model).
+test('a weekly line: each check that was not working last week, how often, and how long in all', async () => {
+  const { db, id } = await made();
+  const c = db.prepare('SELECT name FROM checks WHERE id = ?').pluck().get(id);
+  down();
+  await look(db, id);
+  up();
+  await look(db, id);
+  // (Over an hour ago: a second outage, not the first one back within minutes.)
+  db.prepare('UPDATE check_findings SET first_seen = ?, resolved_ts = ? WHERE check_id = ? AND state = ?').run(
+    now() - 7200,
+    now() - 3600,
+    id,
+    'resolved',
+  );
+  down();
+  await look(db, id);
+  const open = db.prepare("SELECT id FROM check_findings WHERE check_id = ? AND state = 'open'").pluck().get(id);
+  db.prepare('UPDATE check_findings SET first_seen = ? WHERE id = ?').run(now() - 1800, open);
+  db.prepare(
+    'INSERT INTO check_findings (check_id, key, title, first_seen, last_seen, resolved_ts, state) SELECT check_id, key, title, ?, ?, ?, ? FROM check_findings WHERE id = ?',
+  ).run(now() - 9 * 86400, now() - 9 * 86400, now() - 9 * 86400 + 60, 'resolved', open);
+  const { forBriefing, lastWeek } = await import('../src/checks/chat.js');
+  const line = lastWeek(db);
+  assert.match(line, new RegExp(`^🗓 Last week: .*${c}: not working 2 times, 1h 30m in all`), 'the one nine days ago is not of last week');
+  let monday = new Date();
+  while (monday.getDay() !== 1) monday = new Date(monday.getTime() + 86400000);
+  assert.match(forBriefing({ nowMs: monday.getTime() }).note ?? '', /Last week/);
+  assert.equal(forBriefing({ nowMs: monday.getTime() + 86400000 }).note, undefined, 'only on Mondays');
+  db.prepare('DELETE FROM checks WHERE id = ?').run(id);
+  db.close();
+  up();
 });

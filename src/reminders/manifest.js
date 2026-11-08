@@ -1,7 +1,7 @@
 // Reminders: set by you, by the agent when you ask, or picked up from your messages on a schedule.
 // Delivered in Telegram with Done and snooze buttons.
 import { FORM, apply } from './setup.js';
-import { describeQuiet, hasBot, load } from '../internal.js';
+import { describeQuiet, hasBot, hm, load, ymd } from '../internal.js';
 import { withDb } from '../db.js';
 
 const cmd = () => import('./commands.js');
@@ -12,6 +12,8 @@ const WHEN = [
 ];
 
 export default {
+  // In the daily briefing: the reminders of each day, among what is on the lists.
+  briefing: async (_ctx, opts) => (await tg()).forBriefing(opts),
   api: 1,
   name: 'remind',
   title: 'Reminders',
@@ -125,15 +127,23 @@ Quiet hours, when nudges wait:  bc remind setup`,
       db.prepare("SELECT file FROM reminders WHERE file IS NOT NULL AND status IN ('pending', 'sent')").pluck().all(),
     );
   },
-  // What is kept to be done, for "is it kept already?": the reminders still to come that the
-  // owner asked for. (A list entry's own nudge is the entry: the list says it.)
+  // What is kept to be done, for "is it kept already?": the reminders still open, with when.
+  // (A list entry's own nudge is the entry: the list says it.)
   keptToDo: async () => {
     const { openRemindersDb } = await import('./db.js');
     return withDb(openRemindersDb, (db) =>
       db
-        .prepare("SELECT id, text FROM reminders WHERE status = 'pending' AND source = 'user' AND item_id IS NULL")
+        .prepare("SELECT id, text, due_ts FROM reminders WHERE status IN ('pending', 'sent') AND item_id IS NULL ORDER BY due_ts")
         .all()
-        .map((r) => ({ kind: 'reminder', id: r.id, title: r.text, where: 'reminders' })),
+        .map((r) => ({
+          kind: 'reminder',
+          id: r.id,
+          title: r.text,
+          where: 'reminders',
+          due: r.due_ts,
+          day: ymd(r.due_ts * 1000),
+          time: hm(r.due_ts),
+        })),
     );
   },
   // The owner is reached somewhere else now: what was to be sent to them goes there.
@@ -146,6 +156,7 @@ Quiet hours, when nudges wait:  bc remind setup`,
   selftest: () => [
     {
       name: 'delivery',
+      local: true,
       run: async () => {
         const { openRemindersDb, listReminders } = await import('./db.js');
         const { hasBot } = await import('../internal.js');

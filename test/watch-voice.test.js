@@ -154,7 +154,7 @@ test('a voice note is listened to when it arrives, and a watch reads what was he
     heard().map((l) => path.basename(l)),
     ['voice.bin', 'stopped'],
   );
-  assert.equal(listItems(db, watch.id)[0].title, 'Talk to him about the school trip tonight');
+  assert.equal(listItems(db, watch.list_id)[0].title, 'Talk to him about the school trip tonight');
   // listened to once: its words are kept, and another look does not listen again
   const { noteFor, openNotesDb } = await import('../src/archive/attachments.js');
   const notes = openNotesDb();

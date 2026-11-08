@@ -68,18 +68,30 @@ test('"Things I need to do" looks every hour on a new installation, until told o
 });
 
 test('a watch: its report and when it looks are cron, however they were said', () => {
-  let w = bc('watch', 'add', 'Weekend ideas', '--cron', '0 18 * * 4', '--scan', '0 8,20 * * *', '--json').json();
+  let w = bc(
+    'watch',
+    'add',
+    'Weekend ideas',
+    '--self',
+    '--look-for',
+    'ideas',
+    '--cron',
+    '0 18 * * 4',
+    '--scan',
+    '0 8,20 * * *',
+    '--json',
+  ).json();
   assert.equal(w.mode, 'digest');
   assert.deepEqual([w.report.cron, w.scan.cron], [['0 18 * * 4'], ['0 8,20 * * *']]);
   assert.match(w.schedule, /at 18:00, only on Thursday/);
   assert.equal(w.looks, 'at 08:00 and 20:00');
 
-  w = bc('watch', 'add', 'Plain', '--days', 'fri,sat', '--at', '09:15', '--scan', '30m', '--json').json();
+  w = bc('watch', 'add', 'Plain', '--self', '--look-for', 'plans', '--days', 'fri,sat', '--at', '09:15', '--scan', '30m', '--json').json();
   assert.deepEqual([w.report.cron, w.scan.cron], [['15 9 * * 5,6'], ['*/30 * * * *']]);
   w = bc('watch', 'edit', 'Plain', '--scan', '07:00,19:00', '--cron', '0 9 1 * *', '--json').json();
   assert.deepEqual([w.report.cron, w.scan.cron], [['0 9 1 * *'], ['0 7,19 * * *']]);
 
-  w = bc('watch', 'add', 'Default', '--json').json();
+  w = bc('watch', 'add', 'Default', '--self', '--look-for', 'anything', '--json').json();
   assert.deepEqual(w.scan.cron, ['*/15 * * * *']);
   assert.equal(w.report, null, 'a watch that reports in the briefing has no report schedule of its own');
 

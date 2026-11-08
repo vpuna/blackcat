@@ -3,7 +3,7 @@
 // now. Each TV is paired under a name ("tv", "bedroom-tv"), with the owner's OK on the TV.
 // Nothing here reads the screen: what the TV says it is doing is all there is to go by.
 import { plural, prompts, sleep } from '../../src/api.js';
-import { BUTTONS, MAC, powerState, Tv, TvError, wake, withTv } from './tv.js';
+import { BUTTONS, MAC, powerState, Tv, TvError, unreachable, wake, withTv } from './tv.js';
 
 export const NAME = /^[a-z][a-z0-9-]{0,20}$/;
 const HOST = /^[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}$/;
@@ -95,7 +95,7 @@ async function status1(ctx, i) {
     const s = await on(ctx, d, state);
     return { text: `${said(d, s)}.`, data: { device: d.name, on: true, ...s } };
   } catch (e) {
-    if (!(e instanceof TvError) || !/does not answer/.test(e.message)) throw e;
+    if (!unreachable(e)) throw e;
     return { text: `The ${d.name} does not answer: it is off, or not on the network.`, data: { device: d.name, on: false } };
   }
 }
@@ -155,7 +155,7 @@ async function pair(ctx, i) {
     const net = await tv.request('com.webos.service.connectionmanager/getinfo').catch(() => ({}));
     const card = [net.wiredInfo, net.wifiInfo].find((n) => n?.state === 'connected')?.macAddress ?? net.wiredInfo?.macAddress;
     const mac = i.mac ?? card ?? null;
-    if (mac && !MAC.test(mac)) return void stop(`"${mac}" is not a network card's address (like 58:96:0a:77:df:aa).`);
+    if (mac && !MAC.test(mac)) return void stop(`"${mac}" is not a network card's address (like 00:00:5e:00:53:01).`);
     const model = sys.modelName ?? 'LG TV';
     p.log.success(`${model}${sw.product_name ? `, ${sw.product_name}` : ''}${mac ? `, network card ${mac}` : ''}.`);
 
@@ -228,7 +228,7 @@ function devices(ctx) {
 
 async function powerOn(ctx, i) {
   const d = chosen(ctx, i.on);
-  const offline = (e) => (e instanceof TvError && /does not answer/.test(e.message) ? null : Promise.reject(e));
+  const offline = (e) => (unreachable(e) ? null : Promise.reject(e));
   // On already (or with its screen off), it answers.
   const now = await on(ctx, d, state).catch(offline);
   if (isOn(now)) return { text: `The ${d.name} is on already.`, data: { device: d.name, on: true, was: 'on' } };
@@ -383,7 +383,7 @@ async function check(ctx, i) {
         return state(tv);
       });
     } catch (e) {
-      if (!(e instanceof TvError) || !/does not answer/.test(e.message)) throw e;
+      if (!unreachable(e)) throw e;
       now = null; // (off, or not on the network)
     }
     const up = isOn(now);
@@ -530,7 +530,7 @@ export default {
           return `answers · ${powerOf((await on(ctx, d, state)).power)}`;
         } catch (e) {
           // (A TV that is off is not answering, and that is not a fault.)
-          if (e instanceof TvError && /does not answer/.test(e.message)) return { skip: 'off, or not on the network' };
+          if (unreachable(e)) return { skip: 'off, or not on the network' };
           throw e;
         }
       },

@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
 import {
+  archiveStatements,
+  sourceChanges,
   agoShort as ago,
   ARCHIVE_DB as DB_PATH,
   archiveMeta as getMeta,
@@ -319,9 +321,12 @@ export async function select() {
     ) === 'delete';
   saveTgaSettings({ days, ...what });
   withDb(openWrite, (wdb) => {
-    if (wipe) wdb.prepare(`DELETE FROM messages WHERE ${where}`).run(params);
+    if (wipe) {
+      const q = archiveStatements(wdb);
+      for (const ref of dropped) q.removeChatMessages.run(ref);
+    }
     // Chats that are newly included, or need older history, get fetched again; how it went is sent.
-    wdb.prepare(`UPDATE chat_info SET backfill_cutoff = NULL WHERE ref >= 'tg:' AND ref < 'tg;'`).run();
+    sourceChanges(wdb).refetchAll('tg');
     setMeta(wdb, { tg_history_tell: '1' });
   });
   recordActivity({
@@ -395,15 +400,7 @@ export async function unpair() {
   let deleted = 0;
   if (wipe && fs.existsSync(DB_PATH)) {
     withDb(openWrite, (db) => {
-      deleted = db.prepare("SELECT COUNT(*) FROM messages WHERE chat_ref >= 'tg:' AND chat_ref < 'tg;'").pluck().get();
-      for (const [t, col] of [
-        ['messages', 'chat_ref'],
-        ['chats', 'ref'],
-        ['contacts', 'ref'],
-        ['chat_info', 'ref'],
-      ])
-        db.prepare(`DELETE FROM ${t} WHERE ${col} >= 'tg:' AND ${col} < 'tg;'`).run();
-      db.prepare("DELETE FROM meta WHERE key LIKE 'tg\\_%' ESCAPE '\\'").run();
+      deleted = sourceChanges(db).forget('tg');
     });
   }
   recordActivity({

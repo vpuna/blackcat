@@ -92,6 +92,12 @@ test('a picture or a file at the head of such a message is kept with it', () => 
   assert.equal(d.text, 'Your invoice is attached.');
   assert.equal(d.media.fileName, 'invoice.pdf');
   assert.equal(d.media.dlType, 'document');
+  assert.deepEqual(
+    d.media.fetch,
+    { directPath: '/v/x', url: null, mediaKey: '6b', encSha256: null },
+    'what fetches it, kept as WhatsApp gave it (the key in hex)',
+  );
+  assert.equal(describe({ imageMessage: { mimetype: 'image/jpeg' } }).media.fetch, null, 'nothing to fetch it by: nothing kept');
   assert.equal(
     describe({ interactiveMessage: { header: { imageMessage: { mimetype: 'image/jpeg' } }, body: { text: 'New menu' } } }).type,
     'image',

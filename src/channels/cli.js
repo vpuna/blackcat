@@ -20,7 +20,7 @@ export async function list(opts = {}) {
   for (const c of all) {
     const pair = `bc ${mountOf(findLoaded(c.name).manifest).join(' ')} pair`;
     console.log(
-      `${c.active ? pc.green('●') : pc.dim('○')} ${pc.bold(c.name.padEnd(12))} ${c.label}${c.active ? pc.green('  in use') : ''}${c.paired ? (c.active ? '' : pc.dim(`  set up · bc channel use ${c.name}`)) : pc.dim(`  not set up → ${pair}`)}`,
+      `${c.active ? pc.green('●') : pc.dim('○')} ${pc.bold(c.name.padEnd(12))} ${c.label}${c.active ? pc.green('  in use') : ''}${c.error ? pc.red(`  could not tell whether it is set up: ${c.error}`) : c.paired ? (c.active ? '' : pc.dim(`  set up · bc channel use ${c.name}`)) : pc.dim(`  not set up → ${pair}`)}`,
     );
   }
   console.log(

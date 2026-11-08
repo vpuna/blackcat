@@ -98,6 +98,7 @@ export default {
   selftest: () => [
     {
       name: 'Tesseract',
+      local: true,
       run: async () => {
         const { languages } = await lib();
         if (!available()) return { skip: 'not installed: sudo apt install tesseract-ocr' };

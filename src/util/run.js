@@ -92,15 +92,18 @@ export async function endChildren({ waitMs = 3000, graceMs = 3000 } = {}) {
 }
 
 // Run a command line through bash, the way the owner approved it. Never throws. `env`: added
-// to this process's own. → { code, out (the end of what it printed, stdout then stderr), timedOut }
-export const shell = async (cmd, { timeoutMs = 60_000, keep = 3000, cwd, env } = {}) => {
+// to this process's own. → { code, out (the end of what it printed, stdout then stderr), stdout, timedOut }
+// (`secrets: false`: what it runs does not get the keys and logins of this process's
+// environment, the engine's among them.)
+export const shell = async (cmd, { timeoutMs = 60_000, keep = 3000, cwd, env, secrets = true } = {}) => {
+  const base = secrets ? process.env : withoutSecrets(process.env);
   const r = await exec('bash', ['-c', cmd], {
     timeoutMs,
     maxBuffer: 4 * 1024 ** 2,
     cwd,
-    ...(env ? { env: { ...process.env, ...env } } : {}),
+    ...(env || !secrets ? { env: { ...base, ...env } } : {}),
   });
-  return { code: r.code, out: `${r.stdout}${r.stderr}`.trim().slice(-keep), timedOut: r.timedOut };
+  return { code: r.code, out: `${r.stdout}${r.stderr}`.trim().slice(-keep), stdout: r.stdout.trim().slice(-keep), timedOut: r.timedOut };
 };
 
 // The text of a Word document (.docx), or null if it can't be opened.

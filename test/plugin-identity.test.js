@@ -109,15 +109,57 @@ test("what is another's cannot be claimed: the word a plugin's commands sit unde
   assert.match(why('daemon'), /its service "wa" has the name of one the wa plugin has/);
   assert.match(why('nagger'), /its chat command \/remind is (the remind plugin|blackcat itself)'s/);
   assert.match(why('helper'), /its chat command \/help is blackcat itself's/);
-  // a kind of message is one plugin's: the second is refused where it is read
-  const post = await R.loadOne({ name: 'postman', dir: path.join(dir, 'user-plugins/postman'), bundled: false });
-  assert.match(post.error, /messages of the kind "mail" are already brought in by the mail plugin/);
+  // a kind of message is one plugin's: two that claim one are neither loaded (the mail plugin is off, but what it brought in is kept)
+  assert.match(why('postman'), /messages of the kind "mail", as the mail plugin does: neither is loaded/);
+  assert.match(why('mail'), /messages of the kind "mail", as the postman plugin does: neither is loaded/);
   // and the ones whose things they wanted are untouched
   assert.equal(R.findCommand(['tg', 'account', 'status']).plugin.name, 'tg');
   assert.equal(R.findCommand(['tg', 'bot', 'status']).plugin.name, 'tg-bot');
   assert.equal(R.findCommand(['ssh', 'run']).plugin.dir, path.join(root, 'plugins/ssh'));
   for (const n of ['tg-all', 'tg-twin', 'lookalike', 'daemon', 'nagger', 'helper', 'postman'])
     fs.rmSync(path.join(dir, 'user-plugins', n), { recursive: true });
+});
+
+test("two plugins that bring in the same kind of message: neither collects, both are named, and the kind is nobody's until it is put right", async () => {
+  // (one refused already for something else claims nothing: it does not take the kind from the mail plugin)
+  plugin('impostor', "title: 'SSH', source: { id: 'mail', label: 'Post' }");
+  await fresh(['mail', 'impostor']);
+  assert.match(why('impostor'), /it calls itself "SSH"/);
+  assert.ok(R.findLoaded('mail'), 'the mail plugin is untouched');
+  fs.rmSync(path.join(dir, 'user-plugins/impostor'), { recursive: true });
+  plugin('postman', "source: { id: 'mail', label: 'Post' }, services: [{ id: 'postman', summary: 'x', command: 'hello' }]");
+  await fresh(['mail', 'postman']);
+  const names = R.loaded().map((p) => p.name);
+  assert.ok(!names.includes('mail') && !names.includes('postman'), 'neither is loaded');
+  const { SOURCES, msgSource, source } = await import('../src/archive/sources.js');
+  assert.equal(source('mail'), null, 'nobody keeps it: no files are fetched, nothing is collected');
+  assert.equal(SOURCES.mail, undefined);
+  assert.equal(msgSource('mail:home:12'), 'mail', 'what is in the archive is still told apart by its prefix');
+  const st = bc('selftest', 'blackcat');
+  assert.match(st.stdout, /✗ plugins: not loaded: .*mail \(it brings in messages of the kind "mail", as the postman plugin does/);
+  // put right (the owner's one taken away): the mail plugin is back, and keeps its kind
+  fs.rmSync(path.join(dir, 'user-plugins/postman'), { recursive: true });
+  await fresh(['mail']);
+  assert.ok(R.findLoaded('mail'));
+  assert.equal(source('mail').plugin, 'mail');
+  assert.equal(SOURCES.mail, 'Email');
+});
+
+test('switching on one that would bring in a kind of message another plugin has is refused, even when that one is off', () => {
+  plugin('postman', "source: { id: 'mail', label: 'Post' }");
+  save({ plugins: {} });
+  const r = spawnSync(process.execPath, [`${root}bin/bc.js`, 'plugin', 'enable', 'postman'], {
+    encoding: 'utf8',
+    env,
+    timeout: 60_000,
+    input: '',
+  });
+  assert.match(
+    r.stderr,
+    /Not enabled\. postman: it brings in messages of the kind "mail", as the mail plugin does \(switched off, but what it brought in is kept\)/,
+  );
+  assert.doesNotMatch(bc('plugin', 'list', '--json').stdout, /"name": "postman",\s+"enabled": true/);
+  fs.rmSync(path.join(dir, 'user-plugins/postman'), { recursive: true });
 });
 
 test("switching one on that claims what is another's is refused then and there", () => {

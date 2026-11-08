@@ -88,7 +88,7 @@ const inArchive = () => {
   if (!a) return [];
   const rows = a
     .prepare(
-      "SELECT m.id, m.from_me, m.ts, m.type, m.text, m.chat_ref, d.mimetype, d.file_name AS fileName, d.direct_path AS part FROM messages m LEFT JOIN media d ON d.msg_rowid = m.rowid WHERE m.chat_ref = 'mail:home' ORDER BY m.rowid",
+      "SELECT m.id, m.from_me, m.ts, m.type, m.text, m.chat_ref, d.mimetype, d.file_name AS fileName, json_extract(d.fetch, '$.directPath') AS part FROM messages m LEFT JOIN media d ON d.msg_rowid = m.rowid WHERE m.chat_ref = 'mail:home' ORDER BY m.rowid",
     )
     .all();
   a.close();

@@ -12,7 +12,7 @@ import { came, leadsBy, newWork, processWho, record } from './log.js';
 // piece by piece (each turn of a chat), not as one piece of work.
 const SESSIONS = new Set(['chat', 'logs', 'service run']);
 // Parts of blackcat itself that only look. (A plugin's command says so itself: `changes`.)
-const LOOKS = new Set(['status', 'selftest', 'plugin list', 'plugin info', 'channel', 'permissions']);
+const LOOKS = new Set(['status', 'selftest', 'health', 'plugin list', 'plugin info', 'channel', 'permissions']);
 
 let noted = null;
 leadsBy((category) => leads(category));

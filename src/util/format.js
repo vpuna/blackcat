@@ -36,3 +36,15 @@ export function errMsg(e) {
   }
   return e?.message ?? String(e);
 }
+
+// A call, as the archive keeps it, from any source: one that went on says how long ("Voice call,
+// 12 min"); one that did not is a missed call when it was to the owner, and "not answered" when
+// the owner made it.
+export function callText({ video = false, seconds = 0, mine = false }) {
+  const kind = video ? 'video' : 'voice';
+  const Kind = video ? 'Video' : 'Voice';
+  const s = Math.round(Number(seconds) || 0);
+  if (s <= 0) return mine ? `${Kind} call, not answered` : `Missed ${kind} call`;
+  const m = Math.round(s / 60);
+  return `${Kind} call, ${s < 60 ? `${s} s` : m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`}`;
+}

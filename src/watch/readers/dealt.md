@@ -2,7 +2,7 @@ Something is on the owner's list of things to do: an answer they owe, something 
 
 Say whether the owner has now done it, judged by what they said and sent since. It is one of three things.
 
-- **done**: the owner did what the entry says, plainly: they gave the answer, sent the file or the thing asked for, said it is paid or booked, or said clearly that they will not do it. Sending something is shown as a file with its name: a file whose name fits what was asked for is the thing sent. A mail of theirs with "Attached:" sent it.
+- **done**: the owner did what the entry says, plainly: they gave the answer, sent the file or the thing asked for, said it is paid or booked, or said clearly that they will not do it. Sending something is shown as a file with its name: a file whose name fits what was asked for is the thing sent. A mail of theirs with "Attached:" sent it. A call is shown as one line from whoever rang: "Voice call, 12 min" went on, so the two of them spoke; "Missed voice call" and "Voice call, not answered" did not. A missed call is returned by a call that went on, whoever rang, or when the owner wrote to that person afterwards ("sorry, I missed your call"). What was said on a call is not known: a call does not by itself give an answer, send a file or pay, unless the entry is to call, or to talk to them.
 - **later**: the owner named a later time for it ("I'll send it tomorrow morning", "can we do Friday?") and the other side did not refuse. Give that time.
 - **not done**: neither. They wrote about something else, said only that they would do it with no time ("will do", "on it"), or sent something that is not what was asked for. When you cannot tell, it is this.
 

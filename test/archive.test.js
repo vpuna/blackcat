@@ -35,8 +35,8 @@ test('sources are told apart by the start of an id', () => {
   assert.equal(db.sourceOf('tg:12345'), 'tg');
   assert.equal(db.sourceOf('tg:-100123'), 'tg');
   assert.equal(db.sourceOf('mail:personal'), 'mail');
-  assert.equal(db.sourceOf(null), 'wa');
-  assert.equal(db.msgSource('3A952BDD381E1F0DA5FF'), 'wa');
+  assert.equal(db.sourceOf(null), null, "an id with no source is nobody's: no source is assumed");
+  assert.equal(db.msgSource('3A952BDD381E1F0DA5FF'), 'wa', 'by the shape WhatsApp gives its ids, as its plugin says');
   assert.equal(db.msgSource('tg12345_678'), 'tg');
   assert.equal(db.msgSource('tg-100123_9'), 'tg');
   assert.equal(db.msgSource('mail:personal:4812'), 'mail');
@@ -108,6 +108,28 @@ test('Telegram: a new message is stored with its chat and sender, an edit change
 
   await fire('DeletedMessage', { deletedIds: [2], peer: { userId: 222 } });
   assert.equal(rows("SELECT deleted FROM messages WHERE id = 'tg222_2'")[0].deleted, 1);
+});
+
+test('Telegram: every call is kept as a message, either way: one that went on with how long, one that did not as missed or not answered', async () => {
+  const call = (id, action, extra = {}) =>
+    tgMsg(id, '', { className: 'MessageService', action: { className: 'MessageActionPhoneCall', ...action }, ...extra });
+  const reason = (r) => ({ reason: { className: `PhoneCallDiscardReason${r}` } });
+  await fire('NewMessage', { message: call(10, reason('Missed')) });
+  await fire('NewMessage', { message: call(11, { video: true, ...reason('Missed') }) });
+  await fire('NewMessage', { message: call(12, reason('Missed'), { out: true, senderId: 111 }) });
+  await fire('NewMessage', { message: call(13, reason('Busy')) });
+  await fire('NewMessage', { message: call(14, { duration: 754, ...reason('Hangup') }) });
+  await fire('NewMessage', { message: call(15, { video: true, duration: 40, ...reason('Hangup') }, { out: true, senderId: 111 }) });
+  await fire('NewMessage', { message: call(16, { duration: 3900, ...reason('Disconnect') }) });
+  assert.deepEqual(rows("SELECT id, from_me, type, text FROM messages WHERE type = 'call' AND chat_ref = 'tg:222' ORDER BY id"), [
+    { id: 'tg222_10', from_me: 0, type: 'call', text: 'Missed voice call' },
+    { id: 'tg222_11', from_me: 0, type: 'call', text: 'Missed video call' },
+    { id: 'tg222_12', from_me: 1, type: 'call', text: 'Voice call, not answered' },
+    { id: 'tg222_13', from_me: 0, type: 'call', text: 'Missed voice call' },
+    { id: 'tg222_14', from_me: 0, type: 'call', text: 'Voice call, 13 min' },
+    { id: 'tg222_15', from_me: 1, type: 'call', text: 'Video call, 40 s' },
+    { id: 'tg222_16', from_me: 0, type: 'call', text: 'Voice call, 1 h 5 min' },
+  ]);
 });
 
 // ---------- the WhatsApp source, with a stand-in socket ----------
@@ -192,6 +214,64 @@ test('WhatsApp: a new message is stored with its chat and sender; the same one a
     said.filter((l) => /not kept/.test(l)),
     ['a kind of message that is not kept arrived: requestPaymentMessage'],
   );
+  // A call that was not answered comes with no message in it, only a note of what it was.
+  ev.emit('messages.upsert', {
+    messages: [
+      { key: { remoteJid: '15550001234@s.whatsapp.net', id: 'CALL1', fromMe: false }, messageTimestamp: now - 5, messageStubType: 40 },
+      { key: { remoteJid: '15550001234@s.whatsapp.net', id: 'CALL2', fromMe: false }, messageTimestamp: now - 4, messageStubType: 41 },
+    ],
+    type: 'notify',
+  });
+  await wait(100);
+  assert.deepEqual(rows("SELECT id, sender_ref, from_me, type, text FROM messages WHERE id LIKE 'CALL%' ORDER BY id"), [
+    { id: 'CALL1', sender_ref: 'wa:15550001234@s.whatsapp.net', from_me: 0, type: 'call', text: 'Missed voice call' },
+    { id: 'CALL2', sender_ref: 'wa:15550001234@s.whatsapp.net', from_me: 0, type: 'call', text: 'Missed video call' },
+  ]);
+  // Calls as they go: put together into one message each when they end, with how long one went on.
+  const maya = '15550001234@s.whatsapp.net';
+  const me = '15550000000@s.whatsapp.net';
+  const call = (id, status, at, extra = {}) =>
+    ev.emit('call', [{ id, status, chatId: maya, from: maya, date: new Date(at * 1000), ...extra }]);
+  call('IN1', 'offer', now - 900); // to the owner, answered for 12 minutes
+  call('IN1', 'accept', now - 890);
+  call('IN1', 'terminate', now - 170);
+  call('IN2', 'offer', now - 800, { isVideo: true }); // to the owner, turned down
+  call('IN2', 'reject', now - 795);
+  call('IN3', 'offer', now - 700); // ended with no word of it being answered: not kept
+  call('IN3', 'terminate', now - 690);
+  call('OUT1', 'offer', now - 600, { from: me }); // made by the owner, answered for 40 s
+  call('OUT1', 'accept', now - 590, { from: me });
+  call('OUT1', 'terminate', now - 550, { from: me });
+  call('OUT2', 'offer', now - 500, { from: me }); // made by the owner, rang out
+  call('OUT2', 'timeout', now - 470, { from: me });
+  // (Baileys' own notice of the one that rang out says "missed": not of the owner's call.)
+  ev.emit('messages.upsert', {
+    messages: [{ key: { remoteJid: maya, id: 'OUT2', fromMe: false }, messageTimestamp: now - 470, messageStubType: 40 }],
+    type: 'notify',
+  });
+  call('GRP1', 'offer', now - 400, { isGroup: true });
+  call('GRP1', 'terminate', now - 300, { isGroup: true });
+  await wait(100);
+  assert.deepEqual(
+    rows("SELECT id, from_me, ts, type, text FROM messages WHERE id GLOB 'IN*' OR id GLOB 'OUT*' OR id GLOB 'GRP*' ORDER BY ts"),
+    [
+      { id: 'IN1', from_me: 0, ts: now - 900, type: 'call', text: 'Voice call, 12 min' },
+      { id: 'IN2', from_me: 0, ts: now - 800, type: 'call', text: 'Missed video call' },
+      { id: 'OUT1', from_me: 1, ts: now - 600, type: 'call', text: 'Voice call, 40 s' },
+      { id: 'OUT2', from_me: 1, ts: now - 500, type: 'call', text: 'Voice call, not answered' },
+    ],
+  );
+  assert.deepEqual(
+    said.filter((l) => /^a call/.test(l)),
+    [
+      'a call to you: offer, accept, terminate',
+      'a call to you (video): offer, reject',
+      'a call to you: offer, terminate',
+      'a call you made: offer, accept, terminate',
+      'a call you made: offer, timeout',
+    ],
+    'what was heard of each call, never with whom',
+  );
   ev.emit('messages.delete', { keys: [{ remoteJid: '15550001234@s.whatsapp.net', id: 'AAA1' }] });
   await wait(50);
   assert.equal(rows("SELECT deleted FROM messages WHERE id = 'AAA1'")[0].deleted, 1);
@@ -230,7 +310,7 @@ test('Mail: kept mail goes in as a chat per account, attachments as messages of 
   assert.equal(rows("SELECT name FROM contacts WHERE ref = 'mail:office@school.example'")[0].name, 'School Office <office@school.example>');
   assert.deepEqual(
     rows(
-      "SELECT d.dl_type, d.mimetype, d.file_name, d.direct_path FROM media d JOIN messages m ON m.rowid = d.msg_rowid WHERE m.chat_ref = 'mail:personal' ORDER BY m.rowid",
+      "SELECT d.dl_type, d.mimetype, d.file_name, json_extract(d.fetch, '$.directPath') AS direct_path FROM media d JOIN messages m ON m.rowid = d.msg_rowid WHERE m.chat_ref = 'mail:personal' ORDER BY m.rowid",
     ),
     [
       { dl_type: 'mail', mimetype: 'application/pdf', file_name: 'letter.pdf', direct_path: '2' },
@@ -238,6 +318,10 @@ test('Mail: kept mail goes in as a chat per account, attachments as messages of 
     ],
   );
   assert.equal(store.storedText('personal', 7), got[0].text);
+  const { stats } = await import('../src/archive/query.js');
+  const r = db.openRead();
+  assert.equal(stats(r, 'mail').media.fetchable, 2, 'its attachments can be fetched: the mail plugin kept where each is');
+  r.close();
   store.unarchive('personal', [7]);
   assert.equal(rows("SELECT COUNT(*) AS n FROM messages WHERE chat_ref = 'mail:personal'")[0].n, 0);
   assert.equal(rows('SELECT COUNT(*) AS n FROM media d WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.rowid = d.msg_rowid)')[0].n, 0);
@@ -256,6 +340,29 @@ test('searching by source returns that source only', async () => {
   assert.equal(count('wa'), 1);
   assert.equal(count('tg'), 0);
   assert.equal(count(null), 2);
+});
+
+test('a chat is found by its id as its service gives it, without the source in front, whatever the source', async () => {
+  const w = db.openWrite();
+  w.prepare(
+    "INSERT INTO chats (ref, name, is_group, last_ts) VALUES ('wa:15557770000@s.whatsapp.net', 'Lee', 0, ?), ('tg:4242', 'Kim', 0, ?)",
+  ).run(now, now);
+  w.close();
+  const { listChats } = await import('../src/archive/query.js');
+  const r = db.openRead();
+  assert.deepEqual(
+    listChats(r, { match: '15557770000@s.whatsapp.net' }).map((c) => c.name),
+    ['Lee'],
+  );
+  assert.deepEqual(
+    listChats(r, { match: '4242' }).map((c) => c.name),
+    ['Kim'],
+  );
+  assert.deepEqual(
+    listChats(r, { match: 'tg:4242' }).map((c) => c.name),
+    ['Kim'],
+  );
+  r.close();
 });
 
 // ---------- what a watch reads ----------

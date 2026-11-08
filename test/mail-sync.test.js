@@ -121,3 +121,12 @@ test('how often new mail is fetched is a setting: every 5 minutes until chosen, 
   const { decide } = await import('../src/agent/policy.js');
   assert.equal(decide('Bash', { command: 'blackcat mail setup --every 30m --json' }).action, 'ask');
 });
+
+// (W5 of the audit of 2026-10-24: a refused password was told by the words of the message.)
+test('a refused password is told by what the server said, whatever the message to the owner', async () => {
+  const { failure } = await import('../plugins/mail/imap.js');
+  assert.equal(failure({ authenticationFailed: true, message: 'x' }).refused, true);
+  assert.equal(failure({ responseText: 'Application-specific password required', message: 'x' }).refused, true);
+  assert.equal(failure({ code: 'ETIMEDOUT', message: 'x' }).refused, false);
+  assert.match(failure({ code: 'ETIMEDOUT', message: 'x' }).message, /did not answer/);
+});

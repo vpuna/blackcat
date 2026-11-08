@@ -149,3 +149,34 @@ test('one that never comes to look at the screen says why it did not start', asy
   );
   device.broken = false;
 });
+
+// (W9 of the audit of 2026-10-24: the screen was read again up to three times with nothing said.)
+test('a screen read that fails says why at once, and is not tried again blind', async () => {
+  const dev = new Device({ log: () => {} }, 'phone1');
+  let n = 0;
+  dev.call = async () => (++n === 1 ? Promise.reject(new Error('socket hang up')) : '<hierarchy/>');
+  await assert.rejects(dev.dump(), /reading the screen of phone1 failed: socket hang up/);
+  assert.equal(n, 1, 'asked once');
+  assert.equal(await dev.dump(), '<hierarchy/>');
+});
+
+// (W10 of the audit of 2026-10-24: closing the keyboard and the lock screen slept a fixed time
+// and then looked once.)
+test('the keyboard and the lock screen are looked at until they have gone, not after a fixed wait', async () => {
+  const dev = new Device({ log: () => {} }, 'phone1');
+  let looks = 0;
+  dev.key = async () => {};
+  dev.keyboardShown = async () => ++looks < 4; // up, then gone on the fourth look
+  const t0 = Date.now();
+  assert.equal(await dev.hideKeyboard(), true);
+  assert.equal(looks, 4, 'looked at again until it had gone');
+  assert.ok(Date.now() - t0 < 1000, 'and no longer');
+  let locked = 3;
+  dev.wakefulness = async () => 'Awake';
+  dev.shell = async () => '';
+  dev.keyguardShowing = async () => locked-- > 0;
+  await dev.wake();
+  assert.ok(locked < 0, 'unlocked a few looks later: no error');
+  dev.keyguardShowing = async () => true;
+  await assert.rejects(dev.wake(), /locked with a PIN/);
+});

@@ -21,11 +21,11 @@ export default {
   help: `Examples:
   bc engine status            which engine and model the agent and the readers use
   bc engine setup             choose the model and how hard it thinks
-  bc claude setup      point Claude Code at a model somewhere else (leave empty for your Claude plan)`,
+  bc claude setup      a sign-in that lasts (claude setup-token), or a model somewhere else`,
 
   commands: {
     setup: {
-      summary: 'where the model is: leave empty for your Claude plan, or give the address of a model served somewhere else',
+      summary: 'where the model is (your Claude plan, or a model served somewhere else), and a sign-in for your plan that lasts',
       access: 'owner',
       form: [
         {
@@ -50,12 +50,23 @@ export default {
           keep: true,
           when: (a) => !!String(a.endpoint ?? '').trim(),
         },
+        {
+          id: 'token',
+          type: 'secret',
+          message:
+            'A sign-in for your plan that lasts, made with `claude setup-token` (empty: the sign-in of `claude` here, which runs out after about four weeks)',
+          optional: true,
+          keep: true,
+          when: (a) => !String(a.endpoint ?? '').trim(),
+        },
       ],
       run: (ctx, a) => {
         const endpoint = String(a.endpoint ?? '').trim();
         ctx.config.set({ endpoint: endpoint || undefined });
         if (!endpoint) ctx.secrets.delete('key');
         else if (String(a.key ?? '').trim()) ctx.secrets.set('key', String(a.key).trim());
+        if (endpoint) ctx.secrets.delete('token');
+        else if (String(a.token ?? '').trim()) ctx.secrets.set('token', String(a.token).trim());
         return endpoint
           ? `Claude Code will use the model at ${endpoint}. Choose which model with: bc engine setup (any name it serves can be typed). Then restart the agent: bc restart agent`
           : 'Claude Code will use your Claude plan. Restart the agent: bc restart agent';
@@ -65,6 +76,8 @@ export default {
 
   engine: {
     label: 'Claude Code',
+    // The engine used until another is chosen.
+    default: true,
     // The kinds of file its models can be given to read. (Not audio.)
     takes: () => ['pictures', 'documents'],
     // What its processes are called: `bc status` counts the conversations being held by them.
@@ -116,7 +129,8 @@ export default {
 
   status: (ctx) => `the model is at: ${ctx.config.get().endpoint ?? 'your Claude plan'}`,
   settings: (ctx) => ({
-    'the model is at': ctx.config.get().endpoint ?? 'your Claude plan (signed in with `claude`)',
+    'the model is at': ctx.config.get().endpoint ?? 'your Claude plan',
     key: ctx.secrets.has('key') ? 'saved' : 'none',
+    'signed in with': ctx.secrets.has('token') ? 'a sign-in made with `claude setup-token`' : 'the sign-in of `claude` on this machine',
   }),
 };

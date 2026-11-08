@@ -3,7 +3,7 @@
 // chat, a person or a message is recorded the same way wherever it came from.
 import { record } from '../activity/log.js';
 import { ownRefs } from '../channels/registry.js';
-import { sourceOf } from './sources.js';
+import { sourceOf, sourceSql } from './sources.js';
 
 // A chat that is blackcat itself (src/channels/registry.js, ownRefs) is never written: not
 // the chat, not a message in it. This is held here, for every source, so that one written
@@ -69,7 +69,7 @@ export function archiveStatements(db, account = () => null) {
   return {
     ...q,
     chat: unlessOwn(on(q.chat), (r) => r.ref),
-    media: { run: (row) => q.media.run({ ...row, mimetype: fileType(row.mimetype, row.fileName) }) },
+    media: { run: (row) => q.media.run(mediaRow({ ...row, mimetype: fileType(row.mimetype, row.fileName) })) },
     msg: counted(unlessOwn(on(q.msg), (r) => r.chat)),
     msgFill: counted(
       unlessOwn(on(q.msgFill), (r) => r.chat),
@@ -110,8 +110,8 @@ function statements(db) {
     exists: db.prepare('SELECT rowid FROM messages WHERE chat_ref = ? AND id = ?'),
     // The file a message carries: enough to fetch it later.
     media:
-      db.prepare(`INSERT OR IGNORE INTO media (msg_rowid, dl_type, mimetype, size, width, height, seconds, file_name, direct_path, url, media_key, file_sha256, file_enc_sha256, thumb)
-      VALUES (@rowid, @dlType, @mimetype, @size, @width, @height, @seconds, @fileName, @directPath, @url, @mediaKey, @sha256, @encSha256, @thumb)`),
+      db.prepare(`INSERT OR IGNORE INTO media (msg_rowid, dl_type, mimetype, size, width, height, seconds, file_name, file_sha256, thumb, fetch)
+      VALUES (@rowid, @dlType, @mimetype, @size, @width, @height, @seconds, @fileName, @sha256, @thumb, @fetch)`),
     edit: db.prepare(`UPDATE messages SET text = @text, edited = 1,
       link_url = COALESCE(@linkUrl, link_url), link_title = COALESCE(@linkTitle, link_title), link_desc = COALESCE(@linkDesc, link_desc)
       WHERE chat_ref = @chat AND id = @id`),
@@ -122,6 +122,64 @@ function statements(db) {
     removeChat: db.prepare('DELETE FROM chats WHERE ref = ?'),
     removeChatMessages: db.prepare('DELETE FROM messages WHERE chat_ref = ?'),
     text: db.prepare('SELECT text FROM messages WHERE chat_ref = ? AND id = ?').pluck(),
+    // What else a source does to what it keeps, so that none writes these tables itself.
+    // The owner's own messages that were stored as someone else's (from `ref`, the owner).
+    markMine: db.prepare('UPDATE messages SET from_me = 1, sender_ref = NULL WHERE sender_ref = ? AND from_me = 0'),
+    // What a chat is (a group, a channel, a bot), and how far back its history is fetched.
+    chatInfo: db.prepare(`INSERT INTO chat_info (ref, kind, members, username) VALUES (@ref, @kind, @members, @username)
+      ON CONFLICT (ref) DO UPDATE SET kind = excluded.kind, members = COALESCE(excluded.members, chat_info.members), username = COALESCE(excluded.username, chat_info.username)`),
+    setCutoff: db.prepare('UPDATE chat_info SET backfill_cutoff = ? WHERE ref = ?'),
+    // A chat known under another name: its chat, its messages, and where it is the sender,
+    // under the one name from now on; and the other name noted, to be read as the same.
+    alias: db.prepare('INSERT OR REPLACE INTO aliases (ref, same_as) VALUES (?, ?)'),
+    mergeChat:
+      db.prepare(`INSERT INTO chats (ref, name, is_group, last_ts, account) SELECT ?, name, is_group, last_ts, account FROM chats WHERE ref = ?
+      ON CONFLICT (ref) DO UPDATE SET name = COALESCE(chats.name, excluded.name), last_ts = MAX(COALESCE(chats.last_ts, 0), COALESCE(excluded.last_ts, 0))`),
+    moveChatMessages: db.prepare('UPDATE OR IGNORE messages SET chat_ref = ? WHERE chat_ref = ?'),
+    moveSender: db.prepare('UPDATE messages SET sender_ref = ? WHERE sender_ref = ?'),
+    // A link's picture, and the message as the source gave it.
+    linkThumb: db.prepare('INSERT OR IGNORE INTO link_thumbs (msg_rowid, jpeg, width, height) VALUES (?, ?, ?, ?)'),
+    keepRaw: db.prepare('INSERT OR IGNORE INTO raw (msg_rowid, proto) VALUES (?, ?)'),
+    renameChat: db.prepare('UPDATE chats SET name = ? WHERE ref = ?'),
+  };
+}
+
+// The operations of a source on the whole of what it keeps. (`src`: its key, "wa".)
+export function sourceChanges(db) {
+  return {
+    // The other ids its chats and people are known by: [{ ref, sameAs }].
+    aliases: (src) => db.prepare(`SELECT ref, same_as AS sameAs FROM aliases WHERE ${sourceSql('ref', src)}`).all(),
+    // A chat known as `from` is `to`: one person or chat never shows up twice.
+    sameAs(from, to) {
+      const q = statements(db);
+      q.alias.run(from, to);
+      q.mergeChat.run(to, from);
+      q.removeChat.run(from);
+      q.moveChatMessages.run(to, from);
+      q.moveSender.run(to, from);
+    },
+    // Each of its chats' history to be fetched again (the chats it collects changed).
+    refetchAll: (src) => db.prepare(`UPDATE chat_info SET backfill_cutoff = NULL WHERE ${sourceSql('ref', src)}`).run().changes,
+    // A message deleted, known by its id alone: in any of the source's chats but those whose ref
+    // starts with `except` (a deletion of a channel's names the channel). `idLike`: a LIKE pattern.
+    deletedAnywhere: (src, idLike, except) =>
+      db
+        .prepare(`UPDATE messages SET deleted = 1 WHERE id LIKE ? ESCAPE '\\' AND ${sourceSql('chat_ref', src)} AND chat_ref NOT LIKE ?`)
+        .run(idLike, `${except}%`).changes,
+    // The source unlinked, and what it kept to go too: its messages, chats, people, what its chats
+    // are, the other names of its chats, and its own notes. → how many messages went
+    forget(src) {
+      const n = db.prepare(`DELETE FROM messages WHERE ${sourceSql('chat_ref', src)}`).run().changes;
+      for (const [t, col] of [
+        ['chats', 'ref'],
+        ['contacts', 'ref'],
+        ['chat_info', 'ref'],
+        ['aliases', 'ref'],
+      ])
+        db.prepare(`DELETE FROM ${t} WHERE ${sourceSql(col, src)}`).run();
+      db.prepare("DELETE FROM meta WHERE key LIKE ? ESCAPE '\\'").run(`${src}\\_%`);
+      return n;
+    },
   };
 }
 
@@ -133,13 +191,11 @@ export const mediaRow = (m) => ({
   height: null,
   seconds: null,
   fileName: null,
-  directPath: null,
-  url: null,
-  mediaKey: null,
   sha256: null,
-  encSha256: null,
   thumb: null,
   ...m,
+  // What the source keeps to fetch the file later, as it likes (src/archive/db.js, part 10): null when it can't be.
+  fetch: m.fetch == null ? null : typeof m.fetch === 'string' ? m.fetch : JSON.stringify(m.fetch),
 });
 // The columns of a message that a source may leave out.
 export const messageRow = (m) => ({

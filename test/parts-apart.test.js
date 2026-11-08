@@ -27,6 +27,8 @@ test("each part's tables are written only by that part", () => {
     reminders: ['src/reminders/'],
     watch_items: ['src/watch/'],
     watches: ['src/watch/'],
+    lists: ['src/watch/'],
+    list_links: ['src/watch/'],
     watch_seen: ['src/watch/'],
     checks: ['src/checks/'],
     check_findings: ['src/checks/'],
@@ -52,6 +54,11 @@ test('none of the three is named by the core or by a plugin: no import of their 
   const wrong = [];
   for (const f of src('src', 'plugins')) {
     if (/^src\/(watch|reminders|checks)\//.test(f) || f === 'src/internal.js' || f === 'src/plugins/registry.js') continue; // (the registry lists the parts there are; internal.js is what they share)
+    // (Written down: src/lists is the commands of the lists the watch part keeps, a part of its own so that they are `bc list`. It reaches only the watch part, and through its functions: it writes no table itself.)
+    if (f.startsWith('src/lists/')) {
+      if (/['"]\.\.\/(reminders|checks)\//.test(code(f))) wrong.push(`${f} imports reminders or checks`);
+      continue;
+    }
     const text = code(f);
     if (/['"](\.\.\/|\.\/)+(watch|reminders|checks)\/[\w.-]+['"]/.test(text)) wrong.push(`${f} imports one of them`);
     if (/p\.name === '(watch|remind|check)'|findLoaded\('(watch|remind|check)'\)/.test(text)) wrong.push(`${f} asks after one by name`);
@@ -61,6 +68,29 @@ test('none of the three is named by the core or by a plugin: no import of their 
     for (const m of code(f).matchAll(/['"]\.\.\/reminders\/([\w.-]+)['"]/g))
       if (m[1] !== 'nudges.js') wrong.push(`${f} imports reminders/${m[1]}`);
   for (const f of src('src/reminders')) if (/['"]\.\.\/(watch|checks)\//.test(code(f))) wrong.push(`${f} imports a watch or a check`);
+  // nor through what the parts share (internal.js): what of reminders it re-exports is the
+  // reminders' own. (A3 of the audit of 2026-10-24: the briefing read and wrote reminder lines.)
+  const theirs = new Set(
+    [...fs.readFileSync(path.join(root, 'src/internal.js'), 'utf8').matchAll(/export \{([^}]*)\} from '\.\/reminders\/[^']+'/g)].flatMap(
+      (m) =>
+        m[1]
+          .split(',')
+          .map((x) =>
+            x
+              .trim()
+              .split(/\s+as\s+/)
+              .pop(),
+          )
+          .filter(Boolean),
+    ),
+  );
+  // (Written down: a watch keeps its nudges in the reminders' table, through nudges.js, so it
+  // opens the database with that table in place.)
+  const SHARED = { 'src/watch/db.js': ['openRemindersDb'] };
+  for (const f of src('src/watch'))
+    for (const m of code(f).matchAll(/import \{([^}]*)\} from '\.\.\/internal\.js'/g))
+      for (const name of m[1].split(',').map((x) => x.trim().split(/\s+as\s+/)[0]))
+        if (theirs.has(name) && !SHARED[f]?.includes(name)) wrong.push(`${f} uses reminders' ${name}`);
   for (const f of src('src/checks')) if (/['"]\.\.\/(watch|reminders)\//.test(code(f))) wrong.push(`${f} imports a watch or a reminder`);
   assert.deepEqual(wrong, []);
 });
@@ -70,7 +100,7 @@ let item;
 test('a nudge is set, moved and cancelled for an entry through the interface alone; one that has gone out is never set again', () => {
   withDb(W.openWatchDb, (db) => {
     watch = W.addWatch(db, { chatId: 42, name: 'Trips', lookFor: 'x', sources: { everywhere: 'all' }, mode: 'digest' });
-    item = W.addItem(db, { watchId: watch.id, title: 'Book the ferry' });
+    item = W.addItem(db, { listId: watch.list_id, title: 'Book the ferry' });
     assert.equal(N.pendingNudge(db, item.id), undefined);
     assert.equal(
       N.setNudgeFor(db, item.id, { chatId: 42, text: 'Book the ferry', dueTs: now() + 3600, note: 'from your "Trips" list' }),
@@ -104,7 +134,7 @@ test('done with a nudge ticks the entry off its list: reminders tell whoever set
     R.setStatus(db, r, 'done');
     assert.equal(W.getItem(db, item.id).status, 'done');
     // the other way: the entry dealt with settles what was sent or waiting about it
-    const other = W.addItem(db, { watchId: watch.id, title: 'Renew the pass' });
+    const other = W.addItem(db, { listId: watch.list_id, title: 'Renew the pass' });
     N.setNudgeFor(db, other.id, { chatId: 42, text: 'Renew the pass', dueTs: now() + 60 });
     W.setItemStatus(db, other.id, 'dropped');
     assert.equal(db.prepare('SELECT status FROM reminders WHERE item_id = ?').pluck().get(other.id), 'cancelled');
@@ -124,7 +154,7 @@ test('a part that fails when told a nudge is done does not stop the reminder bei
   save({ ...load(), plugins: { ...load().plugins, enabled: ['clumsy'] } });
   await loadPlugins();
   withDb(W.openWatchDb, (db) => {
-    const it = W.addItem(db, { watchId: watch.id, title: 'Water the plants' });
+    const it = W.addItem(db, { listId: watch.list_id, title: 'Water the plants' });
     N.setNudgeFor(db, it.id, { chatId: 42, text: 'Water the plants', dueTs: now() + 60 });
     const id = N.pendingNudge(db, it.id).id;
     assert.equal(R.setStatus(db, id, 'done'), 1);
@@ -166,8 +196,8 @@ test('a file the owner sent is kept for as long as a reminder or an entry on a l
   const { loaded, makeCtx } = await import('../src/plugins/registry.js');
   withDb(W.openWatchDb, (db) => {
     R.addReminder(db, { chatId: 77, text: 'Look at this', dueTs: now() + 60, file: '/inbox/letter.pdf' });
-    W.addItem(db, { watchId: watch.id, title: 'A wish', file: '/inbox/novel.jpg' });
-    const gone = W.addItem(db, { watchId: watch.id, title: 'Dealt with', file: '/inbox/old.jpg' });
+    W.addItem(db, { listId: watch.list_id, title: 'A wish', file: '/inbox/novel.jpg' });
+    const gone = W.addItem(db, { listId: watch.list_id, title: 'Dealt with', file: '/inbox/old.jpg' });
     W.setItemStatus(db, gone.id, 'done');
   });
   const keep = new Set();
@@ -203,6 +233,18 @@ test('any one of the three switched off leaves the other two working', () => {
     assert.equal(bc('status').status, 0, `status with ${off} off`);
   }
   save({ ...load(), plugins: { ...load().plugins, disabled: [] } });
+});
+
+test('the briefing lists the reminders of the day, as the reminders give them; with reminders off, none', async () => {
+  withDb(R.openRemindersDb, (db) => R.addReminder(db, { chatId: 42, text: 'Return the library books', dueTs: now() + 120 }));
+  const { composeBriefing } = await import('../src/watch/briefing.js');
+  const shown = async () => (await withDb(W.openWatchDb, (db) => composeBriefing(db, 42))).html;
+  assert.match(await shown(), /\d+\. ⏰ <b>Return the library books<\/b>/);
+  save({ ...load(), plugins: { ...load().plugins, disabled: ['remind'] } });
+  await loadPlugins();
+  assert.doesNotMatch(await shown(), /library books/, 'with reminders off, nothing of theirs');
+  save({ ...load(), plugins: { ...load().plugins, disabled: [] } });
+  await loadPlugins();
 });
 
 // ---- no plugin is named by the core: what it needs, a plugin declares

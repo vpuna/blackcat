@@ -1,5 +1,5 @@
 import { NoModel } from '../engines/registry.js';
-import { getItem, setItemStatus, updateItem } from './db.js';
+import { getItem, setItemStatus, setOutcome, updateItem } from './db.js';
 import { outOfQuiet } from '../quiet.js';
 import { pendingNudge, setNudgeFor, wasNudged } from '../reminders/nudges.js';
 import { hearable, isoLocal, msgSource, openArchive, openNotesDb, parseAt, SENDER_LABEL, source, TimeError } from '../internal.js';
@@ -11,9 +11,9 @@ import { log } from '../log.js';
 import { wordsOf } from '../archive/reading.js';
 import { WORDLESS, fileWords, reader } from './collect.js';
 
-// What the owner asked of somebody and is waiting for. At every look, what that person has
-// sent in the conversation since is judged by a reader: an answer, and the entry is ticked
-// off without a word. When its time comes with no answer, the owner is told, once; after
+// What the owner asked of somebody and is waiting for. At every look, what has been said in
+// the conversation since, by that person or by the owner ("I just got it, thanks"), is judged
+// by a reader: an answer, and the entry is ticked off without a word. When its time comes with no answer, the owner is told, once; after
 // that it is still read, and ticked off when an answer comes, but never told about again.
 //
 // And what the owner owes (OWED: an answer, a promise, something due), the other way round:
@@ -33,9 +33,9 @@ export async function checkBack(db, w) {
   const nowS = Math.floor(Date.now() / 1000);
   const open = db
     .prepare(
-      `SELECT * FROM watch_items WHERE watch_id = ? AND category IN (${[WAITING, ...OWED].map(() => '?').join(', ')}) AND status IN ('new', 'kept') ORDER BY remind_ts`,
+      `SELECT * FROM watch_items WHERE list_id = ? AND category IN (${[WAITING, ...OWED].map(() => '?').join(', ')}) AND status IN ('new', 'kept') ORDER BY remind_ts`,
     )
-    .all(w.id, WAITING, ...OWED);
+    .all(w.list_id, WAITING, ...OWED);
   {
     for (const it of open) {
       const owed = OWED.includes(it.category);
@@ -72,10 +72,13 @@ export async function checkBack(db, w) {
         const first = rows.findIndex((r) => r.ts > (it.checked_ts ?? 0));
         return { asked: m, since: first < 0 ? rows.slice(-CONTEXT) : rows.slice(Math.max(0, first - CONTEXT)) };
       });
-      // Nothing has come from them since it was last looked at, and its time has not come: nothing to do.
+      // Nothing has been said since it was last looked at (for what the owner owes, by them), and its
+      // time has not come: nothing to do.
+      // (A call is the two of them, whoever rang: one that went on may be the owner doing what they owed.)
       const theirs = since.filter((r) => !r.mine);
-      const mine = since.filter((r) => r.mine);
-      const fresh = (owed ? mine : theirs).some((r) => r.ts > (it.checked_ts ?? 0));
+      const mine = since.filter((r) => r.mine || r.type === 'call');
+      const fresh = (owed ? mine : since).some((r) => r.ts > (it.checked_ts ?? 0));
+      const seen = since.length ? Math.max(...since.map((r) => r.ts)) : null;
       if (owed ? !fresh || !asked : !fresh && (!due || told)) continue;
       // An answer may be spoken. A voice note is written down when it arrives, so its words
       // are usually here; one that is still to be listened to is waited for (this entry is
@@ -105,7 +108,8 @@ export async function checkBack(db, w) {
         await dealt(db, w, it, { asked, since, mine, said, nowS });
         continue;
       }
-      // (Only when there is something new to judge: what was judged before, and was no answer, is not asked about again.)
+      // (Only when there is something new to judge: what was judged before, and was no answer, is
+      // not asked about again; nor the owner's own follow-ups, while nothing has come from them.)
       if (asked && fresh && theirs.some((r) => r.text || r.heard)) {
         let judged;
         try {
@@ -130,7 +134,7 @@ export async function checkBack(db, w) {
         const outcome = clause(judged.why);
         if (judged.state === 'answered') {
           // (What it came to is kept with the entry, and when: the briefing says so once.)
-          if (outcome) updateItem(db, it.id, { summary: `Answered: ${outcome}` });
+          setOutcome(db, it.id, 'answered', outcome);
           db.prepare('UPDATE watch_items SET checked_ts = ? WHERE id = ?').run(nowS, it.id);
           setItemStatus(db, it.id, 'done');
           continue;
@@ -145,17 +149,13 @@ export async function checkBack(db, w) {
             if (!(e instanceof TimeError)) throw e;
           }
           if (by && by > nowS && by < nowS + 90 * 86400) {
-            db.prepare('UPDATE watch_items SET remind_ts = ?, checked_ts = ? WHERE id = ?').run(
-              by,
-              Math.max(...theirs.map((r) => r.ts)),
-              it.id,
-            );
-            if (outcome) updateItem(db, it.id, { summary: `Since then: ${outcome}` });
+            db.prepare('UPDATE watch_items SET remind_ts = ?, checked_ts = ? WHERE id = ?').run(by, seen, it.id);
+            setOutcome(db, it.id, 'later', outcome);
             continue;
           }
         }
       }
-      if (theirs.length) db.prepare('UPDATE watch_items SET checked_ts = ? WHERE id = ?').run(Math.max(...theirs.map((r) => r.ts)), it.id);
+      if (seen) db.prepare('UPDATE watch_items SET checked_ts = ? WHERE id = ?').run(seen, it.id);
       if (!due || told) continue;
       // Its time has come and it is not answered: told once. Where they sent a voice note
       // nobody could listen to, that is said: it may be the answer.
@@ -198,7 +198,7 @@ async function dealt(db, w, it, { asked, since, mine, said, nowS }) {
   const outcome = clause(judged.why);
   const seen = Math.max(...mine.map((r) => r.ts));
   if (judged.state === 'done' && Number(judged.confidence) >= SURE) {
-    if (outcome) updateItem(db, it.id, { summary: `Done: ${outcome}` });
+    setOutcome(db, it.id, 'done', outcome);
     db.prepare('UPDATE watch_items SET checked_ts = ? WHERE id = ?').run(nowS, it.id);
     setItemStatus(db, it.id, 'done');
     return;
@@ -212,7 +212,7 @@ async function dealt(db, w, it, { asked, since, mine, said, nowS }) {
     }
     if (by && by > nowS && by < nowS + 90 * 86400) {
       db.prepare('UPDATE watch_items SET remind_ts = ?, checked_ts = ? WHERE id = ?').run(by, seen, it.id);
-      if (outcome) updateItem(db, it.id, { summary: `Since then: ${outcome}` });
+      setOutcome(db, it.id, 'later', outcome);
       setNudge(db, w, getItem(db, it.id), asked.text);
       return;
     }
@@ -230,9 +230,9 @@ export async function byReference(db, w) {
   const nowS = Math.floor(Date.now() / 1000);
   const open = db
     .prepare(
-      `SELECT * FROM watch_items WHERE watch_id = ? AND category IN (${COMING.map(() => '?').join(', ')}) AND status IN ('new', 'kept') AND length(reference) >= ?`,
+      `SELECT * FROM watch_items WHERE list_id = ? AND category IN (${COMING.map(() => '?').join(', ')}) AND status IN ('new', 'kept') AND length(reference) >= ?`,
     )
-    .all(w.id, ...COMING, MIN_REFERENCE);
+    .all(w.list_id, ...COMING, MIN_REFERENCE);
   for (const it of open) {
     const found = withDb(openArchive, (archive) =>
       archive
@@ -264,7 +264,7 @@ export async function byReference(db, w) {
     db.prepare('UPDATE watch_items SET checked_ts = ? WHERE id = ?').run(Math.max(...found.map((r) => r.ts)), it.id);
     const outcome = clause(judged.why);
     if ((judged.state === 'come' && it.category === 'expected') || judged.state === 'cancelled') {
-      updateItem(db, it.id, { summary: `${judged.state === 'come' ? 'Arrived' : 'Cancelled'}: ${outcome ?? judged.state}` });
+      setOutcome(db, it.id, judged.state === 'come' ? 'arrived' : 'cancelled', outcome);
       db.prepare('UPDATE watch_items SET checked_ts = ? WHERE id = ?').run(nowS, it.id);
       setItemStatus(db, it.id, 'done');
     } else if (judged.state === 'moved' && /^\d{4}-\d{2}-\d{2}$/.test(judged.date ?? '') && judged.date >= isoLocal(nowS).slice(0, 10)) {
@@ -275,8 +275,8 @@ export async function byReference(db, w) {
         it.category === 'booking'
           ? { eventDate: judged.date, remindTs: Math.max(at('18:00', -1), nowS + 60) }
           : { remindTs: at('09:00', 1) };
-      if (outcome) patch.summary = `Moved: ${outcome}`;
       updateItem(db, it.id, patch);
+      setOutcome(db, it.id, 'moved', outcome);
       setNudge(db, w, getItem(db, it.id));
     }
   }

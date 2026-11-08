@@ -3,7 +3,7 @@ import { openAgentDb as openBase } from '../agentdb.js';
 import { upgrade } from '../db.js';
 import { adopt } from '../owner.js';
 import { log } from '../log.js';
-import { nextRepeat } from '../util/when.js';
+import { fmtWhen, nextRepeat, repeatText } from '../util/when.js';
 import { loaded, makeCtx } from '../plugins/registry.js';
 
 const SCHEMA = `
@@ -156,8 +156,23 @@ export const markSent = (db, r) =>
     .prepare("UPDATE reminders SET status = 'sent', sent_ts = ? WHERE id = ? AND status = 'pending' AND due_ts = ?")
     .run(now(), r.id, r.due_ts).changes > 0;
 
-export const reschedule = (db, id, dueTs) =>
-  db.prepare("UPDATE reminders SET due_ts = ?, status = 'pending', sent_ts = NULL WHERE id = ?").run(dueTs, id).changes;
+// Why a reminder may not be moved to `dueTs`: one already answered (done, cancelled, missed)
+// is not brought back, and a time of a series goes only to before its next one (snoozed past
+// tomorrow's walk, it would be two walks). The one rule for the buttons, a tap on an old
+// message, and the command. → null when it may, or why not
+export function whyNotMove(db, r, dueTs) {
+  if (!OPEN.includes(r.status)) return `it is already ${r.status}`;
+  const next = r.repeat ? nextOf(db, r) : null;
+  if (next && dueTs >= next.due_ts) return `it comes again ${fmtWhen(next.due_ts)}, before then`;
+  return null;
+}
+// → null when moved, or why not (as whyNotMove)
+export function snooze(db, r, dueTs) {
+  const why = whyNotMove(db, r, dueTs);
+  if (!why) db.prepare("UPDATE reminders SET due_ts = ?, status = 'pending', sent_ts = NULL WHERE id = ?").run(dueTs, r.id);
+  return why;
+}
+const OPEN = ['pending', 'sent'];
 
 // The next time of a series, made when the one before it went.
 export const nextOf = (db, r) =>
@@ -175,7 +190,10 @@ export const closeMissed = (db, r) =>
 
 // Done with, or skipped, this time. Of a series, one not yet sent makes way for the next time
 // (one sent has made it already): the series goes on. → whether it changed
+// Done, or cancelled: only one still open (an old message's ✅ does not undo a cancel).
+// → how many changed
 export function answer(db, r, status) {
+  if (!OPEN.includes(r.status)) return 0;
   const changes = setStatus(db, r.id, status);
   if (changes && r.status === 'pending' && r.repeat) addNextRepeat(db, r);
   return changes;
@@ -190,4 +208,18 @@ export const stopSeries = (db, r) =>
 export function oneEach(rows) {
   const seen = new Set();
   return rows.filter((r) => r.series == null || (!seen.has(r.series) && seen.add(r.series)));
+}
+
+// What a reminder is, in words: the one description that the chat, the terminal and the
+// briefing each lay out in their own way (so that they say the same). → { text, state (not
+// marked done, done, cancelled, missed; none while it waits), auto, repeats, re, file }
+export function aboutReminder(r) {
+  return {
+    text: r.text,
+    state: { sent: 'not marked done', done: 'done', cancelled: 'cancelled', missed: 'missed' }[r.status] ?? null,
+    auto: r.source === 'auto',
+    repeats: r.repeat ? repeatText(r.repeat) : null,
+    re: r.msg_chat ? (r.msg_sender ?? r.msg_chat) : null,
+    file: !!r.file,
+  };
 }

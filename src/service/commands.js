@@ -9,6 +9,7 @@ import { load } from '../config.js';
 import { logo } from '../logo.js';
 import { asJson } from '../util/when.js';
 import { duration, gb, systemInfo } from '../system.js';
+import { ago } from '../util/time.js';
 import { sleep } from '../util/wait.js';
 import { UNIT, bootInstalled, hasSystemd, lingerEnabled, otherHome as bootOtherHome, removeUnit, systemctl, writeUnit } from './boot.js';
 import {
@@ -38,7 +39,10 @@ async function targets(name) {
 
 // ---------- start / stop / restart ----------
 
-async function control(verb, name) {
+// How long a stop or restart waits for work that must not be cut off (holds.js), at most.
+const HOLD_WAIT_S = () => Number(process.env.BLACKCAT_HOLD_WAIT_S) || 600;
+
+async function control(verb, name, opts = {}) {
   const past = { start: 'started', stop: 'stopped', restart: 'restarted' }[verb];
   // (On the activity record as the command ends, with how long it took and whether it worked: what it was for is said here.)
   about({ words: [name ?? 'everything'] });
@@ -46,6 +50,27 @@ async function control(verb, name) {
   if (!st) {
     console.error(NOT_RUNNING);
     process.exit(1);
+  }
+  // The agent stopped ends what it is running: a routine on a phone halfway through a booking
+  // would be left at its screen, with the owner's answer taken by nobody. Waited for.
+  if (verb !== 'start' && (!name || name === 'agent') && !opts.now) {
+    const { held } = await import('./holds.js');
+    let told = false;
+    for (const end = Date.now() + HOLD_WAIT_S() * 1000; ; await sleep(1000)) {
+      const busy = held();
+      if (!busy.length) break;
+      if (Date.now() >= end) {
+        console.error(
+          `${pc.red('✗')} Not ${past}: ${busy.map((b) => b.what).join(', ')} is still going on after ${HOLD_WAIT_S() >= 60 ? `${Math.round(HOLD_WAIT_S() / 60)} minutes` : `${HOLD_WAIT_S()} seconds`}. ${pc.cyan(`bc ${verb}${name ? ` ${name}` : ''} --now`)} does it anyway.`,
+        );
+        process.exit(1);
+      }
+      if (!told)
+        console.log(
+          `${pc.yellow('●')} ${busy.map((b) => `${b.what} (started ${ago(b.since)})`).join(', ')} is going on: waiting for it to end. (${pc.cyan('--now')}: at once.)`,
+        );
+      told = true;
+    }
   }
   // Everything restarted is how new code is taken up, and the supervisor is code too: where
   // something will start it again (the boot unit, a container), it ends and is started afresh.
@@ -84,8 +109,8 @@ async function control(verb, name) {
 }
 
 export const start = (name) => control('start', name);
-export const stop = (name) => control('stop', name);
-export const restart = (name) => control('restart', name);
+export const stop = (name, opts) => control('stop', name, opts);
+export const restart = (name, opts) => control('restart', name, opts);
 
 // ---------- logs ----------
 

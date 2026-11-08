@@ -282,7 +282,8 @@ test('a check still called "blackcat itself" is renamed "blackcat health"; a nam
   const back = (name) => {
     const a = openAgentDb();
     a.prepare("UPDATE checks SET name = ? WHERE builtin = 'itself'").run(name);
-    a.prepare("UPDATE shapes SET step = step - 1 WHERE part = 'checks'").run();
+    // (back to before the rename, and the step after it)
+    a.prepare("UPDATE shapes SET step = step - 2 WHERE part = 'checks'").run();
     a.close();
     const c = openChecksDb();
     const got = c.prepare("SELECT name FROM checks WHERE builtin = 'itself'").get().name;

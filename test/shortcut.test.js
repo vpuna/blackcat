@@ -219,7 +219,21 @@ test("when its time comes it is run and sent to the owner's chat, which the core
   );
   assert.ok(sent.some(([chat, text]) => chat === 4242 && /\/brittle, which you asked me to send by itself, did not work/.test(text)));
   assert.ok(!sent.some((s) => /chart/.test(s[1])), 'a time missed by hours (blackcat was off) is not sent late');
-  for (const n of ['hello', 'brittle', 'chart']) assert.equal(saved()[n].once, undefined, `${n}: a one-off time is used up`);
+  // A one-off time is used up: it is not sent again at the next look. (A2 of the audit of
+  // 2026-10-24: it was used up by writing every shortcut back to the settings file, at the
+  // risk of an edit the owner made that moment; the times now stay as set.)
+  assert.deepEqual(saved().hello.once, [now - 30], 'the settings are left as the owner set them');
+  const more = [];
+  await p.manifest.chat.tick(ui, {
+    ctx: makeCtx(p, { caller: 'job', surface: 'chat' }),
+    now: now + 60,
+    nowMs: (now + 60) * 1000,
+    last: (k) => marks.get(k) ?? 0,
+    mark: (k, v) => marks.set(k, v),
+    once: (n, fn) => more.push(fn()),
+    chat: 4242,
+  });
+  assert.equal(more.length, 0, 'used up: not sent again');
   // with no channel in use there is nowhere to send one: nothing is run
   const before = fs.readFileSync(mark, 'utf8');
   await p.manifest.chat.tick(null, {
@@ -474,6 +488,7 @@ test('in the chat: /music shows its actions as buttons, /music pause runs it, a 
         text,
         reply: async (t, o) => void out.replies.push([t, o?.actions ? JSON.stringify(o.actions) : null]),
         working() {},
+        whileWorking: (fn) => fn(),
         sendFile: async () => true,
       },
       () => {
@@ -491,6 +506,7 @@ test('in the chat: /music shows its actions as buttons, /music pause runs it, a 
       toast: async (t) => void out.toasts.push(t),
       gone: async (t) => void out.toasts.push(t),
       working() {},
+      whileWorking: (fn) => fn(),
       sendFile: async () => true,
     });
     return out;
@@ -567,6 +583,7 @@ test('steps are named by their own comment, else by the command; a long shortcut
         chat: 'me',
         reply: async (t) => (replies.push(t), replies.length),
         working() {},
+        whileWorking: (fn) => fn(),
         sendFile: async (f) => (order.push(`file ${path.basename(f)}`), true),
       },
       () => {},
@@ -602,9 +619,9 @@ test('steps are named by their own comment, else by the command; a long shortcut
     '--description',
     'With a picture',
     '--run',
-    `echo '[[send: ${path.join(media, 'end.jpg')}]]' # The routine`,
+    `echo '{"picture": "${path.join(media, 'end.jpg')}"}' >> "$BLACKCAT_HANDOFF" # The routine`,
     '--run',
-    `echo '[[send: ${path.join(dir, 'elsewhere.jpg')}]]' # Something else`,
+    `echo '{"picture": "${path.join(dir, 'elsewhere.jpg')}"}' >> "$BLACKCAT_HANDOFF" # Something else`,
     '--run',
     'true # Checking',
     '--reply',
@@ -614,17 +631,25 @@ test('steps are named by their own comment, else by the command; a long shortcut
   add('titled', '--description', 'Fox News (US), channel 19', '--run', 'echo "$BLACKCAT_TITLE"', '--reply', 'output');
   assert.equal(JSON.parse(bc('shortcut', 'run', 'titled', '--json').stdout).output, 'Fox News (US), channel 19');
   const shot = await say('/pictured');
-  assert.match(shot.edits.at(-1), /✓ 3\. Checking\n✓ Done · \d+s$/, 'the list says nothing of the marker');
+  assert.match(shot.edits.at(-1), /✓ 3\. Checking\n✓ Done · \d+s$/);
   assert.deepEqual(shot.order, ['file end.jpg'], "the routine's picture, and not a file of anywhere else");
   // What a step ran has sent the owner how it ended (a routine's screen after the press): the
   // shortcut does not say it again, not even that it is done.
-  add('ridden', '--description', 'A ride', '--run', "printf 'Pressed.\\nAfter the press: a car\\n[[told]]\\n'", '--reply', 'output');
+  add(
+    'ridden',
+    '--description',
+    'A ride',
+    '--run',
+    `printf 'Pressed.\\nAfter the press: a car\\n' && echo '{"told": true}' >> "$BLACKCAT_HANDOFF"`,
+    '--reply',
+    'output',
+  );
   const ride = await say('/ridden');
   assert.deepEqual([ride.replies, ride.order], [[], []]);
   assert.equal(
     JSON.parse(bc('shortcut', 'run', 'ridden', '--json').stdout).output,
     'Pressed.\nAfter the press: a car',
-    'a command that runs it (the agent) still gets what it said, without the marker',
+    'a command that runs it (the agent) still gets what it said',
   );
 });
 
@@ -636,4 +661,20 @@ test('selftest looks over each action as well, and still runs nothing', () => {
   for (const n of ['/music play', '/music pause', '/music stop', '/lamp on', '/lamp dim', '/hello']) assert.ok(names.includes(n), n);
   assert.ok(!names.includes('/music'), 'a menu has no steps of its own to look over');
   assert.equal(fs.readFileSync(mark, 'utf8'), before);
+});
+
+test('what a step hands on goes in its own file, one thing a line; outside a shortcut nothing is kept', async () => {
+  const { handOff, handedOff } = await import('../src/util/handoff.js');
+  const file = path.join(dir, 'handoff.jsonl');
+  const was = process.env.BLACKCAT_HANDOFF;
+  delete process.env.BLACKCAT_HANDOFF;
+  assert.equal(handOff({ told: true }), false, 'no shortcut to hand it to');
+  process.env.BLACKCAT_HANDOFF = file;
+  assert.equal(handOff({ picture: '/a.jpg' }), true);
+  handOff({ told: true });
+  fs.appendFileSync(file, 'not json\n[[told]]\n');
+  assert.deepEqual(handedOff(file), { pictures: ['/a.jpg'], told: true });
+  assert.equal(fs.existsSync(file), false, 'and the file is gone');
+  if (was === undefined) delete process.env.BLACKCAT_HANDOFF;
+  else process.env.BLACKCAT_HANDOFF = was;
 });

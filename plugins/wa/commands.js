@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
 import {
+  sourceChanges,
   agoShort as ago,
   ARCHIVE_DB as DB_PATH,
   archiveStats as stats,
@@ -26,7 +27,6 @@ import {
   serviceCommands,
   show,
   sleep,
-  sourceSql,
   withDb,
   asJson,
 } from '../../src/api.js';
@@ -351,15 +351,7 @@ export async function unpair() {
   let deleted = 0;
   if (wipe && fs.existsSync(DB_PATH))
     withDb(openWrite, (db) => {
-      for (const [t, col] of [
-        ['messages', 'chat_ref'],
-        ['chats', 'ref'],
-        ['contacts', 'ref'],
-      ]) {
-        const r = db.prepare(`DELETE FROM ${t} WHERE ${sourceSql(col, 'wa')}`).run();
-        if (t === 'messages') deleted = r.changes;
-      }
-      db.prepare('DELETE FROM lid_map').run();
+      deleted = sourceChanges(db).forget('wa');
     });
   recordActivity({
     kind: 'event',

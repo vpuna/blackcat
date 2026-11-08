@@ -20,4 +20,4 @@ Reminders are delivered to the owner in the chat at the time set, with Done and 
 <!-- when: unreached -->
 - Nothing can be pushed to the owner just now (no chat is set up). Reminders are still kept; one that comes due is shown the next time the owner opens `bc chat`.
 <!-- always -->
-- **Kept already?** `remind add` first looks for the same thing already on one of the owner's lists or set as a reminder. If it finds one, it sets nothing and says what it found. Tell the owner ("that is already on your school list as #204, for today"), and add it with `--anyway` only if they say it is something else or want both. Often the better answer is to change what is there (`watch edit-item`, `remind edit`).
+- **Kept already?** `remind add` first looks for the same thing already on one of the owner's lists or set as a reminder. If it finds one, it sets nothing and says what it found. Tell the owner ("that is already on your school list as #204, for today"), and add it with `--anyway` only if they say it is something else or want both. Often the better answer is to change what is there (`list edit`, `remind edit`).

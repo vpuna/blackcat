@@ -12,7 +12,7 @@ const {
   getReminder,
   markSent,
   openRemindersDb: openAgentDb,
-  reschedule,
+  snooze,
   setStatus,
 } = await import('../src/reminders/db.js');
 const past = () => Math.floor(Date.now() / 1000) - 5;
@@ -32,11 +32,11 @@ test('snoozed while it was being sent: it stays waiting for its new time, and co
   const { id } = addReminder(db, { chatId: 1, text: 'Water the plants', dueTs: past() });
   const [r] = dueReminders(db).filter((x) => x.id === id); // read, and on its way to the owner
   const later = Math.floor(Date.now() / 1000) + 3600;
-  reschedule(db, id, later); // the owner taps "1 hour" as it arrives
+  snooze(db, getReminder(db, id), later); // the owner taps "1 hour" as it arrives
   assert.equal(markSent(db, r), false);
   assert.deepEqual([getReminder(db, id).status, getReminder(db, id).due_ts, getReminder(db, id).sent_ts], ['pending', later, null]);
   // even snoozed to a moment that has itself already passed, it is the snooze that counts
-  reschedule(db, id, past() + 1);
+  snooze(db, getReminder(db, id), past() + 1);
   assert.equal(markSent(db, r), false);
   assert.ok(
     dueReminders(db).some((x) => x.id === id),

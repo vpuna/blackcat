@@ -14,6 +14,7 @@ import os from 'node:os';
 import { DATA, HOME, load } from '../../config.js';
 import { CODE_DIR, bornAt } from '../../service/units.js';
 import { newToken } from './security.js';
+import { defaultEngine } from '../registry.js';
 
 // Outside blackcat's own folder, so that nothing an engine keeps per folder (its own copy of
 // a conversation, what it remembers) is mixed with the real installation's.
@@ -37,8 +38,9 @@ export function make(choice = {}) {
   fs.writeFileSync(path.join(dir, 'data/config.json'), JSON.stringify(cfg, null, 2), { mode: 0o600 });
   // The one secret that is needed: the engine's own (the key to where its model is), for
   // each engine being tried. Nothing else of data/plugins is copied.
-  const engines = new Set(['chat', 'readers'].map((r) => cfg.engine?.[r]?.name ?? 'claude-code'));
+  const engines = new Set(['chat', 'readers'].map((r) => cfg.engine?.[r]?.name ?? defaultEngine()));
   for (const name of engines) {
+    if (!name) continue;
     const from = path.join(DATA, 'plugins', name);
     if (fs.existsSync(from)) fs.cpSync(from, path.join(dir, 'data/plugins', name), { recursive: true });
   }

@@ -12,6 +12,7 @@ import {
   scheduleDue,
   scheduleSummary,
   storedSchedule,
+  ymd,
 } from '../internal.js';
 import { readerCases } from './checks.js';
 import { withDb } from '../db.js';
@@ -50,7 +51,11 @@ messages you send to yourself. Your own messages in the watched chats are read t
       usage: '<name...>',
       options: [
         ['--look-for <what>', 'what belongs on the list, in plain words'],
-        ['--chat <name>', 'a chat to watch (repeatable); with no chat it is a plain list you add to by hand', [], MANY],
+        ['--chat <name>', 'a chat to watch (repeatable); for a list you add to by hand, use bc list new', [], MANY],
+        [
+          '--list <list>',
+          'fill this list (one of bc list list, that no other watch fills); without it the watch has a list of its own, named as the watch',
+        ],
         ['--from <person>', 'in group chats, only messages from this person'],
         ['--self', 'also messages you send to yourself'],
         ['--no-also-mine', 'leave out your own messages in the watched chats (they are read unless you say so)'],
@@ -81,19 +86,6 @@ messages you send to yourself. Your own messages in the watched chats are read t
         ['--find <words>', 'only the entries that say all of these words'],
       ],
       run: async (_c, i) => (await cmd()).show(i.watch, i, {}),
-    },
-    find: {
-      summary: 'the entries on every list that say all of these words',
-      access: 'allow',
-      usage: '<words...>',
-      options: [['--status <which>', 'new, kept, done, dropped, expired, or all (comma-separated)', 'new,kept']],
-      run: async (_c, i) => (await cmd()).find(i.words, i, {}),
-    },
-    lists: {
-      summary: "a watch's lists and how many items each has",
-      access: 'allow',
-      usage: '<watch>',
-      run: async (_c, i) => (await cmd()).lists(i.watch, i, {}),
     },
     setup: {
       summary: '"Things I need to do", the watch that is always there: on or off, when it looks, which chats, email',
@@ -157,58 +149,15 @@ messages you send to yourself. Your own messages in the watched chats are read t
         ['--resume', 'start again'],
         ['--quiet <list>', 'keep this list out of reports: it is only shown when asked for (repeatable)', [], MANY],
         ['--unquiet <list>', 'report it again (repeatable)', [], MANY],
+        ['--list <list>', 'fill another list from now on (what it filed before stays where it is)'],
       ],
       run: async (_c, i) => (await cmd()).edit(i.watch, i, {}),
     },
     remove: {
-      summary: 'delete a watch and its list',
+      summary: 'delete a watch (its list stays: bc list remove takes that away)',
       access: 'ask',
       usage: '<watch>',
       run: async (_c, i) => (await cmd()).remove(i.watch, i, {}),
-    },
-    item: {
-      changes: true,
-      summary: 'mark an item done, keep or drop; or move it to another list',
-      access: 'allow',
-      usage: '<itemId> <action> [list...]',
-      run: async (_c, i) => (await cmd()).item(i.itemId, i.action, (i.list ?? []).join(' '), i, {}),
-    },
-    'add-item': {
-      changes: true,
-      summary: 'put something on a list by hand',
-      access: 'allow',
-      usage: '<watch>',
-      options: [
-        ['--msg <messageId>', 'a message from the archive (its link and preview title are used)'],
-        ['--title <title>', 'what it is'],
-        ['--url <url>', 'a link'],
-        ['--list <name>', "which of the watch's lists it goes on (a new name starts a new list)"],
-        ['--file <path>', 'a picture or document that belongs with it'],
-        ['--category <category>', 'same as --list (older name)'],
-        ['--place <place>', 'venue'],
-        ['--area <area>', 'neighbourhood or city'],
-        ['--date <date>', 'YYYY-MM-DD, if it happens on a day'],
-        ['--summary <text>', 'one line'],
-        ['--anyway', 'add it even though it looks like something already on a list or set as a reminder'],
-      ],
-      run: async (_c, i) => (await cmd()).addItemCmd(i.watch, i, {}),
-    },
-    'edit-item': {
-      changes: true,
-      summary:
-        'change an entry that is on a list: what it is called, its day, place, link or one-line note (it stays the same entry, with the message it came from)',
-      access: 'allow',
-      usage: '<itemId>',
-      options: [
-        ['--title <title>', 'what it is'],
-        ['--date <date>', 'YYYY-MM-DD; "" for no particular day'],
-        ['--summary <text>', 'one line, with the details as they now are (a new time, a new place)'],
-        ['--place <place>', 'venue'],
-        ['--area <area>', 'neighbourhood or city'],
-        ['--url <url>', 'a link; "" to take it away'],
-        ['--list <name>', "which of the watch's lists it is on"],
-      ],
-      run: async (_c, i) => (await cmd()).editItemCmd(i.itemId, i, {}),
     },
     scan: {
       changes: true,
@@ -274,6 +223,11 @@ messages you send to yourself. Your own messages in the watched chats are read t
       // `/watch` alone is the screen. With words after it, it is a command typed in the chat.
       ui.command('watch', (c, next) => (String(c.match ?? '').trim() ? next() : t.showWatches(c)));
       ui.command('briefing', async (c) => (await import('./briefing.js')).sendBriefing(ui, c.chat, { peek: true }));
+      // The button under a briefing with more past due than it shows.
+      ui.action(/^wb:past$/, async (c) => {
+        await c.toast();
+        return (await import('./briefing.js')).sendPastDue(ui, c.chat);
+      });
     },
     // Every scheduler tick, inside the agent service: let the watches whose turn it is look for new
     // messages (a model is only called when there are some), alert straight away for alert
@@ -333,8 +287,13 @@ messages you send to yourself. Your own messages in the watched chats are read t
   },
 
   // A nudge this set for an entry was marked done: the entry is ticked off its list.
-  nudgeDone: (_ctx, { db, itemId }) =>
-    void db.prepare("UPDATE watch_items SET status = 'done' WHERE id = ? AND status IN ('new', 'kept')").run(itemId),
+  nudgeDone: (_ctx, { db, itemId }) => {
+    if (db.prepare("UPDATE watch_items SET status = 'done' WHERE id = ? AND status IN ('new', 'kept')").run(itemId).changes)
+      db.prepare('UPDATE lists SET changed_ts = ? WHERE id = (SELECT list_id FROM watch_items WHERE id = ?)').run(
+        Math.floor(Date.now() / 1000),
+        itemId,
+      );
+  },
   // A file the owner sent is kept for as long as an entry still on a list carries it.
   inboxKeeps: async () => {
     const { openWatchDb } = await import('./db.js');
@@ -349,11 +308,23 @@ messages you send to yourself. Your own messages in the watched chats are read t
     return withDb(openWatchDb, (db) =>
       db
         .prepare(
-          `SELECT i.id, i.title, w.name AS list FROM watch_items i JOIN watches w ON w.id = i.watch_id
+          `SELECT i.*, w.name AS list FROM watch_items i JOIN watches w ON w.list_id = i.list_id
           WHERE i.status IN ('new', 'kept') AND (i.msg_id IS NULL OR i.msg_id NOT LIKE 'cal:%')`,
         )
         .all()
-        .map((r) => ({ kind: 'list', id: r.id, title: r.title, where: r.list })),
+        .map((r) => ({
+          kind: 'list',
+          id: r.id,
+          title: r.title,
+          where: r.list,
+          // (and what tells whether something else is the same thing)
+          day: r.event_date ?? (r.remind_ts ? ymd(r.remind_ts * 1000) : null),
+          place: [r.place, r.area].filter(Boolean).join(', ') || null,
+          from: r.msg_sender,
+          about: r.summary,
+          msgId: r.msg_id,
+          category: r.category,
+        })),
     );
   },
   // A chat has a new name (a renamed mail account): the watches that read it show it.
@@ -374,10 +345,11 @@ messages you send to yourself. Your own messages in the watched chats are read t
     return withDb(openWatchDb, (db) =>
       listWatches(db).map((w) => ({
         ...w,
-        items: db.prepare("SELECT COUNT(*) FROM watch_items WHERE watch_id = ? AND status IN ('new', 'kept')").pluck().get(w.id),
+        items: db.prepare("SELECT COUNT(*) FROM watch_items WHERE list_id = ? AND status IN ('new', 'kept')").pluck().get(w.list_id),
       })),
     ).map((w) => ({
       name: w.name,
+      local: true,
       run: () => {
         if (!w.active) return { skip: 'paused' };
         const chats = w.sources?.chats ?? [];
@@ -438,6 +410,6 @@ messages you send to yourself. Your own messages in the watched chats are read t
       say: 'keep a tab on what the school parents group says about uniform and dress up days',
       expect: /blackcat (watch (add|list|show|edit)|msg chats)\b/,
     },
-    { say: 'has my parcel arrived yet?', expect: /blackcat watch (show\b.*--list (expected|booking)|find)\b/ },
+    { say: 'has my parcel arrived yet?', expect: /blackcat (watch show\b.*--list (expected|booking)|list find)\b/ },
   ],
 };

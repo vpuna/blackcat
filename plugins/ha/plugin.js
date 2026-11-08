@@ -1,7 +1,7 @@
 // Home Assistant: see and control the things in your home. Looking is free for the
 // agent. What it may switch without asking depends on the kind of thing: lights and the
 // like are free, climate and blinds ask, locks and alarms ask every single time.
-import { parseDuration, plural, sleep } from '../../src/api.js';
+import { parseDuration, plural } from '../../src/api.js';
 import { HaError, client } from './api.js';
 import { libraryVia, matching, shown } from './media.js';
 import {
@@ -117,18 +117,11 @@ const players = (cat) =>
     .filter((e) => e.domain === 'media_player')
     .sort((a, b) => (a.available === false) - (b.available === false))
     .map((e) => e.id);
-// How long to give a speaker: before saying what it is doing now, and before setting a volume it would not take while off.
-export const wait = { settle: 700, volume: 1500 };
 
 async function act(ctx, action, words) {
   const { cat, e } = await target(ctx, words, { domains: Object.keys(ACTIONS).filter((d) => ACTIONS[d][action]) });
   const [domain, service] = ACTIONS[e.domain][action];
-  await api(ctx).call(domain, service, { entity_id: e.id });
-  // Give it a moment, then say what it is now.
-  await sleep(700);
-  const s = await api(ctx)
-    .state(e.id)
-    .catch(() => null);
+  const s = (await api(ctx).call(domain, service, { entity_id: e.id })).now[e.id];
   return { text: `Done: ${line(cat, e, s)}`, data: { entity: e.id, name: e.name, action, state: s?.state ?? null } };
 }
 const action = (name, summary) => ({
@@ -465,15 +458,13 @@ Examples:
         // until something is playing: then it is set straight after.
         let later = false;
         if (volume != null) await setVolume().catch((err) => (err instanceof HaError ? (later = true) : Promise.reject(err)));
-        if (item)
-          await ha.call('media_player', 'play_media', { entity_id: e.id, media_content_id: item.id, media_content_type: item.type });
-        else await ha.call('media_player', 'media_play', { entity_id: e.id });
-        if (later) {
-          await sleep(wait.volume);
-          await setVolume();
-        }
-        await sleep(wait.settle);
-        const s = await ha.state(e.id).catch(() => null);
+        // (The call comes back once the speaker says it is playing, or has had its moment.)
+        let s = (
+          item
+            ? await ha.call('media_player', 'play_media', { entity_id: e.id, media_content_id: item.id, media_content_type: item.type })
+            : await ha.call('media_player', 'media_play', { entity_id: e.id })
+        ).now[e.id];
+        if (later) s = (await setVolume()).now[e.id];
         return {
           text: `${item ? `Playing "${shown(item.title)}" on` : 'Playing on'} ${line(cat, e, s)}`,
           data: {
@@ -533,11 +524,8 @@ Examples:
         if (['input_select', 'select'].includes(e.domain) && i.value != null)
           calls.push([e.domain, 'select_option', { ...id, option: String(i.value) }]);
         if (!calls.length) ctx.fail(`Nothing to set on ${e.name} (a ${e.domain}) with those options. See: bc ha set --help`);
-        for (const [d, s, data] of calls) await api(ctx).call(d, s, data);
-        await sleep(700);
-        const s = await api(ctx)
-          .state(e.id)
-          .catch(() => null);
+        let s = null;
+        for (const [d, service, data] of calls) s = (await api(ctx).call(d, service, data)).now[e.id];
         return {
           text: `Done: ${line(cat, e, s)}`,
           data: { entity: e.id, name: e.name, state: s?.state ?? null, text: s ? describe(s, e) : null },
@@ -676,6 +664,17 @@ Examples:
             confirm: `${pl.action === 'on' || pl.action === 'off' ? `Turn ${pl.action}` : pl.action[0].toUpperCase() + pl.action.slice(1)}: ${names}?`,
             run,
           };
+    },
+    // What the agent did for the owner's words, for the next time they say them (src/channels/
+    // learned.js): switching one thing, as words the quick route above takes; what only looks.
+    learn: async (command, tokens, { ctx }) => {
+      if (['rooms', 'devices', 'find', 'state', 'history', 'media'].includes(command)) return 'look';
+      const VERB = { on: 'turn on', off: 'turn off', toggle: 'toggle', open: 'open', close: 'close', stop: 'stop' };
+      const cat = readCatalogue(ctx);
+      if (!VERB[command] || !tokens.length || tokens.some((t) => t.startsWith('-')) || !cat) return null;
+      const words = `${VERB[command]} ${tokens.join(' ')}`;
+      const { plan } = await import('./quick.js');
+      return plan(words, cat, settings(ctx))?.things.length === 1 ? words : null;
     },
   },
 

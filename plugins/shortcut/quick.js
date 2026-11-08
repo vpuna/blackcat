@@ -6,7 +6,7 @@
 // (`turn` and `switch` too: "turn tv on" is the name tv_on. `on` and `off` never are: they
 // are what is asked.)
 const FILLER = new Set(
-  'hey hi ok okay please kindly can could would will you blackcat black cat run do start turn switch put the my a an our shortcut now for me thanks thank'.split(
+  'hey hi ok okay please kindly can could would will you blackcat black cat bc run do start turn switch put the my a an our shortcut now for me thanks thank'.split(
     ' ',
   ),
 );

@@ -5,12 +5,16 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 
+// `row.fetch`: what was kept of the message to fetch it ({ directPath, url, mediaKey, encSha256 }, the keys in hex).
 export async function fetchWhatsAppMedia(row, dest) {
-  if (!row.media_key || !(row.direct_path || row.url))
-    throw Object.assign(new Error('This message has no download reference.'), { gone: true });
+  const f = row.fetch ?? {};
+  if (!f.mediaKey || !(f.directPath || f.url)) throw Object.assign(new Error('This message has no download reference.'), { gone: true });
   const { downloadContentFromMessage } = await import('baileys');
   try {
-    const stream = await downloadContentFromMessage({ mediaKey: row.media_key, directPath: row.direct_path, url: row.url }, row.dl_type);
+    const stream = await downloadContentFromMessage(
+      { mediaKey: Buffer.from(f.mediaKey, 'hex'), directPath: f.directPath, url: f.url },
+      row.dl_type,
+    );
     const hash = crypto.createHash('sha256');
     stream.on('data', (d) => hash.update(d));
     await pipeline(stream, fs.createWriteStream(dest, { mode: 0o600 }));

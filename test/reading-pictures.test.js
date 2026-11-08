@@ -291,7 +291,7 @@ test('one that cannot be read is tried again later, not at once; and the picture
   await look();
   assert.equal(asks(), before, 'nothing new for the watch to read');
   assert.deepEqual(
-    listItems(db, watch.id).filter((i) => /Lisbon/.test(i.title)),
+    listItems(db, watch.list_id).filter((i) => /Lisbon/.test(i.title)),
     [],
   );
   assert.equal(note(bad), null, 'the broken one is still to be tried again');
@@ -364,9 +364,10 @@ test('a file that cannot be fetched just now (no network) is tried again later, 
       "INSERT INTO messages (chat_ref, id, sender_ref, from_me, ts, type, text) VALUES ('wa:111@s.whatsapp.net', ?, 'wa:111@s.whatsapp.net', 0, ?, 'image', NULL)",
     )
     .run(id, at());
-  wa.prepare(
-    "INSERT INTO media (msg_rowid, dl_type, mimetype, media_key, url) VALUES (?, 'image', 'image/jpeg', ?, 'https://127.0.0.1:9/x')",
-  ).run(r.lastInsertRowid, Buffer.alloc(32, 1));
+  wa.prepare("INSERT INTO media (msg_rowid, dl_type, mimetype, fetch) VALUES (?, 'image', 'image/jpeg', ?)").run(
+    r.lastInsertRowid,
+    JSON.stringify({ url: 'https://127.0.0.1:9/x', mediaKey: Buffer.alloc(32, 1).toString('hex') }),
+  );
   assert.deepEqual(await readNow(), { done: 0, failed: 1, left: 0 });
   const ev = recent({ kind: 'event', category: 'attachments', limit: 1 })[0];
   assert.equal(ev.summary, 'a picture could not be fetched just now');

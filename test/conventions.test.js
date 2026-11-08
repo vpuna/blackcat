@@ -144,7 +144,6 @@ test("a preference may be changed by the agent with the owner's say; a connectio
   for (const c of [
     'remind setup --quiet 22:00-07:00',
     'voice setup --model small --language english',
-    'host setup --alerts --temp-limit 70 --disk-limit 85',
     'activity setup --on --days 30 --commands auto --cost',
     'conversations setup --on --days 90',
     'engine setup --for chat --model opus --effort high',
@@ -175,16 +174,14 @@ test("a preference may be changed by the agent with the owner's say; a connectio
   }
 });
 
-test("this machine's alert limits: setup offers the ones that are set, and switching alerts off does not lose them", () => {
-  const host = reg.findLoaded('host');
-  const steps = host.manifest.commands.setup.form;
-  const ctx = ctxOf('host');
-  assert.deepEqual(
-    steps.map((s) => forms.defaultOf(s, {}, ctx)),
-    [true, 68, 80],
-  );
-  assert.match(bc(['host', 'setup', '--no-alerts']).stdout, /Alerts off/);
-  assert.deepEqual(load().plugins.settings.host, { alerts: false, tempLimit: 68, diskLimit: 80 });
+// This machine's alerts are a check (it was a job of the plugin's own, with limits of its own).
+test("this machine's alerts: the check it offers tells at the limits once set with its setup, and measures only what it can", async () => {
+  const { offers } = await import('../src/checks/commands.js');
+  const o = offers().find((x) => x.ref === 'host:health');
+  assert.ok(o.limit.includes('diskUsedPercent>80'), o.limit.join(', '));
+  for (const l of o.limit) assert.ok(o.measure.includes(l.split('>')[0]), `${l}: what it tells at is what it measures`);
+  assert.equal(o.limit.includes('tempC>68'), o.measure.includes('tempC'));
+  assert.ok(!reg.findLoaded('host').manifest.jobs, 'no job of its own');
 });
 
 test('a saved secret: the question says so, empty keeps it, and anything typed replaces it', () => {
@@ -328,8 +325,8 @@ test('notes for the agent: placeholders, lists, and text for one state or anothe
 test('every plugin the agent can use says what it is for in an agent.md of its own, and fills in all of it', async () => {
   const { available, loadOne, makeCtx } = await import('../src/plugins/registry.js');
   const { notesOf, notesFile } = await import('../src/plugins/notes.js');
-  // The two the agent may not use at all have nothing to tell it.
-  const NONE = ['claude-code', 'tg-bot'];
+  // Those the agent may not use at all have nothing to tell it.
+  const NONE = ['claude-code', 'openai', 'tg-bot'];
   for (const entry of available()) {
     const p = await loadOne(entry);
     if (entry.bundled) assert.ok(!p.error, `${entry.name}: ${p.error}`);
@@ -371,12 +368,24 @@ test('watches, reminders and checks are part of blackcat, not plugins; they can 
       .filter((e) => e.framework)
       .map((e) => [e.name, e]),
   );
-  assert.deepEqual(Object.keys(own).sort(), ['activity', 'backup', 'check', 'conversations', 'engine', 'memory', 'msg', 'remind', 'watch']);
+  assert.deepEqual(Object.keys(own).sort(), [
+    'activity',
+    'backup',
+    'check',
+    'conversations',
+    'engine',
+    'learned',
+    'list',
+    'memory',
+    'msg',
+    'remind',
+    'watch',
+  ]);
   assert.deepEqual(
     Object.keys(own)
       .filter((n) => own[n].optional)
       .sort(),
-    ['backup', 'check', 'remind', 'watch'],
+    ['backup', 'check', 'list', 'remind', 'watch'],
   );
   for (const n of ['watch', 'remind', 'backup']) assert.ok(!fs.existsSync(path.join(root, 'plugins', n)), `plugins/${n} is gone`);
   // nothing of the owner's can take their place
@@ -390,7 +399,7 @@ test('watches, reminders and checks are part of blackcat, not plugins; they can 
 
   assert.match(
     bcPlain('plugin', 'list').stdout,
-    /Part of blackcat itself: .*bc backup \(Backups\), bc check \(Checks\), .*bc remind \(Reminders\), bc watch \(Watches\)\nOf those, you can switch off: backup, check, remind, watch/,
+    /Part of blackcat itself: .*bc backup \(Backups\), bc check \(Checks\), .*bc list \(Lists\), .*bc remind \(Reminders\), bc watch \(Watches\)\nOf those, you can switch off: backup, check, list, remind, watch/,
   );
   assert.match(bcPlain('watch', 'list').stdout, /Things I need to do/);
   // switched off: its commands are gone, the agent is told nothing of it, and what was kept stays

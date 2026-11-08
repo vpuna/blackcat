@@ -9,8 +9,9 @@ import {
   markSeen,
   removeItem,
   seenIds,
-  noteSameAs,
+  isLapsed,
   setItemStatus,
+  spokenOf,
   updateItem,
 } from './db.js';
 import { isQuiet, listKey, listsOf } from './lists.js';
@@ -25,7 +26,6 @@ import {
   hearable,
   isDocument,
   isoLocal,
-  listReminders,
   isPicture,
   msgSource,
   NOTE_CHARS,
@@ -43,6 +43,8 @@ import { LIST, TIDY, clause } from './shape.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withDb } from '../db.js';
+import { eachHook } from '../plugins/hooks.js';
+import { noteSameAs } from './same.js';
 import { visible } from '../archive/db.js';
 import { listening, readSince, reads as fileIsRead, wordsOf } from '../archive/reading.js';
 
@@ -169,6 +171,16 @@ export function labelled(rows) {
   return { get: (said) => by.get(String(said ?? '').replace(/^\[|\]$/g, '')) };
 }
 
+// What kind of file a message's is, in a word for a reader: WhatsApp says so itself; for a
+// source that gives its own name as the kind (Telegram, mail), it is told from the file's type.
+export function fileKind(m) {
+  const named = m.fileName ? ` "${m.fileName}"` : '';
+  if (hearable(m)) return m.dl_type === 'ptt' || m.type === 'voice' ? 'voice note' : `audio${named}`;
+  if (m.dl_type === 'document') return `document${named}`;
+  if (source(m.dl_type)) return `${(m.mimetype ?? '').startsWith('image/') ? 'picture' : 'document'}${named}`;
+  return m.dl_type;
+}
+
 function lineOf(m) {
   // A chat message is short; a mail is not, and what matters is often further down.
   const text = (m.text ?? '').replace(/\s+/g, ' ').slice(0, source(msgSource(m.id))?.textLimit ?? 400);
@@ -178,19 +190,7 @@ function lineOf(m) {
       : m.url
         ? ' | preview: (none stored)'
         : '';
-  // What kind of file it is: WhatsApp says so itself; for other sources it is told from the file's type.
-  const named = m.fileName ? ` "${m.fileName}"` : '';
-  const kind = hearable(m)
-    ? m.dl_type === 'ptt' || m.type === 'voice'
-      ? 'voice note'
-      : `audio${named}`
-    : m.dl_type === 'document'
-      ? `document${named}`
-      : m.dl_type === 'tg'
-        ? 'file'
-        : source(m.dl_type)
-          ? `${(m.mimetype ?? '').startsWith('image/') ? 'picture' : 'document'}${named}`
-          : m.dl_type;
+  const kind = fileKind(m);
   const file = !m.file
     ? ''
     : m.file.status === 'ok'
@@ -238,31 +238,35 @@ export const str = (v, n) => (typeof v === 'string' && v.trim() && v.trim().toLo
 // What the owner's other watches are keeping, for a reader to avoid filing the same thing a
 // second time: each watch works alone, and the same matter told to two people would
 // otherwise be on two lists. Open entries only, the latest first, and not the calendar's.
+// `kept`: what other parts keep to be done (the hook keptToDo; a reminder the owner set).
 const MAX_ELSEWHERE = 50;
-export function elsewhereText(db, w) {
+// What the other parts keep to be done (the lists' own entries are read above).
+export const keptElsewhere = async () => (await eachHook('keptToDo')).flat().filter((k) => k.kind !== 'list');
+export function elsewhereText(db, w, kept = []) {
   const rows = db
     .prepare(
-      `SELECT i.title, i.summary, i.event_date, i.remind_ts, o.name AS list FROM watch_items i JOIN watches o ON o.id = i.watch_id
-      WHERE i.watch_id != ? AND o.active = 1 AND i.status IN ('new', 'kept') AND (i.msg_id IS NULL OR i.msg_id NOT LIKE 'cal:%')
+      `SELECT i.title, i.summary, i.event_date, i.remind_ts, o.name AS list FROM watch_items i JOIN watches o ON o.list_id = i.list_id
+      WHERE i.list_id != ? AND o.active = 1 AND i.status IN ('new', 'kept') AND (i.msg_id IS NULL OR i.msg_id NOT LIKE 'cal:%')
       ORDER BY i.id DESC LIMIT ?`,
     )
-    .all(w.id, MAX_ELSEWHERE);
+    .all(w.list_id, MAX_ELSEWHERE);
   // (With the start of what it is about: a title alone, "Coding awards programme", does not
   // say that it is the same as "register Leo for it".)
   const lines = rows.map(
     (r) =>
       `- [${r.list}] ${r.title}${r.event_date ? ` (${r.event_date})` : r.remind_ts ? ` (${isoLocal(r.remind_ts).slice(0, 10)})` : ''}${r.summary ? `: ${r.summary.replace(/\s+/g, ' ').slice(0, 120)}` : ''}`,
   );
-  // And what the owner asked to be reminded of: that is being kept too.
-  for (const r of listReminders(db, {}).filter((x) => x.status === 'pending' && x.source === 'user' && !x.item_id))
-    lines.push(`- [a reminder they set, ${isoLocal(r.due_ts).slice(0, 10)}] ${r.text.replace(/\s+/g, ' ').slice(0, 160)}`);
+  // And what other parts keep to be done: that is being kept too.
+  for (const k of kept)
+    lines.push(`- [kept in ${k.where}${k.due ? `, ${isoLocal(k.due).slice(0, 10)}` : ''}] ${k.title.replace(/\s+/g, ' ').slice(0, 160)}`);
   return lines.join('\n') || '(nothing)';
 }
 
 // What is already on the list, for the model to check new messages against. Things the owner
 // marked done or dropped are included so they aren't added again.
 function knownText(db, w) {
-  const items = listItems(db, w.id, { status: 'new,kept,done,dropped' })
+  const items = listItems(db, w.list_id, { status: 'new,kept,done,dropped,expired' })
+    .filter((i) => i.status !== 'expired' || isLapsed(i))
     .sort((a, b) => b.id - a.id)
     .slice(0, MAX_KNOWN);
   if (!items.length) return '(nothing yet)';
@@ -274,10 +278,13 @@ function knownText(db, w) {
     .join('\n');
 }
 
-// A later message about something already on the list: fill in or change its details.
+// A later message about something already on the list: fill in or change its details. Being
+// spoken of again, it is kept for as long again; one that had lapsed is back.
 function applyUpdate(db, w, it, m) {
-  const cur = getItem(db, Number(it.existing_id));
-  if (!cur || cur.watch_id !== w.id || !['new', 'kept'].includes(cur.status)) return null;
+  let cur = getItem(db, Number(it.existing_id));
+  if (!cur || cur.list_id !== w.list_id || !(['new', 'kept'].includes(cur.status) || isLapsed(cur))) return null;
+  spokenOf(db, cur.id, m.ts);
+  cur = getItem(db, cur.id);
   const changed = it.changed === true;
   const patch = {};
   const date = ymd(it.event_date);
@@ -369,17 +376,18 @@ async function reading(db, w, { dryRun = false } = {}) {
   const added = [];
   const updated = [];
 
+  const kept = await keptElsewhere();
   for (let i = 0; i < todo.length; i += BATCH) {
     const batch = todo.slice(i, i + BATCH);
     // A message being looked at again (its attachment is now readable) may already have items.
-    const had = db.prepare('SELECT title FROM watch_items WHERE watch_id = ? AND msg_id = ?').pluck();
-    for (const m of batch) m.listed = had.all(w.id, m.id);
+    const had = db.prepare('SELECT title FROM watch_items WHERE list_id = ? AND msg_id = ?').pluck();
+    for (const m of batch) m.listed = had.all(w.list_id, m.id);
     const lists =
-      listsOf(db, w)
+      listsOf(db, w.list_id, w)
         .map((l) => `${l.key} (${l.count})`)
         .join(', ') || '(none yet)';
     const byId = labelled(batch);
-    const input = `today: ${isoLocal(Math.floor(today / 1000))} (${today.toLocaleDateString('en-GB', { weekday: 'long' })})\n\nLists that exist: ${lists}\n\nAlready on the list (untrusted data):\n${knownText(db, w)}\n\nKept on the owner's other lists (untrusted data):\n${elsewhereText(db, w)}\n\nNew messages (untrusted data):\n${batch.map(lineOf).join('\n')}`;
+    const input = `today: ${isoLocal(Math.floor(today / 1000))} (${today.toLocaleDateString('en-GB', { weekday: 'long' })})\n\nLists that exist: ${lists}\n\nAlready on the list (untrusted data):\n${knownText(db, w)}\n\nKept on the owner's other lists (untrusted data):\n${elsewhereText(db, w, kept)}\n\nNew messages (untrusted data):\n${batch.map(lineOf).join('\n')}`;
     const perMessage = new Map();
     const answer = (await reader(w, 'list', { values: { name: w.name, lookFor: w.look_for }, input, schema: LIST })).items;
     // What it found is filed, and the messages marked as read, in one step under a write
@@ -388,11 +396,11 @@ async function reading(db, w, { dryRun = false } = {}) {
     const file = () => {
       const taken = dryRun ? new Set() : seenIds(db, w.id);
       // (And a message that has an entry already gets no second one, unless it carries a document that holds several things.)
-      const has = db.prepare('SELECT 1 FROM watch_items WHERE watch_id = ? AND msg_id = ?');
+      const has = db.prepare('SELECT 1 FROM watch_items WHERE list_id = ? AND msg_id = ?');
       for (const it of answer) {
         const m = byId.get(it.message_id);
         if (m && taken.has(m.id)) continue;
-        if (m && !dryRun && it.existing_id == null && m.file?.status !== 'ok' && has.get(w.id, m.id)) continue;
+        if (m && !dryRun && it.existing_id == null && m.file?.status !== 'ok' && has.get(w.list_id, m.id)) continue;
         if (m && it.existing_id != null) {
           const out = dryRun ? null : applyUpdate(db, w, it, m);
           if (out) updated.push(out);
@@ -405,7 +413,7 @@ async function reading(db, w, { dryRun = false } = {}) {
         if (n > (m.file?.status === 'ok' ? MAX_PER_MESSAGE : 1)) continue;
         perMessage.set(m.id, n);
         const item = {
-          watchId: w.id,
+          listId: w.list_id,
           title,
           category: listKey(str(it.category, 24) ?? 'other'),
           place: str(it.place, 80),
@@ -441,16 +449,16 @@ async function reading(db, w, { dryRun = false } = {}) {
     else {
       const before = added.length;
       db.transaction(file).immediate();
-      await noteSameAs(db, added.slice(before));
+      await noteSameAs(db, added.slice(before), { category: `watch: ${w.name}` });
     }
   }
-  if (!dryRun) expirePast(db, w.id);
+  if (!dryRun) expirePast(db, w.list_id);
   return { looked: todo.length, added, updated, more };
 }
 
 // Merge entries that are the same thing. Returns [{ kept: item, removed: [items] }].
 export async function tidy(db, w, { dryRun = false } = {}) {
-  const items = listItems(db, w.id, { status: 'new,kept' });
+  const items = listItems(db, w.list_id, { status: 'new,kept' });
   if (items.length < 2) return [];
   const byId = new Map(items.map((i) => [i.id, i]));
   const input = items

@@ -37,67 +37,102 @@ test('two things look the same by the words that carry their meaning, not by the
   assert.ok(!alike('Pay the electricity bill', 'Book the dentist'));
 });
 
-test('added by hand: a reminder or a list entry that is kept already is not added, and what it looks like is said', () => {
-  assert.equal(bc(['watch', 'add', 'School notices']).status, 0, 'a list to add to');
-  let r = bc(['watch', 'add-item', 'School notices', '--title', 'Chess Club places for young players (optional)', '--json']);
+test('added by hand: what is on that list already is not added, and said; another list, or a reminder, is no reason not to', () => {
+  // (A watch of the owner's notes to self: a watch's list, which reminders look at.)
+  assert.equal(bc(['watch', 'add', 'School notices', '--self', '--look-for', 'school notices']).status, 0);
+  let r = bc(['list', 'add', 'School notices', '--title', 'Chess Club places for young players (optional)', '--json']);
   assert.equal(r.status, 0, r.said);
   const notice = JSON.parse(r.stdout).id;
+  r = bc(['list', 'add', 'School notices', '--title', 'Chess club places: register young players']);
+  assert.notEqual(r.status, 0);
+  assert.match(r.said, /Not added: "School notices" has what looks like it already:/);
+  assert.match(r.said, new RegExp(`#${notice}: Chess Club places for young players`));
+  assert.match(r.said, /add it anyway with --anyway/);
 
+  // A reminder still looks at what watches keep.
   r = bc(['remind', 'add', 'Register Leo for the Chess Club (young players, closes Fri 23 Oct)', '--in', '1d']);
   assert.notEqual(r.status, 0);
   assert.match(r.said, /Not set: it looks like what is kept already:/);
   assert.match(r.said, new RegExp(`#${notice} on School notices: Chess Club places for young players`));
-  assert.match(r.said, /add it anyway with --anyway/);
   r = bc(['remind', 'add', 'Register Leo for the Chess Club (young players, closes Fri 23 Oct)', '--in', '1d', '--anyway', '--json']);
   assert.equal(r.status, 0, r.said);
-  const reminder = JSON.parse(r.stdout).id;
 
-  r = bc(['watch', 'add-item', 'todo', '--title', 'Register Leo for the Chess Club places today']);
-  assert.notEqual(r.status, 0);
-  assert.match(r.said, /Not added: it looks like what is kept already:/);
-  assert.match(r.said, new RegExp(`reminder ${reminder}: Register Leo`), 'a reminder counts as kept');
-  assert.match(r.said, new RegExp(`#${notice} on School notices`));
-  // something else altogether is added at once
-  assert.equal(bc(['watch', 'add-item', 'todo', '--title', 'Renew the car insurance']).status, 0);
+  // On another list, or as a reminder: added all the same.
+  r = bc(['list', 'add', 'todo', '--title', 'Register Leo for the Chess Club places today', '--json']);
+  assert.equal(r.status, 0, r.said);
+  assert.equal(bc(['list', 'mark', String(JSON.parse(r.stdout).id), 'drop']).status, 0);
+
+  // A list kept by hand is the owner's own: a reminder does not look at it.
+  assert.equal(bc(['list', 'new', 'Electronics']).status, 0);
+  assert.equal(bc(['list', 'add', 'Electronics', '--title', 'Soldering iron, 60 W']).status, 0);
+  r = bc(['remind', 'add', 'Buy a new soldering iron', '--in', '1d', '--json']);
+  assert.equal(r.status, 0, r.said);
+  assert.equal(bc(['remind', 'cancel', String(JSON.parse(r.stdout).id)]).status, 0);
 });
 
 test('added by a watch: kept, and marked "may be the same as", in the list, the card and the briefing', async () => {
-  const { addItem, findWatch, getItem, noteSameAs, openWatchDb } = await import('../src/watch/db.js');
+  const { addItem, findWatch, getItem, openWatchDb } = await import('../src/watch/db.js');
+  const { noteSameAs } = await import('../src/watch/same.js');
   const { loadPlugins } = await import('../src/plugins/registry.js');
   await loadPlugins();
   const db = openWatchDb();
   const todo = findWatch(db, 'todo');
-  const made = addItem(db, { watchId: todo.id, title: 'Register Leo for the Chess Club by Friday', msgId: 'm-chess' });
-  const other = addItem(db, { watchId: todo.id, title: 'Water the plants', msgId: 'm-plants' });
+  const made = addItem(db, { listId: todo.list_id, title: 'Register Leo for the Chess Club by Friday', msgId: 'm-chess' });
+  const other = addItem(db, { listId: todo.list_id, title: 'Water the plants', msgId: 'm-plants' });
+  // the words make two pairs; the reader judges both to be it
+  process.env.FAKE_READER_REPLY = JSON.stringify({
+    answers: [
+      { pair: 1, same: true },
+      { pair: 2, same: true },
+    ],
+  });
   await noteSameAs(db, [made, other]);
   const marked = JSON.parse(getItem(db, made.id).same_as);
   assert.deepEqual(marked.map((k) => k.kind).sort(), ['list', 'reminder']);
   assert.equal(getItem(db, other.id).same_as, null);
+  // words alone are not enough: one the reader says is something else is not marked
+  const unlike = addItem(db, { listId: todo.list_id, title: 'Register Leo for the Chess Club tournament abroad', msgId: 'm-trip' });
+  process.env.FAKE_READER_REPLY = JSON.stringify({ answers: [] });
+  await noteSameAs(db, [unlike]);
+  assert.equal(getItem(db, unlike.id).same_as, null);
+  // and with no answer to go by, the words decide, as before
+  process.env.FAKE_READER_REPLY = '{}';
+  await noteSameAs(db, [unlike]);
+  assert.ok(getItem(db, unlike.id).same_as);
+  db.prepare('DELETE FROM watch_items WHERE id = ?').run(unlike.id);
+  delete process.env.FAKE_READER_REPLY;
   db.close();
   const shown = JSON.parse(bc(['watch', 'show', 'todo', '--json']).stdout).items.find((i) => i.id === made.id);
   assert.equal(shown.mayBeSameAs[0].where, 'School notices');
-  assert.match(bc(['watch', 'show', 'todo']).stdout, /⚠ may be the same as #\d+ on School notices/);
-  assert.match(bc(['watch', 'briefing', '--print', '--peek']).stdout, /may be the same as #\d+ on School notices/);
+  // named by its title, not a number that would read as one of the briefing's; the id only in a terminal
+  const same = /may be the same as "Chess Club places for young players \(optional\)" on School notices \(item \d+\)/;
+  assert.match(bc(['watch', 'show', 'todo']).stdout, same);
+  assert.match(bc(['watch', 'briefing', '--print', '--peek']).stdout, same);
+  const { sameAsText } = await import('../src/watch/db.js');
+  const it = { same_as: JSON.stringify([{ kind: 'reminder', id: 12, title: 'Register Leo for chess' }]) };
+  assert.equal(sameAsText(it), 'may be the same as the reminder "Register Leo for chess"');
+  assert.equal(sameAsText(it, { terminal: true }), 'may be the same as the reminder "Register Leo for chess" (reminder 12)');
 });
 
 test('every watch is shown, with what is on the other lists, a line of what each is about and the reminders the owner set', async () => {
-  const { elsewhereText } = await import('../src/watch/collect.js');
+  const { elsewhereText, keptElsewhere } = await import('../src/watch/collect.js');
+  await (await import('../src/plugins/registry.js')).loadPlugins();
   const { findWatch, openWatchDb, updateItem, listItems } = await import('../src/watch/db.js');
   const db = openWatchDb();
   const school = findWatch(db, 'School notices');
-  const it = listItems(db, school.id, { status: 'new,kept' })[0];
+  const it = listItems(db, school.list_id, { status: 'new,kept' })[0];
   updateItem(db, it.id, { summary: 'Register at chessclub.example by Friday, 120 a child.' });
-  const text = elsewhereText(db, findWatch(db, 'todo'));
+  const text = elsewhereText(db, findWatch(db, 'todo'), await keptElsewhere());
   assert.match(text, /\[School notices\] Chess Club places for young players \(optional\): Register at chessclub\.example/);
-  assert.match(text, /\[a reminder they set, \d{4}-\d{2}-\d{2}\] Register Leo for the Chess Club/);
+  assert.match(text, /\[kept in reminders, \d{4}-\d{2}-\d{2}\] Register Leo for the Chess Club/);
   db.close();
 });
 
-test('what every list says about something: watch find', () => {
-  const r = bc(['watch', 'find', 'chess']);
-  assert.match(r.stdout, /Chess Club places for young players \(optional\) · School notices/);
-  assert.match(r.stdout, /Register Leo for the Chess Club by Friday · Things I need to do/);
-  assert.match(bc(['watch', 'find', 'zebra']).stdout, /Nothing on any list says "zebra"/);
+test('what every list says about something: list find', () => {
+  const r = bc(['list', 'find', 'chess']);
+  assert.match(r.stdout, /Chess Club places for young players \(optional\).* · School notices/);
+  assert.match(r.stdout, /Register Leo for the Chess Club by Friday.* · Things I need to do/);
+  assert.match(bc(['list', 'find', 'zebra']).stdout, /Nothing on any list says "zebra"/);
   assert.equal(JSON.parse(bc(['watch', 'show', 'todo', '--find', 'chess', '--json']).stdout).items.length, 1);
 });
 
@@ -106,7 +141,7 @@ test('the agent is never given more than it can take in at once: it is told to a
   const { addItem, findWatch, openWatchDb } = await import('../src/watch/db.js');
   const db = openWatchDb();
   const notices = findWatch(db, 'School notices');
-  for (let k = 0; k < 120; k++) addItem(db, { watchId: notices.id, title: `Notice ${k} ${'about a thing of the school '.repeat(8)}` });
+  for (let k = 0; k < 120; k++) addItem(db, { listId: notices.list_id, title: `Notice ${k} ${'about a thing of the school '.repeat(8)}` });
   db.close();
   const owner = bc(['watch', 'show', 'School notices', '--json']);
   assert.equal(owner.status, 0, 'the owner gets all of it');

@@ -42,13 +42,14 @@ const CHAT_ROWS = `
 // Every row that names a chat or message also says which service it came from.
 const withSource = (rows) => rows.map((r) => ({ ...r, source: sourceOf(r.chatRef ?? r.ref) }));
 
-// Chats, most recent activity first. `source` limits it to 'wa' or 'tg'.
+// Chats, most recent activity first. `source` limits it to one source ('wa', 'mail', …).
 export function listChats(db, { since = 0, limit = 50, offset = 0, match, source, stored = false } = {}) {
   // Filter in an outer query: inside CHAT_ROWS, `name` would mean the raw chats.name
   // column (empty for 1:1 chats) instead of the resolved display name.
   const where = ['last >= @since', sourceSql('ref', source)];
   if (stored) where.push('stored > 0'); // leave out chats that are known but not collected
-  if (match) where.push("(name LIKE @like OR ref = @match OR ref = 'wa:' || @match)"); // (a WhatsApp id as WhatsApp gives it, too)
+  // (An id as its service gives it, without the source in front, too: "15550001234@s.whatsapp.net".)
+  if (match) where.push("(name LIKE @like OR ref = @match OR substr(ref, instr(ref, ':') + 1) = @match)");
   return withSource(
     db
       .prepare(`SELECT * FROM (${CHAT_ROWS}) WHERE ${where.join(' AND ')} ORDER BY last DESC LIMIT @limit OFFSET @offset`)
@@ -79,7 +80,7 @@ const MSG_COLS = `m.rowid AS rowid, m.chat_ref AS chatRef, ${CHAT_NAME} AS chat,
   md.mimetype AS mediaType, md.size AS mediaSize, md.width AS mediaWidth, md.height AS mediaHeight,
   md.seconds AS mediaSeconds, md.file_name AS mediaFile,
   md.thumb IS NOT NULL AS mediaThumb,
-  (md.dl_type = 'tg' OR (md.media_key IS NOT NULL AND (md.direct_path IS NOT NULL OR md.url IS NOT NULL))) AS mediaFetchable`;
+  md.fetch IS NOT NULL AS mediaFetchable`;
 
 // Joined into every message query for the media columns above.
 const MEDIA_JOIN = 'LEFT JOIN media md ON md.msg_rowid = m.rowid';
@@ -181,7 +182,7 @@ export function stats(db, source) {
     ? db
         .prepare(
           `SELECT COUNT(*) AS files, COALESCE(SUM(md.thumb IS NOT NULL), 0) AS thumbs,
-        COALESCE(SUM(md.media_key IS NOT NULL AND (md.direct_path IS NOT NULL OR md.url IS NOT NULL)), 0) AS fetchable
+        COALESCE(SUM(md.fetch IS NOT NULL), 0) AS fetchable
         FROM media md JOIN messages m ON m.rowid = md.msg_rowid WHERE ${sourceSql('m.chat_ref', source)} AND ${visible('m.account')}`,
         )
         .get()

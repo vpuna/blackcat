@@ -11,7 +11,10 @@
 //
 // one per thing it has set up. `run` gives back a few words when all is well, and throws
 // with a sentence when it is not. Throwing an error with `skip: true` (or returning
-// { skip: 'why' }) means there was nothing to test, which is not a failure.
+// { skip: 'why' }) means there was nothing to test, which is not a failure. `local: true`
+// says the probe only looks at this machine (a shortcut, a database), not at something it
+// reaches: `bc health` counts those on one line unless one fails. `told: true` says the owner
+// is told already when it fails (a check, which alerts by itself): `bc health` leaves it out.
 import fs from 'node:fs';
 import path from 'node:path';
 import { DATA, CONFIG_FILE } from './config.js';
@@ -24,7 +27,11 @@ const PROBE_MS = 30_000;
 // An answer that took longer than this came back, but slowly: noted, not a failure. (A probe
 // may say otherwise: `slowMs`.)
 const SLOW_MS = 15_000;
-const within = (ms, p) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(`no answer within ${ms / 1000} s`)), ms))]);
+const within = (ms, p) => {
+  let timer;
+  const late = new Promise((_, no) => (timer = setTimeout(() => no(new Error(`no answer within ${ms / 1000} s`)), ms)));
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+};
 
 // blackcat's own: what no plugin could say.
 function own() {
@@ -168,7 +175,8 @@ function own() {
       });
     },
   });
-  return probes;
+  // (All of them look at this machine, but for the engines it reaches.)
+  return probes.map((p) => (p.name.startsWith('engine ') ? p : { ...p, local: true }));
 }
 
 // Every probe there is, by who offers it. → [{ part, title, probes }]
@@ -200,19 +208,21 @@ async function gather(only) {
   return only?.length ? groups.filter((g) => only.includes(g.part)) : groups;
 }
 
-// Run them. Each part's probes one after another, the parts side by side.
-// → { ok, passed, failed, skipped, slow, parts: [{ part, title, results: [{ name, outcome: 'ok' | 'failed' | 'skipped', detail, ms, slow? }] }] }
-export async function selftest({ only, onResult } = {}) {
-  const groups = await gather(only);
+// Run them. Each part's probes one after another, the parts side by side (`together`: every
+// probe side by side, so that the whole takes no longer than the slowest). `untold`: only the
+// probes the owner is not told of otherwise (not `told`). `capMs`: no probe is waited for longer.
+// → { ok, passed, failed, skipped, slow, parts: [{ part, title, results: [{ name, outcome: 'ok' | 'failed' | 'skipped', detail, ms, slow?, local? }] }] }
+export async function selftest({ only, untold = false, together = false, capMs = Infinity, onResult } = {}) {
+  const groups = (await gather(only)).map((g) => (untold ? { ...g, probes: g.probes.filter((p) => !p.told) } : g));
   const parts = await Promise.all(
     groups.map(async (g) => {
       const results = [];
-      for (const probe of g.probes) {
+      const one = async (probe) => {
         const t0 = Date.now();
         let r;
         try {
           const said = await within(
-            probe.timeoutMs ?? PROBE_MS,
+            Math.min(probe.timeoutMs ?? PROBE_MS, capMs),
             Promise.resolve().then(() => probe.run()),
           );
           r =
@@ -222,11 +232,13 @@ export async function selftest({ only, onResult } = {}) {
         } catch (e) {
           r = e?.skip ? { outcome: 'skipped', detail: e.message } : { outcome: 'failed', detail: e?.message ?? String(e) };
         }
-        const res = { name: probe.name, ...r, ms: Date.now() - t0 };
+        const res = { name: probe.name, ...r, ms: Date.now() - t0, ...(probe.local ? { local: true } : {}) };
         if (res.outcome === 'ok' && res.ms > (probe.slowMs ?? SLOW_MS)) res.slow = true;
-        results.push(res);
         onResult?.(g, res);
-      }
+        return res;
+      };
+      if (together) results.push(...(await Promise.all(g.probes.map(one))));
+      else for (const probe of g.probes) results.push(await one(probe));
       return { part: g.part, title: g.title, results };
     }),
   );

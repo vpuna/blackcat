@@ -219,7 +219,7 @@ test('a calendar that cannot be read does not cost the others theirs, and nothin
       findWatch(db, 'todo') ??
       addWatch(db, { chatId: 42, name: 'Things I need to do', lookFor: 'x', sources: { everywhere: 'all' }, mode: 'digest' });
     const titles = () =>
-      listItems(db, w.id, { status: 'new,kept' })
+      listItems(db, w.list_id, { status: 'new,kept' })
         .filter((i) => i.category === 'calendar')
         .map((i) => i.title)
         .sort();

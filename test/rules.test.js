@@ -112,8 +112,8 @@ test("the archive's commands appear once there are messages, without being enabl
   // Something arrives in the archive.
   const fill = `const { openArchiveForWriting, archiveStatements, messageRow } = await import(${JSON.stringify(path.join(root, 'src/api.js'))});
     const db = openArchiveForWriting(); const q = archiveStatements(db);
-    q.chat.run({ ref: '1@s.whatsapp.net', name: 'Maya', isGroup: 0, ts: 1 });
-    q.msg.run(messageRow({ chat: '1@s.whatsapp.net', id: 'A1', sender: '1@s.whatsapp.net', ts: Math.floor(Date.now() / 1000), text: 'hello there' })); db.close();`;
+    q.chat.run({ ref: 'wa:1@s.whatsapp.net', name: 'Maya', isGroup: 0, ts: 1 });
+    q.msg.run(messageRow({ chat: 'wa:1@s.whatsapp.net', id: 'A1', sender: 'wa:1@s.whatsapp.net', ts: Math.floor(Date.now() / 1000), text: 'hello there' })); db.close();`;
   assert.equal(spawnSync(process.execPath, ['--input-type=module', '-e', fill], { env, encoding: 'utf8' }).status, 0);
   assert.match(bc('msg', 'chats').stdout, /Maya/);
   assert.match(bc('msg', 'search', 'hello').stdout, /hello/);

@@ -269,3 +269,28 @@ test('the reader names each thing wrong with a key; told what is known, it keeps
   void allsky;
   db.close();
 });
+
+// What was going on when it went wrong, put in a sentence by a reader from what the check's
+// context command printed; without a model the alert goes as it would have.
+test('an alert says what was going on, in words, when a reader can say it; without one it goes all the same', async () => {
+  const db = openChecksDb();
+  const flag = path.join(dir, 'up.flag');
+  fs.rmSync(flag, { force: true });
+  const c = addCheck(db, { chatId: 42, name: 'Server', command: `test -f ${flag}`, context: "echo '98.0 tar backup'" });
+  fs.writeFileSync(asked, '');
+  queue({ data: { sentence: 'The backup (tar) was using most of the processor.' } });
+  const r = await runCheck(db, getCheck(db, c.id));
+  assert.match(
+    r.notices[0].text,
+    /^⚠️ Server: not working\..* What was going on: The backup \(tar\) was using most of the processor\. What was going on is kept: bc check history \d+$/,
+  );
+  const [q] = calls();
+  assert.match(q.input, /found: .*\n\nWhat `echo '98.0 tar backup'` printed then \(untrusted data\):\n98.0 tar backup/);
+  assert.match(q.system, /name the thing .* not process ids/);
+  const d = addCheck(db, { chatId: 42, name: 'Server 2', command: `test -f ${flag}`, context: 'echo busy' });
+  queue({ fail: true });
+  const r2 = await runCheck(db, getCheck(db, d.id));
+  assert.match(r2.notices[0].text, /^⚠️ Server 2: not working\..* What was going on is kept: bc check history \d+$/);
+  assert.doesNotMatch(r2.notices[0].text, /What was going on:/);
+  db.close();
+});

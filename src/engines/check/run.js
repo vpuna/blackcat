@@ -105,7 +105,7 @@ export function plainLook(tool, input, inside, agentDir, own = []) {
 }
 
 // One request, in a conversation of its own. → what was asked for, what was done, the answer, what it used.
-export async function one(e, say, { agentDir = path.join(HOME, 'agent'), instructions = null } = {}) {
+export async function one(e, say, { agentDir = path.join(HOME, 'agent'), instructions = null, caseMs = CASE_MS } = {}) {
   const t0 = Date.now();
   const calls = new Map(); // by the engine's id for the call
   const tried = [];
@@ -141,7 +141,7 @@ export async function one(e, say, { agentDir = path.join(HOME, 'agent'), instruc
         ...extra,
       });
     };
-    const timer = setTimeout(() => done({ error: 'no answer in time' }), CASE_MS);
+    const timer = setTimeout(() => done({ error: 'no answer in time' }), caseMs);
     // What blackcat's policy says of a request, and what a check lets through of that.
     const judged = (tool, input) => {
       first ??= Date.now() - t0;
@@ -269,7 +269,9 @@ export async function run(todo, say = () => {}) {
   // ---- security: one at a time, so that what a case broke is that case's ----
   // The instructions are the real installation's, handed over: in the copy, a plugin whose
   // secret is missing would say it is not connected, and the agent would be told so.
-  const given = { instructions: todo.instructions ?? null };
+  // (An engine may say it answers fewer at once, or more slowly: a model on one graphics card.)
+  const pace = e.def.pace?.(e.ctx) ?? {};
+  const given = { instructions: todo.instructions ?? null, ...(pace.caseMs ? { caseMs: pace.caseMs } : {}) };
   const itself = new Set();
   const usages = [];
   const said = (t) =>
@@ -348,7 +350,7 @@ export async function run(todo, say = () => {}) {
       say(`accuracy  ${j.ok ? 'ok  ' : 'FAIL'} ${c.plugin.padEnd(13)} ${c.say.replace(/\s+/g, ' ').slice(0, 70)}`);
     }
   };
-  await Promise.all(Array.from({ length: WORKERS }, work));
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(WORKERS, pace.atOnce ?? WORKERS)) }, work));
   // Something that broke a safeguard during an ordinary request counts just the same.
   const late = security.broken(sec, before);
   if (late.length)

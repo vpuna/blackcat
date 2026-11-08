@@ -73,6 +73,7 @@ Old Word files (.doc) need antiword:                       sudo apt install anti
   selftest: () => [
     {
       name: 'the PDF tools',
+      local: true,
       run: () =>
         installed('pdftotext')
           ? 'installed'
@@ -80,6 +81,7 @@ Old Word files (.doc) need antiword:                       sudo apt install anti
     },
     {
       name: 'antiword, for old Word files',
+      local: true,
       run: () => (installed('antiword') ? 'installed' : { skip: 'not installed: sudo apt install antiword (only .doc files need it)' }),
     },
   ],

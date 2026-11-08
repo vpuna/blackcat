@@ -9,7 +9,7 @@ const listing = (names) =>
   `<html><body><h2>Index</h2><table><tr><td><a href="../">..</a></td></tr>${names.map((n) => `<tr><td><a href="${encodeURI(n)}">${n}</a></td></tr>`).join('')}<tr><td><a href="?C=M;O=D">sort</a></td></tr><tr><td><a href="http://elsewhere.example/x.jpg">away</a></td></tr><tr><td><a href="/etc/passwd">root</a></td></tr></table></body></html>`;
 
 // `files`: { '/path': Buffer | string }, `dirs`: { '/path/': [names] }. → { url, close, hits, set }
-export async function allskyServer({ login = null } = {}) {
+export async function allskyServer({ login = null, older = false } = {}) {
   const files = new Map();
   const dirs = new Map();
   const modified = new Map();
@@ -42,7 +42,8 @@ export async function allskyServer({ login = null } = {}) {
     url: `http://127.0.0.1:${server.address().port}`,
     hits,
     close: () => new Promise((r) => server.close(r)),
-    latest: (body, when) => add('/current/tmp/image.jpg', body, when),
+    // (Since Allsky v2026.10 the latest picture is at /current/image.jpg.)
+    latest: (body, when) => add(older ? '/current/tmp/image.jpg' : '/current/image.jpg', body, when),
     settings: (o) => add('/config/settings.json', JSON.stringify(o)),
     // A night: pictures at the given moments, and whichever products it has.
     night(name, moments, { startrails = false, keogram = false, timelapse = null } = {}) {

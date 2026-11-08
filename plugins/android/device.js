@@ -4,7 +4,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { PluginError, recordActivity, sleep } from '../../src/api.js';
+import { PluginError, recordActivity, sleep, until } from '../../src/api.js';
 
 // uiautomator2's server (MIT, github.com/openatx/android-uiautomator-server-jar), in blackcat's
 // build of it (github.com/vpuna/android-uiautomator-server-jar): it answers only on the device
@@ -329,16 +329,15 @@ export class Device {
 
   // ---------- reading and touching ----------
 
-  // The screen as uiautomator's XML. The server drops a call now and then, mostly while the
-  // screen is changing, so it is tried three times.
+  // The screen as uiautomator's XML, read once; one that fails says why. (It used to be read up
+  // to three times with nothing said, against the server dropping a call while the screen
+  // changes. That was never seen: no failed try was logged, and 20 reads in a row on the phone
+  // all came at the first, 2026-10-25. W9 of the audit of 2026-10-24.)
   async dump() {
-    for (let i = 0; ; i++) {
-      try {
-        return await this.call('dumpWindowHierarchy', [false, 50]);
-      } catch (e) {
-        if (i === 2) throw e;
-        await sleep(500);
-      }
+    try {
+      return await this.call('dumpWindowHierarchy', [false, 50]);
+    } catch (e) {
+      throw new AndroidError(`reading the screen of ${this.serial} failed: ${e.message}`);
     }
   }
 
@@ -395,11 +394,12 @@ export class Device {
     return /mInputShown=true/.test(await this.shell('dumpsys input_method').catch(() => ''));
   }
 
-  // Close the on-screen keyboard if it is up (Back, which then closes only the keyboard). → whether it was.
+  // Close the on-screen keyboard if it is up (Back, which then closes only the keyboard), and
+  // wait until it has gone (a second and a half at most). → whether it was up
   async hideKeyboard() {
     if (!(await this.keyboardShown())) return false;
     await this.key('BACK');
-    await sleep(300);
+    await until(async () => !(await this.keyboardShown()), { ms: 1500 });
     return true;
   }
 
@@ -428,8 +428,7 @@ export class Device {
     if ((await this.wakefulness()) !== 'Awake') await this.key('WAKEUP');
     if (await this.keyguardShowing()) {
       await this.shell('wm dismiss-keyguard');
-      await sleep(500);
-      if (await this.keyguardShowing())
+      if (!(await until(async () => !(await this.keyguardShowing()), { ms: 2000, every: 200 })))
         throw new AndroidError('the device is locked with a PIN, pattern or password: set Screen lock to None or Swipe');
     }
   }

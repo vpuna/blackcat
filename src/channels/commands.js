@@ -16,7 +16,7 @@ export const CHAT_COMMANDS = [
   { command: 'setup', description: 'Set up plugins by answering questions here' },
   { command: 'cancel', description: 'Stop a /setup that is in progress' },
   { command: 'permissions', description: 'What I may always or never do without asking; remove any' },
-  { command: 'status', description: 'Health of the machine I run on: uptime, temperature, load, memory' },
+  { command: 'status', description: 'Is everything working: each connection, device and account, and this machine' },
   { command: 'new', description: 'Start a fresh conversation (memories are kept)' },
   { command: 'resume', description: 'Go back to an earlier conversation and carry on' },
   { command: 'ping', description: 'Check that I am alive' },

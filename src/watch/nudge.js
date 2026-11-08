@@ -78,5 +78,5 @@ export function setNudge(db, w, it, quote) {
 
 // After a watch's nudge setting changes: bring every item's nudge into line.
 export function syncNudges(db, w) {
-  for (const it of listItems(db, w.id, { status: 'new,kept' })) setNudge(db, w, it);
+  for (const it of listItems(db, w.list_id, { status: 'new,kept' })) setNudge(db, w, it);
 }

@@ -112,10 +112,17 @@ function attach(q, base, id, subject, files) {
         text: `${f.name} (attached to "${subject || 'a mail with no subject'}")`,
       }),
     );
-    // dlType "mail": fetched from the mail server when asked for; directPath is the part of the mail it is.
+    // dlType "mail": fetched from the mail server when asked for; `fetch.directPath` is the part of the mail it is.
     if (r.changes)
       q.media.run(
-        mediaRow({ rowid: r.lastInsertRowid, dlType: 'mail', mimetype: type, size: f.size, fileName: f.name, directPath: f.part }),
+        mediaRow({
+          rowid: r.lastInsertRowid,
+          dlType: 'mail',
+          mimetype: type,
+          size: f.size,
+          fileName: f.name,
+          fetch: { directPath: f.part },
+        }),
       );
   });
 }
@@ -179,7 +186,7 @@ export function archiveSent(account, me, rows, textOf, label = account) {
 
 // The account was renamed: its chat is called by the new name (`name`, the whole of it).
 export function renameChat(account, name) {
-  withArchive((_q, wa) => wa.prepare('UPDATE chats SET name = ? WHERE ref = ?').run(name, chatRef(account)));
+  withArchive((q) => q.renameChat.run(name, chatRef(account)));
 }
 
 // Forget what was collected of an account's sent mail (the server renumbered the folder).

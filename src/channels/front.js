@@ -7,7 +7,7 @@ import { lastAsked } from '../conversations/store.js';
 import { log } from '../log.js';
 import { makeCtx } from '../plugins/registry.js';
 import { localReader } from '../archive/attachments.js';
-import { duration, gb, systemInfo } from '../system.js';
+import { duration } from '../system.js';
 import { fmtWhen } from '../util/when.js';
 import { listConversations, prepare, reply, resetSession, resumeConversation } from '../agent/brain.js';
 import { NoModel } from '../engines/registry.js';
@@ -22,11 +22,11 @@ import { errMsg, plural } from '../util/format.js';
 
 // Hand a message to the agent and send back what it says. Not awaited by the caller: a slow
 // answer must not hold up the next thing the owner does. (brain.js keeps each chat in order.)
-export function converse(c, text) {
-  const typing = setInterval(() => c.working(), 4000);
-  c.working();
-  reply(c.conversation, text, { at: c.at })
-    .then(async (answer) => {
+// `said`: the owner's own words, when the message is nothing but them (typed, or a voice
+// note's): what a simple command learned from this turn is said as (learned.js).
+export function converse(c, text, { said = null } = {}) {
+  c.whileWorking(() =>
+    reply(c.conversation, text, { at: c.at, said }).then(async (answer) => {
       const { text: body, files } = extractFiles(answer);
       log(`→ ${body.length} chars${files.length ? `, files: ${files.join(', ')}` : ''}`);
       if (body) for (const part of chunks(body, can().maxChars)) await c.reply(part);
@@ -34,14 +34,14 @@ export function converse(c, text) {
         await c.working('file');
         await c.sendFile(f);
       }
-    })
+    }),
+  )
     .catch((e) => {
       log(`agent error: ${e.message}`);
       // (Having no model is not something that went wrong: it is said plainly.)
       return c.reply(e instanceof NoModel ? e.message : `😿 ${e.message}`);
     })
-    .catch((e) => log(`send error: ${errMsg(e)}`))
-    .finally(() => clearInterval(typing));
+    .catch((e) => log(`send error: ${errMsg(e)}`));
 }
 
 // What turns a voice note into words on this machine: the same reader that listens to the
@@ -54,19 +54,16 @@ const listener = () => localReader('voice');
 // owner's piece of work, and the answer to it is part of the same one.
 function heard(c, file) {
   return work({ kind: 'event', category: 'voice note', surface: 'chat', who: 'owner' }, async () => {
-    const typing = setInterval(() => c.working(), 4000);
-    c.working();
     // The helper keeps the model loaded between voice notes, so only the first one pays for loading it.
-    let r;
-    try {
-      const l = listener();
-      if (!l) throw new Error('nothing to listen with is ready');
-      r = (await l.reader.read(makeCtx(l.plugin, { caller: 'owner', surface: 'chat' }), { file: file.path, seconds: null })) ?? {};
-    } catch (e) {
-      r = { error: e.message };
-    } finally {
-      clearInterval(typing);
-    }
+    const r = await c.whileWorking(async () => {
+      try {
+        const l = listener();
+        if (!l) throw new Error('nothing to listen with is ready');
+        return (await l.reader.read(makeCtx(l.plugin, { caller: 'owner', surface: 'chat' }), { file: file.path, seconds: null })) ?? {};
+      } catch (e) {
+        return { error: e.message };
+      }
+    });
     // How long it was and how long turning it into words took; never the words.
     const said = {
       ok: !r.error,
@@ -93,6 +90,7 @@ function heard(c, file) {
       converse(
         c,
         `[The owner said this in a voice note. It was transcribed automatically on this machine, so a word or a name may be wrong: if it doesn't make sense, or it asks for something that can't be undone, say what you understood and check first.]\n${r.text}`,
+        { said: r.text },
       );
     return came(said);
   });
@@ -158,20 +156,6 @@ export async function incoming(ev) {
   return desk.text(ev);
 }
 
-async function machineStatus() {
-  const s = await systemInfo();
-  return [
-    `🖥 ${s.hostname}`,
-    `⏱ up ${duration(s.uptime)}`,
-    `🌡 ${s.temp != null ? `${s.temp.toFixed(1)}°C` : 'n/a'}`,
-    `📈 load ${s.load.map((l) => l.toFixed(2)).join(' ')}`,
-    `🧠 ${gb(s.mem.used)}/${gb(s.mem.total)} GB memory`,
-    s.disk ? `💾 ${gb(s.disk.total - s.disk.free)}/${gb(s.disk.total)} GB disk` : null,
-  ]
-    .filter(Boolean)
-    .join('\n');
-}
-
 // The built-in commands, and where text goes when nothing else has taken it.
 // `approvals`: what installApprovals() returned (so a new conversation cancels what was waiting).
 export function installFront({ approvals }) {
@@ -186,7 +170,11 @@ export function installFront({ approvals }) {
     await c.edit(`${h.text}\n\n${now ? '▶️ Done now' : '✖ Left'}`).catch(() => {});
     return now ? incoming({ ...h.ev, at: null }) : undefined;
   });
-  ui.command('status', async (c) => c.reply(await machineStatus()));
+  // Is each thing blackcat reaches working (`bc health`): asked now, which takes a few seconds.
+  ui.command('status', async (c) => {
+    const { health, healthText } = await import('../health.js');
+    return c.reply(healthText(await c.whileWorking(health)));
+  });
   ui.command('new', (c) => {
     approvals.cancel(c.conversation);
     resetSession(c.conversation);
@@ -223,6 +211,6 @@ export function installFront({ approvals }) {
     if (await handleSetupText(c)) return;
     log(`← ${c.who}: ${c.text}`);
     if (await tryQuick(c, c.text)) return;
-    converse(c, c.text);
+    converse(c, c.text, { said: c.text });
   });
 }

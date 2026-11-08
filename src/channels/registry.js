@@ -29,6 +29,7 @@
 import { load, update } from '../config.js';
 import { everyKnown, findLoaded, loadPlugins, loaded, makeCtx, mountOf } from '../plugins/registry.js';
 import { hasCarrier, setCarrier } from './desk.js';
+import { log } from '../log.js';
 
 export const channelPlugins = () => loaded().filter((p) => p.manifest.channel);
 
@@ -72,7 +73,9 @@ export function activeChannel() {
   let paired = false;
   try {
     paired = !!p.manifest.channel.paired(ctx);
-  } catch {}
+  } catch (e) {
+    log(`${p.name}: could not tell whether it is set up: ${e.message}`);
+  }
   return paired ? { plugin: p, def: p.manifest.channel, ctx } : null;
 }
 
@@ -80,10 +83,19 @@ export function activeChannel() {
 export function listChannels() {
   return channelPlugins().map((p) => {
     let paired = false;
+    let error = null;
     try {
       paired = !!p.manifest.channel.paired(makeCtx(p));
-    } catch {}
-    return { name: p.name, label: p.manifest.channel.label ?? p.manifest.title, paired, active: p.name === activeName() };
+    } catch (e) {
+      error = e.message;
+    }
+    return {
+      name: p.name,
+      label: p.manifest.channel.label ?? p.manifest.title,
+      paired,
+      active: p.name === activeName(),
+      ...(error ? { error } : {}),
+    };
   });
 }
 

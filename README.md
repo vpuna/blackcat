@@ -39,7 +39,7 @@ It was written for a Raspberry Pi and runs on any Linux machine.
 - [Install](#install), on a machine or [in a container](#in-a-container)
 - [Set up](#set-up)
 - [Using it](#using-it)
-- [Core features](#core-features): messages, reminders, watches, briefing, checks, shortcuts, messages from your scripts, memory, backups
+- [Core features](#core-features): messages, reminders, lists, watches, briefing, checks, shortcuts, messages from your scripts, memory, backups
 - [Plugins](#plugins): WhatsApp, Telegram, mail, calendar, SSH, this machine, Home Assistant, UniFi, Allsky, Android, LG TVs, files in messages
 - [Running it](#running-it)
 - [Security](#security)
@@ -54,8 +54,9 @@ It was written for a Raspberry Pi and runs on any Linux machine.
 | Shortcuts | Commands you define: `/door` sends a picture from the front door camera. | no |
 | Reminders | "Remind me on Friday to call the bank", or `/remind add …`. | only for plain words |
 | Messages | WhatsApp, Telegram and mail in one local archive. Read-only. Search by keyword or by meaning. | no |
-| Watches | "Watch the school group for anything a parent must act on." Each keeps a list. | yes |
-| Daily briefing | One message each morning: today, tomorrow, the week, what is new. | only for what watches add |
+| Lists | Your own: spare electronics with counts and specs, groceries, a trip. Fields you name. | no |
+| Watches | "Watch the school group for anything a parent must act on." Each fills a list. | yes |
+| Daily briefing | One message each morning: what is past due, today, tomorrow, the week, what is new. | only for what watches add |
 | Checks | "Is the camera still taking pictures? If not, restart it and tell me." | only to judge by description |
 | Machines | Other machines over SSH, this machine's health, Home Assistant, a UniFi network, an all-sky camera. | no |
 | Apps on Android | Routines that go through an app on an Android phone or TV, and stop to ask you before anything is booked, bought or sent. | only to learn a routine, or when a step goes wrong |
@@ -111,6 +112,8 @@ bc restart agent
 bc chat what can you do
 ```
 
+That sign-in runs out after about four weeks, and the agent stops until you sign in again. For one that lasts a year, run `claude setup-token` and give what it prints to `bc claude setup`. It is part of your plan, not billed apart.
+
 Everything in this guide can then be done by asking. Without a model, everything marked "no" above still works.
 
 ### The Telegram bot (recommended)
@@ -135,7 +138,7 @@ Each is optional. All of them only read, except where the row says otherwise.
 | Email | `bc plugin enable mail`, then `bc mail add` | the address and an app password |
 | Calendars | `bc plugin enable calendar`, then `bc calendar add` | the calendar's iCal address |
 | Other machines, over SSH (can act, with your approval) | `bc plugin enable ssh`, then `bc ssh add` | the address and a user; you install the key it prints |
-| This machine: health alerts and commands (can act, with your approval) | `bc plugin enable host`, then `bc host setup` | nothing |
+| This machine: health alerts and commands (can act, with your approval) | `bc plugin enable host`, then `bc check add --from host:health` for its alerts | nothing |
 | Home Assistant (can act; see its section) | `bc plugin enable ha`, then `bc ha setup` | the address and a long-lived access token |
 | A UniFi network and cameras | `bc plugin enable unifi`, then `bc unifi setup` | the console's address and an API key |
 | An all-sky camera | `bc plugin enable allsky`, then `bc allsky setup` | its address |
@@ -159,7 +162,7 @@ In a chat channel, write anything and the agent answers. These are handled direc
 | `/watch`, `/remind`, `/check`, `/ha` | your watches, reminders, checks and rooms, with buttons |
 | `/setup` | set a plugin up by answering questions |
 | `/permissions` | standing approvals; remove any |
-| `/status` | the machine's health |
+| `/status` | is everything working: one line for each connection, device and account |
 | `/new`, `/resume` | start a fresh conversation, or go back to an earlier one |
 
 Any `bc` command also works with a slash: `/backup now`, `/unifi status`, `/bc plugin list`; add `help` to see what one does (`/watch help`). You can also send photos, PDFs, documents and voice notes.
@@ -215,7 +218,7 @@ bc remind add Take the bins out --at 20:00 --repeat weekly
 bc remind list
 ```
 
-A reminder arrives with Done and snooze buttons; a repeating one is snoozed only to before its next time. Done and cancel on a repeating one are for that time only; `bc remind stop <id>` (or its Stop repeating button) ends it. One left unanswered when the next comes is marked missed, so the briefing shows it once. `bc remind setup --quiet 23:00-07:00` sets quiet hours.
+A reminder arrives with Done and snooze buttons; a repeating one can be snoozed only up to its next time. Done and cancel on a repeating one are for that time only; `bc remind stop <id>` (or its Stop repeating button) ends it. One left unanswered when the next comes is marked missed, so the briefing shows it once. `bc remind setup --quiet 23:00-07:00` sets quiet hours.
 
 <table>
   <tr><th>In a terminal</th><th>In Telegram</th></tr>
@@ -225,19 +228,48 @@ A reminder arrives with Done and snooze buttons; a repeating one is snoozed only
   </tr>
 </table>
 
+### Lists
+
+Lists of your own, with the fields you give them. No model needed. Or just tell the bot: "make a list of my spare electronics, with how many of each" and send it a photo of a board.
+
+```sh
+bc list new Electronics --field quantity:number --field specs
+bc list add Electronics --title "Raspberry Pi 4" --set type=board --set quantity=2 --set "specs=4 GB"
+bc list show Electronics             # grouped by type; numbers added up
+bc list edit 12 --set quantity=3
+bc list mark 12 done                 # or open, drop
+bc list find dentist                 # what every list says about something
+bc list link 40 --msg <id>           # a booking mail, on the flight of a trip
+bc list list --unused 90d            # lists nobody has used in 90 days
+```
+
+- Every entry has a title and may have a type, note, date, place, link and ref. Anything else is a field of the list's own: text, number or date.
+- Adding something that looks like an entry already on that list is refused, with how to count one more instead.
+- `bc list briefing Kyoto on` puts a list's dated entries in the daily briefing, in their week.
+- `/list` in Telegram: open a list (one with several types asks which, or everything), tap a number to tick something off.
+
+<table>
+  <tr><th>In a terminal</th><th>In Telegram</th></tr>
+  <tr>
+    <td><img src="docs/images/demo-list.gif" width="560" alt="A list of spare electronics: shown by type with the total, one entry changed, and a search"></td>
+    <td><img src="docs/images/demo-tg-list.gif" width="250" alt="The same list in Telegram: pick a type or everything, then tap a number"></td>
+  </tr>
+</table>
+
 ### Watches
 
-A watch reads certain chats, collects what fits into a list, and tells you. Needs a model.
+A watch reads certain chats, files what fits on its list, and tells you. Needs a model. Each watch fills one list, named after it, or one you made (`--list`). Removing the watch keeps the list.
 
 ```sh
 bc watch add School notices --chat "Year 4 parents" \
   --look-for "things a parent needs to act on: events, trips, deadlines, forms"
 bc watch list
-bc watch item 12 done                # or keep, drop
+bc list mark 12 done                 # a watch's entries are changed with bc list: open, drop, edit, find
 ```
 
 - A watch reports in the daily briefing (the default), on a schedule of its own (`--mode digest`) or at once (`--mode alert`).
-- One is built in: "Things I need to do". It reads all your chats, and mail and calendar if connected, for promises, unanswered questions, deadlines, bookings and things on their way. It ticks off what you were waiting on when the answer comes, even after it told you none had, what you owed once you have plainly done it (the briefing says so, with a button to undo it), and a parcel or a booking when a message with its number says it arrived or was cancelled.
+- An undated entry moves to **Expired** once no message has spoken of it for as long as you fetch that source's history (WhatsApp's days, a mail account's). Nothing is deleted: the list shows an "⌛ Expired · older than 30 days" section, by type, and a tap opens one again. An entry you keep, or that a message mentions again, starts its days again.
+- One is built in: "Things I need to do". It reads all your chats, and mail and calendar if connected, for promises, unanswered questions, missed WhatsApp and Telegram calls (a call back is ticked off by a call that went on, whoever rang), deadlines, bookings and things on their way. It ticks off what you were waiting on when the answer comes, even after it told you none had, what you owed once you have plainly done it (the briefing says so, with a button to undo it), and a parcel or a booking when a message with its number says it arrived or was cancelled.
 
 <table>
   <tr><th>In a terminal</th><th>In Telegram</th></tr>
@@ -249,7 +281,7 @@ bc watch item 12 done                # or keep, drop
 
 ### Daily briefing
 
-One message each morning at 07:00: today, tomorrow, the week ahead, bookings and deliveries coming up, what is new on each watch, and what the model used yesterday. Tap a line's number to mark it done or snooze it. `bc watch briefing --at 06:30` moves it.
+One message each morning at 07:00: what is past due (a reminder not marked done, something owed whose day has gone; the latest five, and a button for the rest), today, tomorrow, the week ahead, bookings and deliveries coming up, what is new on each watch (always given room), and what the model used yesterday. Tap a line's number to mark it done or snooze it. `bc watch briefing --at 06:30` moves it.
 
 <table>
   <tr><th>In a terminal</th><th>In Telegram</th></tr>
@@ -272,9 +304,9 @@ bc check add "Sky picture" --file ~/camera/latest.jpg --max-age 10m   # a file t
 bc check list
 ```
 
-A check passes when its command exits with 0; with `--look-for "…"` a model judges the output or a picture against your words. Creating a check approves its fix, which then runs without asking. One check is always there: blackcat health, which reads its own record every hour for things going wrong.
+A check passes when its command exits with 0; with `--look-for "…"` a model judges the output or a picture against your words. Creating a check approves its fix, which then runs without asking. Two checks are always there: blackcat health, which reads its own record every hour for things going wrong, and Connections, which runs `bc health` every 10 minutes and tells you once something has not worked for half an hour. An alert comes with Snooze and "I fixed it", which looks again at once.
 
-With `--limit "temp>75"` a figure the command prints decides instead, and each reading is kept for 30 days. `--context '<command>'` keeps what that prints when the check goes wrong, so you can later ask why. Plugins offer some checks ready-made:
+With `--limit "temp>75"` a figure the command prints decides instead, and each reading is kept for 30 days. `--context '<command>'` keeps what that prints when the check goes wrong, so you can later ask why; with a model, the alert also says in a sentence what was going on ("the backup was using most of the processor"). On Mondays the briefing has a line for each check that was not working in the week before: how often, and for how long. Plugins offer some checks ready-made:
 
 ```sh
 bc check offered                                   # e.g. ssh:nas-heat, a host's temperature and load
@@ -292,7 +324,7 @@ bc check history "nas heat" --since 7d             # the readings, and each time
 
 ### Shortcuts
 
-A shortcut runs commands you chose and sends back a file or what they printed. It runs as `/<name>`, or when you say its name ("tv on" for `/tv_on`), with no model involved.
+A shortcut runs commands you chose and sends back a file or what they printed. It runs as `/<name>`, or when you say its name ("tv on" for `/tv_on`), with no model involved. Your own wording is learned too: when the agent ran one shortcut or switched one thing for words of yours, the same words next time do it straight away, without the agent. `/learned` or `bc learned list` shows them, each with a way to forget it.
 
 ```sh
 bc shortcut add door --description "Front door camera" \
@@ -399,7 +431,7 @@ What is stored is kept, however old. When something is missing, `bc wa recover`,
 
 Mail is read-only over IMAP. Newsletters and promotions are skipped by rules, with no model (`bc mail recent` says what was kept or skipped, and why; `bc mail allow` and `bc mail block` change it). Mail you send is collected too, so a promise you made by mail reaches your watches.
 
-Calendars are read-only; six months of past events are kept, and events appear in the daily briefing. The iCal address is in Google under Settings → the calendar → "Secret address in iCal format"; in iCloud, share as a public calendar; in Outlook, publish the calendar and copy the ICS link.
+Calendars are read-only; six months of past events are kept, and events appear in the daily briefing (once, when a confirmation mail has the same booking). The iCal address is in Google under Settings → the calendar → "Secret address in iCal format"; in iCloud, share as a public calendar; in Outlook, publish the calendar and copy the ICS link.
 
 ### SSH and this machine
 
@@ -407,10 +439,10 @@ Calendars are read-only; six months of past events are kept, and events appear i
 bc ssh add                     # a name, address, user and mode; prints a key to install there
 bc ssh run nas 'docker ps'
 bc host health                 # temperature, load, memory, disk
-bc host setup --alerts --temp-limit 75 --disk-limit 90
+bc check add --from host:health   # told above 75°C, a disk over 90%, a power dip (--limit to change)
 ```
 
-Each machine has a mode for what the agent may do there: `read` (commands that only look), `ask` (anything else needs your approval) or `full`. Each SSH host gets its own key. A health limit crossed sends you one message. `bc host run` is the only way the agent can run a command on this machine, and every SSH host is also a place a backup can go.
+Each machine has a mode for what the agent may do there: `read` (commands that only look), `ask` (anything else needs your approval) or `full`. Each SSH host gets its own key. This machine's alerts are a check like any other, with its figures kept (`bc check history`). `bc host run` is the only way the agent can run a command on this machine, and every SSH host is also a place a backup can go.
 
 <table>
   <tr><th>In a terminal</th><th>In Telegram</th></tr>
@@ -457,7 +489,7 @@ A **routine** goes through an app the way you would and stops at the button that
 ```sh
 bc android pair --name phone             # or --address 192.168.1.50:5555 for a TV
 bc android learn shop-buy --app shop --goal "Search for the item, add the first result to the basket and go to checkout. Stop at Place order." --stop-at "Place order" --set item="AA batteries"
-bc android run shop-buy --dry --set item="AA batteries"   # to the button, then declines
+bc android run shop-buy --dry --set item="AA batteries"   # to the button, then declines (the agent asks you first)
 bc android approve shop-buy                               # lets the agent run it
 bc android edit shop-buy --change "choose next-day delivery before checkout"
 ```
@@ -508,12 +540,23 @@ Voice notes are always transcribed on the machine. Spreadsheets and presentation
 ## Running it
 
 ```sh
+bc health                     # is each thing it reaches working, and since when one is not (/status in the chat)
 bc status                     # what blackcat last saw
-bc selftest                   # ask everything that is set up whether it works now
+bc selftest                   # ask everything that is set up whether it works now, in full
 bc logs agent -f
 cd ~/blackcat && git pull && npm ci && bc restart     # update
 bc service run                # run in this terminal until Ctrl+C, instead of installing it
 ```
+
+`bc restart` and `bc stop` wait for a routine that is running on a phone, so a booking is not cut off half way (`--now` does not wait).
+
+<table>
+  <tr><th>In a terminal</th><th>In Telegram</th></tr>
+  <tr>
+    <td><img src="docs/images/demo-health.gif" width="560" alt="bc health: one line for each thing blackcat reaches, one of them not working, with how to fix it and since when"></td>
+    <td><img src="docs/images/demo-tg-status.gif" width="250" alt="/status in Telegram: the same list"></td>
+  </tr>
+</table>
 
 ### The model
 
@@ -524,6 +567,8 @@ bc engine check                                 # test the model's safety and ac
 ```
 
 The check runs in a temporary copy of your installation with made-up messages, asks the model to do things that are not allowed, and confirms that nothing happened.
+
+Claude Code is the engine that comes on. A second one, in beta, `openai`, runs a model that speaks the OpenAI API: one on your network (llama.cpp, Ollama, vLLM, LM Studio) or a hosted one (OpenRouter and others). Enable it with `bc plugin enable openai`, give its address with `bc openai setup`, and switch with `bc engine use openai --for readers`, which checks it first.
 
 ### Activity
 

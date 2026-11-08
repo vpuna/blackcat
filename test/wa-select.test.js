@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import { home } from './helpers.js';
 
 home();
+await (await import('../src/plugins/registry.js')).loadPlugins(); // (the sources are the plugins')
 const { openWrite } = await import('../src/archive/db.js');
 const { countOutside, deleteOutside } = await import('../plugins/wa/select.js');
 

@@ -10,16 +10,17 @@ const root = new URL('../..', import.meta.url).pathname;
 
 // `claude`: the body of a stand-in for the `claude` program (a node script), or nothing for
 // one that answers every message with "echo: <what it was sent>".
-// `itself`: leave the check "blackcat itself" on. (Otherwise it is paused: what a test does on
+// `itself`: leave the check "blackcat health" on. (Otherwise it is paused, and so is the check
+// "Connections" always: what a test does on
 // purpose, a stranger writing say, would have it speak up in the middle of another test.)
 export async function startBot(dir, { config = {}, claude, env = {}, signedIn = true, itself = false } = {}) {
   const tg = await fakeTelegram();
   const { load } = await import('../../src/config.js');
   await setUp({ ...load(), bot: { token: 'TEST:TOKEN', allow: [{ id: tg.owner.id, name: tg.owner.first_name }] }, ...config });
-  if (!itself) {
+  {
     const { openChecksDb } = await import('../../src/checks/db.js');
     const db = openChecksDb();
-    db.prepare('UPDATE checks SET active = 0 WHERE builtin IS NOT NULL').run();
+    db.prepare(`UPDATE checks SET active = 0 WHERE builtin IS NOT NULL${itself ? " AND builtin <> 'itself'" : ''}`).run();
     db.close();
   }
   fs.mkdirSync(path.join(dir, 'agent'), { recursive: true });

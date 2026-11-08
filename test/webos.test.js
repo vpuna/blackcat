@@ -89,7 +89,7 @@ const paired = (tv, name = 'tv', extra = {}) => {
   secrets.set(`key:${name}`, tv.key);
   store.set('devices', {
     ...(store.get('devices') ?? {}),
-    [name]: { name, host: '127.0.0.1', mac: '58:96:0a:77:df:aa', model: 'OLED55TEST', ports: [['ws', tv.port]], ...extra },
+    [name]: { name, host: '127.0.0.1', mac: '00:00:5e:00:53:01', model: 'OLED55TEST', ports: [['ws', tv.port]], ...extra },
   });
 };
 
@@ -214,16 +214,18 @@ test('the buttons named, and the wake-up packet', () => {
   assert.deepEqual(buttons(['home', '12', 'channelup', 'input-hub']), ['HOME', '1', '2', 'CHANNELUP', 'INPUT_HUB']);
   assert.throws(() => buttons(['explode']), /is not a button/);
   assert.throws(() => buttons([]), /Name a button/);
-  const m = magic('58:96:0a:77:df:aa');
+  const m = magic('00:00:5e:00:53:01');
   assert.equal(m.length, 102);
   assert.ok(m.subarray(0, 6).every((b) => b === 0xff));
-  assert.deepEqual([...m.subarray(6, 12)], [0x58, 0x96, 0x0a, 0x77, 0xdf, 0xaa]);
+  assert.deepEqual([...m.subarray(6, 12)], [0x00, 0x00, 0x5e, 0x00, 0x53, 0x01]);
   assert.throws(() => magic('not-a-mac'), /not a network card/);
 });
 
+// (Made up, from the range kept for examples (RFC 7042): the wake-up packet goes to the whole
+// network, and a real TV's address here would turn that TV on each time the tests run. It did.)
 test('the wake-up packet is sent, not refused for want of an answer', async () => {
   const { wake } = await import('../plugins/webos/tv.js');
-  await wake('58:96:0a:77:df:aa', '127.0.0.1');
+  await wake('00:00:5e:00:53:01', '127.0.0.1');
   await assert.rejects(wake('nope', '127.0.0.1'), /not a network card/);
 });
 
@@ -270,4 +272,15 @@ test('a TV turning off is not taken for one that is on, nor one that drops the c
     tv.close();
     store.clear();
   }
+});
+
+// (W5 of the audit of 2026-10-24: a TV that was off was told by the words of the error, so
+// rewording one would have broken turning the TV on.)
+test('a TV that is not there is told by what went wrong, not by how it is worded', async () => {
+  const { TvError, unreachable } = await import('../plugins/webos/tv.js');
+  assert.equal(unreachable(new TvError('anything at all', 'offline')), true);
+  assert.equal(unreachable(new TvError('anything at all', 'starting')), true);
+  assert.equal(unreachable(new TvError('The TV at x does not answer, reworded')), false, 'the words alone say nothing');
+  assert.equal(unreachable(new TvError('The TV said: no.', 'timeout')), false, 'one that answered late is not off');
+  assert.equal(unreachable(new Error('does not answer')), false);
 });

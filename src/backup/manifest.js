@@ -617,8 +617,11 @@ Moving to another machine: install blackcat there, add the same place, run bc ba
         if (i.paused) {
           const { services, setSwitchedOff } = await import('../service/units.js');
           const known = ['agent', ...Object.keys(await services().catch(() => ({})))];
-          // (A source the restored settings switch on is not known yet to this process: the bundled ones are named.)
-          paused = [...new Set([...known, 'wa', 'tg'])];
+          // (A source the restored settings switch on is not known yet to this process: so every service of
+          // every plugin it knows of is named, switched on or not.)
+          const { everyKnown } = await import('../internal.js');
+          const all = everyKnown().flatMap((p) => (p.manifest.services ?? []).map((s) => s.id));
+          paused = [...new Set([...known, ...all])];
           setSwitchedOff(paused);
         }
         // Kept from this machine, because the backup doesn't carry it: the embedding model.

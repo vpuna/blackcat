@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS messages (
   sender_ref TEXT,
   from_me    INTEGER NOT NULL DEFAULT 0,
   ts         INTEGER NOT NULL, -- unix seconds
-  type       TEXT NOT NULL,    -- text, image, video, voice, audio, document, sticker, location, contact, poll, other
+  type       TEXT NOT NULL,    -- text, image, video, voice, audio, document, sticker, location, contact, poll, call, other
   text       TEXT,             -- message text, caption, or a short description for media
   quoted_id  TEXT,             -- id of the message this replies to
   edited     INTEGER NOT NULL DEFAULT 0,
@@ -259,6 +259,28 @@ const PARTS = [
       if (t.startsWith('image/')) picture.run(r.msg_rowid);
     }
   },
+  // 10: what the archive keeps for its sources, in words that are no source's own. The other
+  // ids a chat or person is known by (WhatsApp's hidden ids, mapped to phone numbers) are
+  // "aliases". What a source keeps to fetch a message's file later is its own, as JSON in
+  // `fetch` (WhatsApp's server path and keys, kept as they were with the keys in hex; the part
+  // of a mail); a Telegram file is fetched by its message alone. `fetch` is null when it can't
+  // be fetched: every value that fetches a file moves (a hash with no address to fetch from
+  // is not kept).
+  (db) => {
+    const hex = (col) => `CASE WHEN ${col} IS NULL THEN NULL ELSE hex(${col}) END`;
+    db.exec(`
+    ALTER TABLE lid_map RENAME TO aliases;
+    ALTER TABLE aliases RENAME COLUMN lid TO ref;
+    ALTER TABLE aliases RENAME COLUMN pn TO same_as;
+    ALTER TABLE media ADD COLUMN fetch TEXT;
+    UPDATE media SET fetch = json_object('directPath', direct_path, 'url', url, 'mediaKey', ${hex('media_key')}, 'encSha256', ${hex('file_enc_sha256')})
+      WHERE direct_path IS NOT NULL OR url IS NOT NULL;
+    UPDATE media SET fetch = '{}' WHERE fetch IS NULL AND dl_type = 'tg';
+    ALTER TABLE media DROP COLUMN direct_path;
+    ALTER TABLE media DROP COLUMN url;
+    ALTER TABLE media DROP COLUMN media_key;
+    ALTER TABLE media DROP COLUMN file_enc_sha256;`);
+  },
 ];
 
 // The number the first published version started at: an archive marked lower than this, or
@@ -327,11 +349,12 @@ export function getMeta(db) {
 export { SOURCES, msgSource, sourceOf, sourceSql } from './sources.js';
 
 // SQL fragments that turn ids into display names: saved name, then their own name, then
-// the phone number (WhatsApp) or the raw id (anything without an "@").
-// Hidden WhatsApp ids (@lid) are mapped to phone-number ids first.
-const real = (col) => `COALESCE((SELECT pn FROM lid_map WHERE lid = ${col}), ${col})`;
+// the phone number, for an id that is one ("<source>:<digits>@…"), or else the id.
+// An id known by another (an alias: WhatsApp's hidden ids) is taken as that one first.
+const real = (col) => `COALESCE((SELECT same_as FROM aliases WHERE ref = ${col}), ${col})`;
+const number = (r) => `substr(${r}, instr(${r}, ':') + 1, instr(${r}, '@') - instr(${r}, ':') - 1)`;
 const fallback = (col) =>
-  `CASE WHEN ${real(col)} LIKE 'wa:%@%' THEN '+' || substr(${real(col)}, 4, instr(${real(col)}, '@') - 4) ELSE ${real(col)} END`;
+  `CASE WHEN instr(${real(col)}, '@') > instr(${real(col)}, ':') + 1 AND instr(${real(col)}, ':') > 0 AND ${number(real(col))} NOT GLOB '*[^0-9]*' THEN '+' || ${number(real(col))} ELSE ${real(col)} END`;
 
 // ---------- accounts ----------
 // The owner's account a source collects through: its key, made the first time it is seen.

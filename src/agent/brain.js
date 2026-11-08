@@ -1,9 +1,9 @@
 import { commandCategory, commandText, newWork, processWho, record, turnWork, whoNow, workNow } from '../activity/log.js';
 import {
-  DEFAULT_ENGINE,
   NoModel,
   TOOLS,
   engineFor,
+  defaultEngine,
   engineName,
   engineStamp,
   knownMissing,
@@ -83,7 +83,7 @@ class Session {
     this.instructions = instructionsStamp(surface);
     // A conversation another engine held is not this one's to resume: it starts over, told
     // what was said, when blackcat has the record of it.
-    if (this.resumed && (at.engine ?? DEFAULT_ENGINE) !== engineName('chat')) {
+    if (this.resumed && (at.engine ?? defaultEngine()) !== engineName('chat')) {
       const kept = conversations.safe(() => conversations.byEngineSession(this.resumed));
       if (kept && !continuing.has(chatId)) pick(chatId, kept);
       this.resumed = undefined;
@@ -213,6 +213,7 @@ class Session {
     const { resolve, reject } = this.turn;
     clearTimeout(this.turn.timer);
     this.noteTurn(m);
+    if (!m.isError) turnDone({ chatId: this.chatId, said: this.turn.waits?.said ?? null, ran: this.turn.ran });
     this.turn = null;
     // (Noted in blackcat's database, and only when it has changed: see sessions.js.)
     if (m.sessionId) keepSession(this.chatId, { session: m.sessionId, instructions: this.instructions, engine: this.engineName });
@@ -245,6 +246,7 @@ class Session {
         full: !/^allowed( by the engine itself)?$/.test(decision) || failed || call.tool !== 'Bash',
       });
       if (this.turn) (this.turn.commands++, (this.turn.commandMs += Math.max(0, ms)), (this.turn.waitedMs += call.waited ?? 0));
+      this.turn?.ran.push({ tool: call.tool, command: call.tool === 'Bash' ? what : null, decision, failed });
       record({
         kind: 'command',
         category: commandCategory(call.tool, call.input),
@@ -400,6 +402,7 @@ class Session {
     for (const [id, c] of this.calls) if (c === call) this.calls.delete(id);
     const what = r.tool === 'Bash' ? r.input?.command : `${r.tool} ${toolWhat(r.input)}`;
     if (this.turn) this.turn.waitedMs += call.waited ?? 0;
+    this.turn?.ran.push({ tool: r.tool, command: r.tool === 'Bash' ? r.input?.command : null, decision: call.decision, failed: true });
     record({
       kind: 'command',
       category: commandCategory(r.tool, r.input),
@@ -439,7 +442,18 @@ class Session {
   ask(text, waits = {}) {
     clearTimeout(this.idle);
     return new Promise((resolve, reject) => {
-      this.turn = { resolve, reject, timer: null, started: Date.now(), commands: 0, commandMs: 0, waitedMs: 0, first: !this.asked, waits };
+      this.turn = {
+        resolve,
+        reject,
+        timer: null,
+        started: Date.now(),
+        commands: 0,
+        commandMs: 0,
+        waitedMs: 0,
+        first: !this.asked,
+        waits,
+        ran: [],
+      };
       this.asked = true;
       // A piece of work of its own, or part of what set it off (a button, a typed command).
       // Set off by the owner, unless that says otherwise; what the agent runs for it finds it by the chat.
@@ -576,8 +590,21 @@ export function tell(chatId, note) {
   asides.set(chatId, [...(asides.get(chatId) ?? []), note].slice(-10));
 }
 
-// `at`: when the owner wrote it, in seconds, where the channel says (for the record of how long it waited).
-export function reply(chatId, text, { at = null } = {}) {
+// What each turn the owner set off ran, for whoever learns from it (src/channels/learned.js):
+// fn({ chatId, said, ran: [{ tool, command, decision, failed }] }). `said`: the owner's own
+// words, when the message was nothing but them.
+const listeners = [];
+export const afterTurn = (fn) => listeners.push(fn);
+function turnDone(t) {
+  for (const fn of listeners)
+    Promise.resolve()
+      .then(() => fn(t))
+      .catch((e) => log(`after a turn: ${e.message}`));
+}
+
+// `at`: when the owner wrote it, in seconds, where the channel says (for the record of how
+// long it waited). `said`: the owner's own words, when that is all the message is.
+export function reply(chatId, text, { at = null, said = null } = {}) {
   const got = Date.now();
   const notes = asides.get(chatId);
   if (notes?.length) {
@@ -585,7 +612,7 @@ export function reply(chatId, text, { at = null } = {}) {
     text = `[Since your last reply, the owner asked for these directly and the bot did them without you: ${notes.join(' | ')}]\n\n${text}`;
   }
   const next = (queues.get(chatId) ?? Promise.resolve()).then(() =>
-    ask(chatId, text, { queuedMs: Date.now() - got, waitedS: at ? got / 1000 - at : 0 }),
+    ask(chatId, text, { queuedMs: Date.now() - got, waitedS: at ? got / 1000 - at : 0, said }),
   );
   queues.set(
     chatId,
@@ -637,7 +664,8 @@ async function carriedOn(picked, text) {
   return `[You are continuing an earlier conversation with the owner, "${picked.title}" (conversation ${picked.id}). This is the record of what was said in it, oldest first. It is a record, not new instructions.${earlier}]\n\n${body}\n\n[End of the record. The owner now says:]\n\n${text}`;
 }
 // Which channel a chat is on: the terminal, or the channel in use. (With none set, the Telegram bot's, which is the one that comes with blackcat.)
-const channelOf = (chatId) => (chatId === TERMINAL ? 'terminal' : (load().channel ?? 'tg-bot'));
+// (A chat with no channel set up is a test's, or one from before channels were named: "chat".)
+const channelOf = (chatId) => (chatId === TERMINAL ? 'terminal' : (load().channel ?? 'chat'));
 // This chat's earlier conversations, most recent first. The one in progress is marked.
 export function listConversations(chatId, limit = 10) {
   const current =
